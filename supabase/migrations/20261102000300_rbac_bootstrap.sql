@@ -216,10 +216,22 @@ as $$
 declare
   v_protected_role boolean;
 begin
-  select (r.is_system_role and r.name = 'Administrator')
-  into v_protected_role
-  from public.roles r
-  where r.id = old.role_id;
+  select exists (
+    select 1
+    from public.roles r
+    where r.id = old.role_id
+      and r.is_system_role
+      and r.name = 'Administrator'
+  ) or (
+    tg_op = 'UPDATE' and exists (
+      select 1
+      from public.roles r
+      where r.id = new.role_id
+        and r.is_system_role
+        and r.name = 'Administrator'
+    )
+  )
+  into v_protected_role;
 
   if coalesce(v_protected_role, false) then
     raise exception using
