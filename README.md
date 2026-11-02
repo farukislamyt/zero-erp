@@ -1,2 +1,217 @@
-# zero-erp
-Zero ERP is a modern, multi-tenant ERP system designed to streamline accounting, sales, purchases, inventory, expenses, payments, and financial reporting. Built with Supabase and PostgreSQL, it emphasizes data integrity, secure tenant isolation, reliable transaction processing, and maintainable architecture.
+# Zero ERP
+
+Zero ERP is a multi-organization ERP system designed to support accounting, purchasing, sales, inventory, expenses, payments, and returns.
+
+## Technology Stack
+
+- **Application framework:** Next.js
+- **Database:** PostgreSQL
+- **Backend platform:** Supabase
+- **Deployment:** Vercel
+- **Source control:** GitHub
+
+## Overview
+
+The database design contains 24 core tables organized around organization-scoped business records and a general ledger. Most operational tables include `organization_id`, which supports tenant-scoped data access when combined with appropriate authorization and database policies.
+
+This README documents the supplied schema and technology choices. Exact application commands, SQL types, constraints, authentication flows, and implementation status should be confirmed against the codebase and database migrations.
+
+## Table of Contents
+
+- [Modules](#modules)
+- [Database Schema](#database-schema)
+- [Accounting and Posting](#accounting-and-posting)
+- [Inventory](#inventory)
+- [Organization Isolation and Security](#organization-isolation-and-security)
+- [Technology and Deployment](#technology-and-deployment)
+- [Local Development](#local-development)
+- [Documentation Notes](#documentation-notes)
+
+## Modules
+
+- Organization and membership management
+- Accounting periods and chart of accounts
+- General ledger and journal entries
+- Product catalog and units of measure
+- Contacts for customers, suppliers, and other counterparties
+- Purchase invoices and purchase returns
+- Sales invoices and sales returns
+- Inventory movements and valuation
+- Expense categories and expense records
+- Payments and payment allocations
+- Organization-specific document numbering
+
+These modules are inferred from the supplied database schema. Their availability in the user interface and implementation completeness should be verified in the application.
+
+## Database Schema
+
+### Organization and configuration
+
+| Table | Purpose | Notable columns |
+| --- | --- | --- |
+| `organizations` | Organization profile and defaults | `name`, `base_currency`, `timezone`, `tin`, `bin`, `is_active` |
+| `organization_users` | Links users to organizations | `organization_id`, `user_id`, `is_active` |
+| `units_of_measure` | Product measurement units | `name`, `is_active` |
+| `accounting_periods` | Accounting date ranges and closure state | `start_date`, `end_date`, `status`, `closed_at`, `closed_by` |
+| `number_sequences` | Document number configuration | `document_type`, `prefix`, `next_number`, `padding` |
+
+### General ledger
+
+| Table | Purpose | Notable columns |
+| --- | --- | --- |
+| `accounts` | Chart of accounts and hierarchy | `account_code`, `account_name`, `account_type`, `parent_account_id`, `normal_balance`, `is_postable` |
+| `journal_entries` | Journal entry headers and lifecycle | `entry_number`, `accounting_period_id`, `entry_date`, `entry_type`, `status`, `reference_type`, `reference_id`, `posted_at`, `reversal_of_id` |
+| `account_transactions` | Debit/credit journal lines | `journal_entry_id`, `account_id`, `line_number`, `debit`, `credit`, `contact_id` |
+
+### Products, contacts, and inventory
+
+| Table | Purpose | Notable columns |
+| --- | --- | --- |
+| `products` | Product records and related ledger accounts | `product_code`, `name`, `unit_id`, `inventory_account_id`, `sales_account_id`, `cogs_account_id` |
+| `contacts` | Business contact records | `contact_number`, `name`, `phone`, `email`, `address` |
+| `inventory_balances` | Current quantity and valuation summary | `product_id`, `quantity`, `average_cost`, `inventory_value` |
+| `inventory_transactions` | Inventory movement and cost history | `transaction_number`, `product_id`, `transaction_date`, `transaction_type`, `direction`, `quantity`, `unit_cost`, `total_value`, `average_cost_after` |
+
+### Purchases and purchase returns
+
+| Table | Purpose | Notable columns |
+| --- | --- | --- |
+| `purchase` | Purchase invoice header | `invoice_id`, `supplier_id`, `invoice_date`, `status`, `subtotal`, `discount_amount`, `total_amount`, `payable_account_id`, `posted_journal_entry_id` |
+| `purchase_items` | Purchase invoice lines | `purchase_id`, `line_number`, `product_id`, `quantity`, `unit_cost`, `line_total` |
+| `purchase_returns` | Purchase return header | `return_number`, `purchase_id`, `supplier_id`, `return_date`, `total_amount`, `posted_journal_entry_id` |
+| `purchase_return_items` | Purchase return lines | `purchase_return_id`, `purchase_item_id`, `product_id`, `quantity`, `unit_cost`, `line_total` |
+
+### Sales and sales returns
+
+| Table | Purpose | Notable columns |
+| --- | --- | --- |
+| `sales` | Sales invoice header | `invoice_id`, `customer_id`, `invoice_date`, `status`, `subtotal`, `discount_amount`, `total_amount`, `receivable_account_id`, `posted_journal_entry_id` |
+| `sales_items` | Sales lines and cost-of-goods-sold values | `sales_id`, `line_number`, `product_id`, `quantity`, `unit_price`, `line_total`, `cogs_unit_cost`, `cogs_total` |
+| `sales_returns` | Sales return header | `return_number`, `sales_id`, `customer_id`, `return_date`, `total_amount`, `posted_journal_entry_id` |
+| `sales_return_items` | Sales return lines and cost values | `sales_return_id`, `sales_item_id`, `product_id`, `quantity`, `unit_price`, `line_total`, `cogs_unit_cost`, `cogs_total` |
+
+### Expenses and payments
+
+| Table | Purpose | Notable columns |
+| --- | --- | --- |
+| `expense_categories` | Expense classification and ledger mapping | `category_code`, `name`, `expense_account_id`, `is_active` |
+| `expenses` | Expense records | `expense_number`, `expense_category_id`, `contact_id`, `payable_account_id`, `expense_date`, `amount`, `status`, `posted_journal_entry_id` |
+| `payments` | Payment records and ledger accounts | `payment_number`, `payment_type`, `contact_id`, `payment_date`, `amount`, `account_id`, `settlement_account_id`, `status`, `posted_journal_entry_id` |
+| `payment_allocations` | Allocates payments to referenced documents | `payment_id`, `document_type`, `document_id`, `allocated_amount` |
+
+**Schema note:** This reference summarizes the tables and columns supplied for documentation. It does not define SQL types or prove that foreign keys, unique constraints, indexes, check constraints, triggers, or row-level security (RLS) policies exist. Confirm those details in the actual migrations or database DDL.
+
+## Accounting and Posting
+
+The ledger model separates journal headers (`journal_entries`) from journal lines (`account_transactions`). Business documents include a `posted_journal_entry_id` reference where applicable.
+
+Recommended accounting controls:
+
+1. A posted journal entry must have at least the required lines and total debits equal to total credits.
+2. The entry date must be valid for its accounting period.
+3. Posting to a closed accounting period should be blocked unless an explicit, authorized exception exists.
+4. Posting should be atomic: the business document, journal entry, journal lines, and related inventory effects should succeed or fail together.
+5. Prevent duplicate posting and use controlled reversal entries to correct posted activity.
+6. Validate that accounts, contacts, products, periods, and source documents belong to the same organization.
+
+Allowed status values and exact posting rules are application-specific and should be documented alongside the relevant business logic.
+
+## Inventory
+
+The schema separates movement history (`inventory_transactions`) from the current summary (`inventory_balances`). Product and sales line records also include fields related to inventory, sales, and cost of goods sold.
+
+Document and test the exact rules for:
+
+- Purchase receipts and stock increases
+- Sales and stock decreases
+- Purchase and sales returns
+- Inventory adjustments
+- Average-cost calculations and rounding
+- Negative stock and non-inventory products
+- Reconciliation between transaction history and balance snapshots
+
+The presence of valuation fields does not, by itself, establish which costing algorithm or transaction timing is implemented.
+
+## Organization Isolation and Security
+
+Most business tables include `organization_id`. This is useful for multi-tenant data partitioning, but tenant isolation must be enforced by database policies and application authorization.
+
+Recommended controls:
+
+- Enable and test Supabase RLS policies on tables exposed through the Supabase API.
+- Verify the authenticated user's organization membership for every read and write.
+- Never trust a client-supplied `organization_id` without server-side or database authorization.
+- Scope record access by both record ID and organization ID.
+- Validate organization ownership for every referenced record.
+- Consider organization-scoped unique constraints for account codes, product codes, contact numbers, and document numbers.
+- Keep elevated Supabase service-role credentials server-side only.
+- Store secrets in local environment files and deployment settings, never in source control.
+- Test cross-organization access explicitly.
+
+The listed `organization_users` schema does not show a role column. If role-based access is required, document where roles and permissions are stored and how they are enforced.
+
+## Technology and Deployment
+
+### Next.js
+
+Next.js is the web application framework. Follow the project’s existing routing, server/client component, and data-access conventions.
+
+### Supabase and PostgreSQL
+
+Supabase provides the PostgreSQL platform and may provide authentication or other backend services depending on configuration. Use migrations to version database changes and test schema updates in a non-production environment.
+
+### Vercel
+
+Vercel is the deployment target. Configure environment variables for each relevant environment and verify the production build and database connectivity before releasing changes.
+
+## Local Development
+
+The exact package manager, scripts, and migration commands have not been verified in this README. Check the repository's `package.json`, lockfile, and migration setup before using commands.
+
+General workflow:
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/farukislamyt/zero-erp.git
+   cd zero-erp
+   ```
+2. Install dependencies using the package manager specified by the repository.
+3. Configure the required environment variables.
+4. Apply database migrations using the project's established migration workflow.
+5. Run the development command defined in `package.json`.
+6. Run the available lint, type-check, test, and production-build scripts before submitting changes.
+
+### Environment variables
+
+Use only the variables required by the actual application. A Supabase setup may use variables such as:
+
+| Variable | Purpose | Security |
+| --- | --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project endpoint | Intended to be public |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` or a publishable key | Client-side Supabase access, if used | Must be protected by RLS and permissions |
+| `SUPABASE_SERVICE_ROLE_KEY` | Elevated server-side access, if required | Secret; server only |
+| `DATABASE_URL` | Direct PostgreSQL connection, if required by server tooling | Secret; never commit it |
+
+Do not add unused variables just because they appear in this example. Never expose service-role credentials or database passwords to browser code.
+
+## Documentation Notes
+
+The following details should be added after confirming them from the codebase:
+
+- Actual supported Node.js version and package manager
+- Exact install, development, lint, test, type-check, and build commands
+- Database migration and seed-data procedure
+- Authentication and organization membership flow
+- Implemented Supabase RLS policies
+- Document status values and posting/reversal rules
+- Inventory costing method and stock movement timing
+- Screenshots or a demo link
+- License and contribution requirements
+
+## Contributing
+
+Keep changes focused and consistent with the existing codebase. Include migrations for database changes, explain any effects on existing data, and run the available checks before opening a pull request.
+
+## License
+
+A license has not been specified in the supplied project information. Add the chosen license before distributing or reusing the project publicly.
