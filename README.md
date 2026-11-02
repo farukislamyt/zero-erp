@@ -49,7 +49,7 @@ These modules are inferred from the supplied database schema. Their availability
 
 | Table | Purpose | Notable columns |
 | --- | --- | --- |
-| `organizations` | Organization profile and defaults | `name`, `base_currency`, `timezone`, `tin`, `bin`, `is_active` |
+| `organizations` | Organization profile and defaults | `name`, `currency`, `timezone`, `tin`, `bin`, `is_active` |
 | `organization_users` | Links users to organizations | `organization_id`, `user_id`, `is_active` |
 | `units_of_measure` | Product measurement units | `name`, `is_active` |
 | `accounting_periods` | Accounting date ranges and closure state | `start_date`, `end_date`, `status`, `closed_at`, `closed_by` |
@@ -98,6 +98,179 @@ These modules are inferred from the supplied database schema. Their availability
 | `expenses` | Expense records | `expense_number`, `expense_category_id`, `contact_id`, `payable_account_id`, `expense_date`, `amount`, `status`, `posted_journal_entry_id` |
 | `payments` | Payment records and ledger accounts | `payment_number`, `payment_type`, `contact_id`, `payment_date`, `amount`, `account_id`, `settlement_account_id`, `status`, `posted_journal_entry_id` |
 | `payment_allocations` | Allocates payments to referenced documents | `payment_id`, `document_type`, `document_id`, `allocated_amount` |
+
+
+### Complete Column Reference
+
+The following lists record the columns provided for each table. Column order follows the supplied schema inventory.
+
+<details>
+<summary>organizations (14 columns)</summary>
+
+`id`, `name`, `phone`, `email`, `address`, `city`, `country`, `currency`, `timezone`, `tin`, `bin`, `is_active`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>organization_users (6 columns)</summary>
+
+`id`, `organization_id`, `user_id`, `is_active`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>units_of_measure (6 columns)</summary>
+
+`id`, `organization_id`, `name`, `is_active`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>accounting_periods (10 columns)</summary>
+
+`id`, `organization_id`, `name`, `start_date`, `end_date`, `status`, `closed_at`, `closed_by`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>accounts (13 columns)</summary>
+
+`id`, `organization_id`, `account_code`, `account_name`, `account_type`, `parent_account_id`, `normal_balance`, `is_control_account`, `is_system_account`, `is_postable`, `is_active`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>products (12 columns)</summary>
+
+`id`, `organization_id`, `product_code`, `name`, `unit_id`, `inventory_account_id`, `sales_account_id`, `cogs_account_id`, `is_active`, `created_by`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>contacts (11 columns)</summary>
+
+`id`, `organization_id`, `contact_number`, `name`, `phone`, `email`, `address`, `is_active`, `created_by`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>number_sequences (9 columns)</summary>
+
+`id`, `organization_id`, `document_type`, `prefix`, `next_number`, `padding`, `is_active`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>journal_entries (15 columns)</summary>
+
+`id`, `organization_id`, `entry_number`, `accounting_period_id`, `entry_date`, `entry_type`, `status`, `reference_type`, `reference_id`, `description`, `posted_at`, `reversal_of_id`, `created_by`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>account_transactions (10 columns)</summary>
+
+`id`, `organization_id`, `journal_entry_id`, `account_id`, `line_number`, `description`, `debit`, `credit`, `contact_id`, `created_at`
+
+</details>
+
+<details>
+<summary>purchase (14 columns)</summary>
+
+`id`, `organization_id`, `invoice_id`, `supplier_id`, `invoice_date`, `status`, `subtotal`, `discount_amount`, `total_amount`, `payable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>purchase_items (10 columns)</summary>
+
+`id`, `organization_id`, `purchase_id`, `line_number`, `product_id`, `quantity`, `unit_cost`, `line_total`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>sales (14 columns)</summary>
+
+`id`, `organization_id`, `invoice_id`, `customer_id`, `invoice_date`, `status`, `subtotal`, `discount_amount`, `total_amount`, `receivable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>sales_items (12 columns)</summary>
+
+`id`, `organization_id`, `sales_id`, `line_number`, `product_id`, `quantity`, `unit_price`, `line_total`, `cogs_unit_cost`, `cogs_total`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>inventory_balances (7 columns)</summary>
+
+`id`, `organization_id`, `product_id`, `quantity`, `average_cost`, `inventory_value`, `updated_at`
+
+</details>
+
+<details>
+<summary>inventory_transactions (16 columns)</summary>
+
+`id`, `organization_id`, `transaction_number`, `product_id`, `transaction_date`, `transaction_type`, `direction`, `quantity`, `unit_cost`, `total_value`, `reference_type`, `reference_id`, `unit_cost_before`, `average_cost_after`, `created_by`, `created_at`
+
+</details>
+
+<details>
+<summary>expense_categories (8 columns)</summary>
+
+`id`, `organization_id`, `category_code`, `name`, `expense_account_id`, `is_active`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>expenses (14 columns)</summary>
+
+`id`, `organization_id`, `expense_number`, `expense_category_id`, `contact_id`, `payable_account_id`, `expense_date`, `amount`, `description`, `status`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>payments (15 columns)</summary>
+
+`id`, `organization_id`, `payment_number`, `payment_type`, `contact_id`, `payment_date`, `amount`, `account_id`, `settlement_account_id`, `status`, `posted_journal_entry_id`, `description`, `created_by`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>payment_allocations (8 columns)</summary>
+
+`id`, `organization_id`, `payment_id`, `document_type`, `document_id`, `allocated_amount`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>purchase_returns (15 columns)</summary>
+
+`id`, `organization_id`, `return_number`, `purchase_id`, `supplier_id`, `return_date`, `status`, `subtotal`, `discount_amount`, `total_amount`, `payable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>purchase_return_items (11 columns)</summary>
+
+`id`, `organization_id`, `purchase_return_id`, `line_number`, `purchase_item_id`, `product_id`, `quantity`, `unit_cost`, `line_total`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>sales_returns (15 columns)</summary>
+
+`id`, `organization_id`, `return_number`, `sales_id`, `customer_id`, `return_date`, `status`, `subtotal`, `discount_amount`, `total_amount`, `receivable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>sales_return_items (13 columns)</summary>
+
+`id`, `organization_id`, `sales_return_id`, `line_number`, `sales_item_id`, `product_id`, `quantity`, `unit_price`, `line_total`, `cogs_unit_cost`, `cogs_total`, `created_at`, `updated_at`
+
+</details>
 
 **Schema note:** This reference summarizes the tables and columns supplied for documentation. It does not define SQL types or prove that foreign keys, unique constraints, indexes, check constraints, triggers, or row-level security (RLS) policies exist. Confirm those details in the actual migrations or database DDL.
 
