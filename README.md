@@ -20,6 +20,7 @@ This README documents the supplied schema and technology choices. Exact applicat
 
 - [Modules](#modules)
 - [Database Schema](#database-schema)
+- [Database Relationships, RPCs, and RLS](docs/DATABASE_AND_SECURITY.md)
 - [Accounting and Posting](#accounting-and-posting)
 - [Inventory](#inventory)
 - [Organization Isolation and Security](#organization-isolation-and-security)
@@ -43,6 +44,10 @@ This README documents the supplied schema and technology choices. Exact applicat
 - Organization-specific document numbering
 
 These modules are inferred from the supplied database schema. Their availability in the user interface and implementation completeness should be verified in the application.
+
+## Database Relationships, RPCs, and RLS
+
+For the relationship map, tenant integrity rules, proposed RPC catalogue, recommended RLS policy matrix, verification SQL, RBAC workflow, and test checklist, see [Database, Relationships, RPCs, and RLS](docs/DATABASE_AND_SECURITY.md). The repository inspection for this documentation pass did not confirm deployed migration/function/policy definitions, so that document clearly distinguishes supplied schema facts from design recommendations.
 
 ## Database Schema
 
