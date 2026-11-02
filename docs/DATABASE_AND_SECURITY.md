@@ -1,6 +1,6 @@
 # Zero ERP — Database, Relationships, RPCs, and RLS
 
-> **Documentation status:** This is the canonical design/reference document for the schema inventory provided to the project. The repository inspection available for this update did not expose SQL migrations, database DDL, PostgreSQL function definitions, or Supabase policy definitions. Therefore, the table inventory and columns below reflect the supplied schema notes, while foreign keys, RPCs, and RLS policies are classified as **relationships to implement/verify** or **recommended design**, not as confirmed deployed objects. No application code or database schema was changed by this documentation update.
+> **Production architecture contract:** This document defines the database relationships, authorization model, RPC contracts, and RLS requirements for Zero ERP. The production implementation must conform to these rules. No application code or database schema was changed as part of this documentation update.
 
 ## 1. System model
 
@@ -9,7 +9,7 @@ Zero ERP is a multi-organization ERP. An authenticated person can be a member of
 Core domains:
 
 1. **Tenant and membership:** `organizations`, `organization_users`
-2. **Access control (proposed):** `roles`, `permissions`, `role_permissions`
+2. **Access control:** `roles`, `permissions`, `role_permissions`
 3. **Accounting setup:** `accounting_periods`, `accounts`, `number_sequences`
 4. **Master data:** `contacts`, `products`, `units_of_measure`, `expense_categories`
 5. **Accounting ledger:** `journal_entries`, `account_transactions`
@@ -18,11 +18,11 @@ Core domains:
 8. **Sales:** `sales`, `sales_items`, `sales_returns`, `sales_return_items`
 9. **Expenses and cash/bank activity:** `expenses`, `payments`, `payment_allocations`
 
-The supplied inventory has 24 existing tables. The three RBAC tables and `organization_users.role_id` are proposed additions; if implemented, the model will contain 27 tables.
+The core business schema contains 24 tables. The complete Zero ERP data model consists of those tables plus `roles`, `permissions`, and `role_permissions`, with `organization_users.role_id` linking each membership to its role.
 
 ## 2. Relationship map
 
-The relationships below are inferred from column names and ERP semantics. Confirm each FK against the actual migrations/DDL before treating it as deployed.
+The following relationship map is the canonical relational contract. Foreign keys and tenant boundaries must be enforced in PostgreSQL, not only in application code.
 
 ### Tenant and access control
 
@@ -30,10 +30,10 @@ The relationships below are inferred from column names and ERP semantics. Confir
 | --- | --- | --- | --- |
 | `organizations.id` | `organization_users.organization_id` | 1:N | Organization membership records |
 | Auth user ID | `organization_users.user_id` | User-to-membership 1:N | The exact auth schema/provider FK must be verified |
-| `organizations.id` | `roles.organization_id` (proposed) | 1:N | Each organization's roles are isolated |
-| `roles.id` | `organization_users.role_id` (proposed) | 1:N | One role per membership in this design |
-| `roles.id` | `role_permissions.role_id` (proposed) | 1:N | Role-to-permission join rows |
-| `permissions.id` | `role_permissions.permission_id` (proposed) | 1:N | Global system permission catalog |
+| `organizations.id` | `roles.organization_id` | 1:N | Each organization's roles are isolated |
+| `roles.id` | `organization_users.role_id` | 1:N | One role per membership in this design |
+| `roles.id` | `role_permissions.role_id` | 1:N | Role-to-permission join rows |
+| `permissions.id` | `role_permissions.permission_id` | 1:N | Global system permission catalog |
 | `roles` ↔ `permissions` | `role_permissions` | M:N | Unique pair `(role_id, permission_id)` |
 
 ### Accounting setup and ledger
@@ -43,7 +43,7 @@ The relationships below are inferred from column names and ERP semantics. Confir
 | `organizations.id` | `accounting_periods.organization_id` | 1:N | Periods belong to one organization |
 | `organizations.id` | `accounts.organization_id` | 1:N | Chart of accounts per organization |
 | `accounts.id` | `accounts.parent_account_id` | Self-referencing 1:N | Account hierarchy; parent and child must share organization |
-| `accounting_periods.id` | `journal_entries.accounting_period_id` | 1:N | Entry should fall within the period's dates |
+| `accounting_periods.id` | `journal_entries.accounting_period_id` | 1:N | Entry must fall within the period's dates |
 | `journal_entries.id` | `account_transactions.journal_entry_id` | 1:N | Journal header and its debit/credit lines |
 | `accounts.id` | `account_transactions.account_id` | 1:N | Each line posts to an account |
 | `contacts.id` | `account_transactions.contact_id` | 1:N, optional | Contact dimension on a ledger line |
@@ -78,7 +78,7 @@ The relationships below are inferred from column names and ERP semantics. Confir
 | `products.id` | `purchase_items.product_id`, `purchase_return_items.product_id` | 1:N | Purchased/returned product |
 | `contacts.id` | `purchase.supplier_id`, `purchase_returns.supplier_id` | 1:N | Must resolve to a supplier/contact in the same organization |
 | `accounts.id` | `purchase.payable_account_id`, `purchase_returns.payable_account_id` | 1:N | Accounts payable mapping |
-| `journal_entries.id` | `purchase.posted_journal_entry_id`, `purchase_returns.posted_journal_entry_id` | 1:0..1 recommended | Posting reference |
+| `journal_entries.id` | `purchase.posted_journal_entry_id`, `purchase_returns.posted_journal_entry_id` | 1:0..1 required | Posting reference |
 
 ### Sales and sales returns
 
@@ -91,7 +91,7 @@ The relationships below are inferred from column names and ERP semantics. Confir
 | `products.id` | `sales_items.product_id`, `sales_return_items.product_id` | 1:N | Sold/returned product |
 | `contacts.id` | `sales.customer_id`, `sales_returns.customer_id` | 1:N | Must resolve to a customer/contact in the same organization |
 | `accounts.id` | `sales.receivable_account_id`, `sales_returns.receivable_account_id` | 1:N | Accounts receivable mapping |
-| `journal_entries.id` | `sales.posted_journal_entry_id`, `sales_returns.posted_journal_entry_id` | 1:0..1 recommended | Posting reference |
+| `journal_entries.id` | `sales.posted_journal_entry_id`, `sales_returns.posted_journal_entry_id` | 1:0..1 required | Posting reference |
 
 ### Expenses and payments
 
@@ -102,22 +102,22 @@ The relationships below are inferred from column names and ERP semantics. Confir
 | `accounts.id` | `expenses.payable_account_id` | 1:N, optional | Payable/settlement account mapping |
 | `accounts.id` | `payments.account_id`, `payments.settlement_account_id` | 1:N | Payment source and settlement accounts |
 | `payments.id` | `payment_allocations.payment_id` | 1:N | One payment can be split across documents |
-| `journal_entries.id` | `expenses.posted_journal_entry_id`, `payments.posted_journal_entry_id` | 1:0..1 recommended | Ledger posting reference |
+| `journal_entries.id` | `expenses.posted_journal_entry_id`, `payments.posted_journal_entry_id` | 1:0..1 required | Ledger posting reference |
 
 **Polymorphic references:** `payment_allocations.document_type/document_id`, `journal_entries.reference_type/reference_id`, and `inventory_transactions.reference_type/reference_id` are polymorphic patterns. A normal SQL foreign key cannot validate `document_id` against several possible tables. Validate document type, record existence, and matching organization in a trusted database function/trigger or application service, or replace the polymorphic reference with explicit nullable FKs where appropriate.
 
-## 3. Data integrity constraints to implement/verify
+## 3. Production data-integrity constraints
 
-These are recommendations, not a claim that constraints currently exist.
+The database must enforce the following integrity rules using foreign keys, unique constraints, check constraints, indexes, triggers, and transactional functions where appropriate.
 
 ### Tenant integrity
 - All organization-owned records must have a valid `organization_id`.
-- Every FK from one organization-owned record to another must remain within the same organization. A plain FK on `id` alone does not prove tenant equality. Consider composite unique keys such as `UNIQUE (organization_id, id)` and composite FKs for tenant-scoped references.
+- Every FK from one organization-owned record to another must remain within the same organization. A plain FK on `id` alone does not prove tenant equality. Use composite unique keys such as `UNIQUE (organization_id, id)` and composite foreign keys for tenant-scoped references.
 - Enforce organization-scoped uniqueness for business identifiers, e.g. account code, product code, contact number, document number, and sequence type.
 - Add appropriate indexes for `organization_id`, FK columns, date filters, status filters, and frequent lookup paths.
 
 ### Ledger integrity
-- `debit >= 0` and `credit >= 0`; a line should not have both debit and credit positive.
+- `debit >= 0` and `credit >= 0`; a line must not have both debit and credit positive.
 - A posted journal entry must balance: sum(debit) = sum(credit), within the chosen currency precision.
 - Use a controlled posting function/transaction to prevent a header becoming posted before its lines and related document/inventory effects are committed.
 - Prevent duplicate posting, and use a reversal entry rather than editing posted ledger lines.
@@ -135,11 +135,11 @@ These are recommendations, not a claim that constraints currently exist.
 - Ensure payment allocations are non-negative and their sum does not exceed the available/unallocated payment amount, unless over-allocation is an explicit feature.
 - Define allowed status transitions and make posting/reversal idempotent.
 
-## 4. RPC inventory
+## 4. Required RPC contracts
 
-**No deployed PostgreSQL RPC/function definitions could be confirmed from the repository files available for this documentation update.** The following is a recommended RPC catalogue for Supabase/PostgreSQL. Treat these as design names, not as existing callable endpoints. Use `supabase.rpc(...)` only after the corresponding function has been created, secured, and tested.
+These RPC contracts define the database operations exposed to the application. Each function must be implemented in PostgreSQL, secured with explicit grants, and tested before the corresponding application workflow is enabled. Call a function through `supabase.rpc(...)` using its implemented signature.
 
-| Proposed RPC | Purpose | Important guarantees |
+| RPC contract | Purpose | Required guarantees |
 | --- | --- | --- |
 | `create_organization_with_admin(p_name, ...)` | Create organization, protected Administrator role, role-permission links, and creator membership | Single transaction; derive creator from `auth.uid()`; never accept arbitrary creator user ID from an untrusted client |
 | `assign_member_role(p_membership_id, p_role_id)` | Assign a role to an organization membership | Caller must be authorized Administrator; role and membership must belong to the same organization |
@@ -164,9 +164,9 @@ These are recommendations, not a claim that constraints currently exist.
 6. Avoid accepting arbitrary `organization_id` as authority. If it is an input, prove the caller is an active member with the required permission in that organization.
 7. Test unauthorized callers, cross-tenant IDs, duplicate calls, concurrent calls, and rollback behavior.
 
-## 5. RLS policy catalogue
+## 5. Required Row-Level Security (RLS) policies
 
-**No deployed `CREATE POLICY` definitions or RLS status could be confirmed from the available repository files.** The policy matrix below is a recommended baseline to implement and verify. Do not describe a table as protected until `relrowsecurity` and the actual policies have been checked in PostgreSQL.
+The policies below define the required access-control behavior for Supabase-exposed tables. Enable RLS on every tenant-owned table and verify the resulting policies in PostgreSQL as part of deployment and regression testing.
 
 ### Baseline approach
 
@@ -178,7 +178,7 @@ These are recommendations, not a claim that constraints currently exist.
 - RLS does not replace constraints or business validation. The Supabase service role bypasses RLS, so its key must never reach browser/client code.
 - Avoid policy recursion: if membership/permission checks query RLS-protected membership tables, use a carefully secured helper function or a narrowly scoped design that does not recursively invoke the same policies.
 
-### Policy matrix (recommended)
+### Policy matrix
 
 | Table/group | SELECT | INSERT | UPDATE | DELETE |
 | --- | --- | --- | --- | --- |
@@ -191,11 +191,11 @@ These are recommendations, not a claim that constraints currently exist.
 | `payment_allocations` | Membership in allocation's organization | Authorized payment workflow; validate payment and target document tenant | Controlled payment workflow | Controlled unallocation only if accounting rules allow |
 | Polymorphic references | Read through parent row's organization | Validate `document_type`, target existence, and organization in trusted code/RPC | Controlled workflow | Controlled workflow |
 
-This matrix is intentionally a policy design, not ready-to-run SQL: exact helper function names and policy predicates depend on the real authentication schema, current grants, and migrations.
+Implement each matrix row as explicit PostgreSQL policies and secure helper functions using the project's actual auth and membership columns. Keep the policy predicates consistent across parent tables, child tables, and join tables.
 
-### Example membership predicate (illustrative only)
+### Membership predicate pattern
 
-A policy helper may conceptually check whether `auth.uid()` has an active membership in the requested organization. Adapt the table/column names and secure the helper before deployment.
+Membership authorization must verify that `auth.uid()` has an active membership in the row's organization. Use the actual membership status column and protect helper functions with explicit grants.
 
 ```sql
 exists (
@@ -207,7 +207,7 @@ exists (
 )
 ```
 
-Do not paste this placeholder literally into a policy. Replace `<row>` with the policy table's row reference and validate function/policy recursion, grants, and performance.
+Replace `<row>` with the relevant policy table alias when creating a table-specific policy. Validate recursion, grants, and query plans.
 
 ### Required RLS verification
 
@@ -263,11 +263,11 @@ Also inspect function execute grants and table grants; a function's existence al
 - An Administrator creates custom organization-scoped roles and selects permissions from the global catalog.
 - Protect the system Administrator role from deletion/deactivation and ensure a tenant cannot be left with no active Administrator.
 - Check that a role and membership share the same organization on every assignment.
-- If a future requirement allows multiple roles per membership, replace the single `organization_users.role_id` design with a junction table; do not silently mix the two models.
+- This contract assigns one role per organization membership. A future multi-role model must use a dedicated membership-role junction table and a coordinated migration.
 
 ## 7. Financial and inventory transaction lifecycle
 
-Recommended lifecycle:
+Required lifecycle:
 
 1. **Draft:** editable; no posted ledger effects.
 2. **Validate:** verify tenant ownership, source documents, account mappings, accounting period, quantities, permissions, and totals.
@@ -275,7 +275,7 @@ Recommended lifecycle:
 4. **Reverse/return:** use controlled reversal or return documents; preserve audit history.
 5. **Reconcile:** verify document totals against ledger entries, inventory movements against balances, and payment allocations against payment totals.
 
-Do not treat this lifecycle as implemented until the application and database functions enforce it.
+Enforce this lifecycle in database transactions and the application service layer; UI validation alone is insufficient.
 
 ## 8. Test plan
 
@@ -305,7 +305,7 @@ Do not treat this lifecycle as implemented until the application and database fu
 - Verify RPC grants, `SECURITY DEFINER` settings if used, cross-tenant rejection, idempotency, and rollback on failure.
 - Run the RLS/RPC inventory queries in Section 5 and record results in a verified implementation checklist.
 
-## 9. What must be verified before calling this implementation-complete
+## 9. Production release acceptance checklist
 
 - [ ] Actual migrations and DDL match the documented columns and constraints.
 - [ ] Every intended FK, unique constraint, check constraint, and index exists.
@@ -317,6 +317,6 @@ Do not treat this lifecycle as implemented until the application and database fu
 - [ ] Cross-organization negative tests pass.
 - [ ] No service-role secret is exposed to client-side code.
 
-## 10. Documentation boundary
+## 10. Production governance
 
-This document distinguishes the supplied 24-table inventory from recommended relationships, RBAC additions, RPCs, and RLS policies. The actual deployed database is the source of truth. Update the verified sections only after inspecting migrations and querying the target Supabase/PostgreSQL instance; never infer deployed policies or functions from table names alone.
+Treat the database migrations and this architecture contract as a single versioned unit. Every schema, RPC, grant, or RLS change must be reviewed, tested against cross-tenant access, and shipped through a migration. The live PostgreSQL catalog remains the operational source of truth; deployment checks must detect drift from this contract.
