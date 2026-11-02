@@ -22,7 +22,7 @@ $$;
 
 -- Tenant root.
 create table public.organizations (
-  id uuid primary key default extensions.gen_random_uuid(),
+  id uuid primary key default pg_catalog.gen_random_uuid(),
   name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 160),
   phone text,
   email text,
@@ -40,7 +40,7 @@ create table public.organizations (
 );
 
 create table public.roles (
-  id uuid primary key default extensions.gen_random_uuid(),
+  id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
   name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 100),
   status text not null default 'active' check (status in ('active', 'inactive')),
@@ -53,7 +53,7 @@ create table public.roles (
 
 -- Global, system-managed permission catalog.
 create table public.permissions (
-  id uuid primary key default extensions.gen_random_uuid(),
+  id uuid primary key default pg_catalog.gen_random_uuid(),
   permission_key text not null unique
     check (permission_key ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'),
   name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 120),
@@ -64,7 +64,7 @@ create table public.permissions (
 );
 
 create table public.organization_users (
-  id uuid primary key default extensions.gen_random_uuid(),
+  id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade,
   role_id uuid not null,
@@ -80,7 +80,7 @@ create table public.organization_users (
 );
 
 create table public.role_permissions (
-  id uuid primary key default extensions.gen_random_uuid(),
+  id uuid primary key default pg_catalog.gen_random_uuid(),
   role_id uuid not null references public.roles(id) on delete cascade,
   permission_id uuid not null references public.permissions(id) on delete restrict,
   created_at timestamptz not null default pg_catalog.now(),
@@ -88,7 +88,7 @@ create table public.role_permissions (
 );
 
 create table public.accounting_periods (
-  id uuid primary key default extensions.gen_random_uuid(),
+  id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
   name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 100),
   start_date date not null,
@@ -106,7 +106,7 @@ create table public.accounting_periods (
 );
 
 create table public.accounts (
-  id uuid primary key default extensions.gen_random_uuid(),
+  id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
   account_code text not null check (pg_catalog.length(pg_catalog.btrim(account_code)) between 1 and 40),
   account_name text not null check (pg_catalog.length(pg_catalog.btrim(account_name)) between 1 and 160),
@@ -130,7 +130,7 @@ create table public.accounts (
 );
 
 create table public.units_of_measure (
-  id uuid primary key default extensions.gen_random_uuid(),
+  id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
   name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 80),
   is_active boolean not null default true,
@@ -141,7 +141,7 @@ create table public.units_of_measure (
 );
 
 create table public.contacts (
-  id uuid primary key default extensions.gen_random_uuid(),
+  id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
   contact_number text not null check (pg_catalog.length(pg_catalog.btrim(contact_number)) between 1 and 50),
   name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 180),
@@ -157,7 +157,7 @@ create table public.contacts (
 );
 
 create table public.products (
-  id uuid primary key default extensions.gen_random_uuid(),
+  id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
   product_code text not null check (pg_catalog.length(pg_catalog.btrim(product_code)) between 1 and 60),
   name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 180),
@@ -190,7 +190,7 @@ create table public.products (
 );
 
 create table public.expense_categories (
-  id uuid primary key default extensions.gen_random_uuid(),
+  id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
   category_code text not null check (pg_catalog.length(pg_catalog.btrim(category_code)) between 1 and 40),
   name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 120),
@@ -207,7 +207,7 @@ create table public.expense_categories (
 );
 
 create table public.number_sequences (
-  id uuid primary key default extensions.gen_random_uuid(),
+  id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
   document_type text not null check (pg_catalog.length(pg_catalog.btrim(document_type)) between 1 and 60),
   prefix text not null default '',
