@@ -8,7 +8,7 @@ begin;
 
 create table public.journal_entries (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   entry_number text not null check (pg_catalog.length(pg_catalog.btrim(entry_number)) between 1 and 80),
   accounting_period_id uuid not null,
   entry_date date not null,
@@ -40,7 +40,7 @@ create table public.journal_entries (
 
 create table public.account_transactions (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   journal_entry_id uuid not null,
   account_id uuid not null,
   line_number integer not null check (line_number > 0),
@@ -70,7 +70,7 @@ create table public.account_transactions (
 
 create table public.inventory_transactions (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   transaction_number text not null check (pg_catalog.length(pg_catalog.btrim(transaction_number)) between 1 and 80),
   product_id uuid not null,
   transaction_date date not null,
@@ -96,7 +96,7 @@ create table public.inventory_transactions (
 
 create table public.inventory_balances (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   product_id uuid not null,
   quantity numeric(20, 6) not null default 0,
   average_cost numeric(20, 6) not null default 0 check (average_cost >= 0),
@@ -112,7 +112,7 @@ create table public.inventory_balances (
 
 create table public.purchase (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   invoice_id text not null check (pg_catalog.length(pg_catalog.btrim(invoice_id)) between 1 and 80),
   supplier_id uuid not null,
   invoice_date date not null,
@@ -140,7 +140,7 @@ create table public.purchase (
 
 create table public.purchase_items (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   purchase_id uuid not null,
   line_number integer not null check (line_number > 0),
   product_id uuid not null,
@@ -163,7 +163,7 @@ create table public.purchase_items (
 
 create table public.purchase_returns (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   return_number text not null check (pg_catalog.length(pg_catalog.btrim(return_number)) between 1 and 80),
   purchase_id uuid not null,
   supplier_id uuid not null,
@@ -196,7 +196,7 @@ create table public.purchase_returns (
 
 create table public.purchase_return_items (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   purchase_return_id uuid not null,
   line_number integer not null check (line_number > 0),
   purchase_item_id uuid not null,
@@ -224,7 +224,7 @@ create table public.purchase_return_items (
 
 create table public.sales (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   invoice_id text not null check (pg_catalog.length(pg_catalog.btrim(invoice_id)) between 1 and 80),
   customer_id uuid not null,
   invoice_date date not null,
@@ -252,7 +252,7 @@ create table public.sales (
 
 create table public.sales_items (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   sales_id uuid not null,
   line_number integer not null check (line_number > 0),
   product_id uuid not null,
@@ -277,7 +277,7 @@ create table public.sales_items (
 
 create table public.sales_returns (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   return_number text not null check (pg_catalog.length(pg_catalog.btrim(return_number)) between 1 and 80),
   sales_id uuid not null,
   customer_id uuid not null,
@@ -310,7 +310,7 @@ create table public.sales_returns (
 
 create table public.sales_return_items (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   sales_return_id uuid not null,
   line_number integer not null check (line_number > 0),
   sales_item_id uuid not null,
@@ -340,7 +340,7 @@ create table public.sales_return_items (
 
 create table public.expenses (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   expense_number text not null check (pg_catalog.length(pg_catalog.btrim(expense_number)) between 1 and 80),
   expense_category_id uuid not null,
   contact_id uuid,
@@ -371,7 +371,7 @@ create table public.expenses (
 
 create table public.payments (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   payment_number text not null check (pg_catalog.length(pg_catalog.btrim(payment_number)) between 1 and 80),
   payment_type text not null check (payment_type in ('receipt', 'payment', 'transfer', 'refund')),
   contact_id uuid,
@@ -403,7 +403,7 @@ create table public.payments (
 
 create table public.payment_allocations (
   id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete restrict,
   payment_id uuid not null,
   document_type text not null
     check (document_type in ('purchase', 'purchase_return', 'sales', 'sales_return', 'expense')),
