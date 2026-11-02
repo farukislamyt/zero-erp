@@ -1,8 +1,136 @@
-# Zero ERP — Database, Relationships, RPCs, and RLS
+# Zero ERP — Database Blueprint
 
-> **Production architecture contract:** This document defines the database relationships, authorization model, RPC contracts, and RLS requirements for Zero ERP. The production implementation must conform to these rules. No application code or database schema was changed as part of this documentation update.
+> **Purpose:** This is the canonical logical database blueprint for Zero ERP. It defines the target relational model, table responsibilities, relationships, tenant boundaries, integrity rules, transaction boundaries, access-control model, and database verification requirements. Database migrations and deployed PostgreSQL objects must implement this contract.
 
-## 1. System model
+## Blueprint at a glance
+
+- **Platform:** PostgreSQL through Supabase.
+- **Tenant model:** One organization owns each business record; users access organizations through membership.
+- **Core business model:** 24 business tables across organization setup, accounting, master data, inventory, purchasing, sales, expenses, and payments.
+- **Access-control model:** Three RBAC tables—`roles`, `permissions`, and `role_permissions`—plus `organization_users.role_id`.
+- **Ledger model:** Journal headers and debit/credit lines are separate; posted financial activity is corrected through controlled reversals.
+- **Inventory model:** Immutable movement history is the audit trail; `inventory_balances` is the current stock/valuation snapshot.
+- **Security model:** Deny-by-default authorization, organization-scoped foreign-key integrity, explicit RPC grants, and Row-Level Security (RLS).
+
+This document is the design contract for database implementation and review. It does not claim that every constraint, function, index, or RLS policy described here is already deployed.
+
+## 1. Logical entity-relationship diagram
+
+The diagram shows the primary relationships between core entities. Relationship labels represent logical cardinality; the detailed relationship tables below define the required tenant-scoped constraints.
+
+```mermaid
+erDiagram
+  ORGANIZATIONS ||--o{ ORGANIZATION_USERS : has
+  ORGANIZATIONS ||--o{ ROLES : defines
+  ROLES ||--o{ ORGANIZATION_USERS : assigned_to
+  ROLES ||--o{ ROLE_PERMISSIONS : grants
+  PERMISSIONS ||--o{ ROLE_PERMISSIONS : included_in
+  ORGANIZATIONS ||--o{ ACCOUNTING_PERIODS : owns
+  ORGANIZATIONS ||--o{ ACCOUNTS : owns
+  ACCOUNTS o|--o{ ACCOUNTS : parent_of
+  ACCOUNTING_PERIODS ||--o{ JOURNAL_ENTRIES : contains
+  JOURNAL_ENTRIES ||--|{ ACCOUNT_TRANSACTIONS : has_lines
+  ACCOUNTS ||--o{ ACCOUNT_TRANSACTIONS : posted_to
+  ORGANIZATIONS ||--o{ CONTACTS : owns
+  ORGANIZATIONS ||--o{ PRODUCTS : owns
+  UNITS_OF_MEASURE ||--o{ PRODUCTS : measures
+  ORGANIZATIONS ||--o{ UNITS_OF_MEASURE : defines
+  ORGANIZATIONS ||--o{ INVENTORY_BALANCES : snapshots
+  PRODUCTS ||--o{ INVENTORY_BALANCES : has_balance
+  PRODUCTS ||--o{ INVENTORY_TRANSACTIONS : moves
+  ORGANIZATIONS ||--o{ PURCHASE : owns
+  PURCHASE ||--|{ PURCHASE_ITEMS : contains
+  PURCHASE ||--o{ PURCHASE_RETURNS : may_have_returns
+  PURCHASE_RETURNS ||--|{ PURCHASE_RETURN_ITEMS : contains
+  ORGANIZATIONS ||--o{ SALES : owns
+  SALES ||--|{ SALES_ITEMS : contains
+  SALES ||--o{ SALES_RETURNS : may_have_returns
+  SALES_RETURNS ||--|{ SALES_RETURN_ITEMS : contains
+  ORGANIZATIONS ||--o{ EXPENSES : owns
+  EXPENSE_CATEGORIES ||--o{ EXPENSES : classifies
+  ORGANIZATIONS ||--o{ PAYMENTS : owns
+  PAYMENTS ||--o{ PAYMENT_ALLOCATIONS : allocates
+  ORGANIZATIONS ||--o{ NUMBER_SEQUENCES : numbers
+```
+
+The diagram is a logical overview, not executable DDL. Use the relationship matrix and schema inventory in this document when defining exact foreign keys, composite tenant keys, optionality, and uniqueness.
+
+## 2. Database design standards
+
+### 2.1 Primary keys and tenant ownership
+
+1. Every table has a stable primary key named `id`; use the existing project convention for its SQL type consistently.
+2. Every organization-owned table carries `organization_id`, directly or through a parent relation where explicitly justified. Direct ownership columns are preferred for tenant-scoped query performance and policy clarity.
+3. Use composite uniqueness such as `UNIQUE (organization_id, id)` on tenant-owned parent records where needed to support composite foreign keys.
+4. For every reference between organization-owned records, enforce both record identity and organization equality at the database layer. An FK to `id` alone does not prevent cross-organization references.
+5. Use `NOT NULL` for required business attributes and foreign keys; use nullable columns only where the workflow explicitly permits absence.
+6. Store timestamps consistently as timezone-aware timestamps, monetary values as fixed-precision `numeric` rather than floating-point, and calendar-only business dates as `date`.
+7. Define explicit `CHECK` constraints for non-negative amounts, valid quantity/sign conventions, allowed numeric ranges, and valid date ranges where applicable.
+8. Use unique constraints for organization-scoped business identifiers and document numbers. Do not rely on a pre-insert application query to prevent duplicates.
+
+### 2.2 Naming and lifecycle conventions
+
+- Use lowercase `snake_case` for schemas, tables, columns, indexes, constraints, and functions.
+- Name foreign-key constraints with a predictable pattern such as `<table>_<column>_fkey`; name indexes to reflect table and indexed columns.
+- Keep created/updated timestamps consistent. Update `updated_at` through a trusted database trigger or a single consistent server-side write path.
+- Keep posted accounting and inventory movement history auditable. Do not hard-delete posted financial records or movement history.
+- Use explicit status values and documented state transitions. Reject unknown states at the database boundary.
+- Store document numbers as business identifiers, not as primary keys.
+- Treat polymorphic references as a deliberate exception; validate target type, existence, and tenant ownership in a trusted database workflow.
+
+### 2.3 Data ownership classes
+
+| Class | Tables | Required boundary |
+| --- | --- | --- |
+| Tenant roots and membership | `organizations`, `organization_users` | Membership is organization-specific; organization creation and initial administrator assignment are atomic |
+| Tenant configuration | `accounting_periods`, `accounts`, `number_sequences`, `units_of_measure`, `expense_categories` | Every record belongs to one organization |
+| Global access catalog | `permissions` | System-managed catalog; no tenant client writes |
+| Tenant access configuration | `roles`, `role_permissions` | Role and membership must belong to the same organization |
+| Master data | `contacts`, `products` | All linked records must share organization ownership |
+| Financial ledger | `journal_entries`, `account_transactions` | Balanced, period-valid, immutable after posting except controlled reversal |
+| Inventory | `inventory_transactions`, `inventory_balances` | Movement history and balance snapshot updated atomically |
+| Commercial documents | `purchase`, `purchase_items`, `purchase_returns`, `purchase_return_items`, `sales`, `sales_items`, `sales_returns`, `sales_return_items` | Header, lines, counterparties, products, accounts, and posting entries must share the same organization |
+| Cash and expenses | `expenses`, `payments`, `payment_allocations` | Validate account ownership, allocation targets, and posting effects |
+
+## 3. Schema dependency and implementation order
+
+Create or migrate database objects in dependency order so foreign keys and policy helpers can be established without circular deployment failures.
+
+1. **Platform prerequisites:** confirm the Supabase Auth user relation and the project's UUID/key conventions.
+2. **Tenant foundation:** `organizations`, then `organization_users`.
+3. **RBAC catalog:** `permissions`, `roles`, `role_permissions`; add and validate `organization_users.role_id`.
+4. **Organization setup:** `accounting_periods`, `accounts`, `units_of_measure`, `number_sequences`.
+5. **Master data:** `contacts`, `products`, `expense_categories`.
+6. **Ledger foundation:** `journal_entries`, `account_transactions`; then add valid document-to-journal references.
+7. **Inventory:** `inventory_transactions`, `inventory_balances`.
+8. **Purchasing:** `purchase`, `purchase_items`, `purchase_returns`, `purchase_return_items`.
+9. **Sales:** `sales`, `sales_items`, `sales_returns`, `sales_return_items`.
+10. **Expenses and payments:** `expenses`, `payments`, `payment_allocations`.
+11. **Integrity and performance:** composite tenant foreign keys, unique/check constraints, indexes, triggers, and validation queries.
+12. **Authorization:** helper functions, RLS policies, explicit function grants, and cross-tenant regression tests.
+13. **Transactional operations:** posting, reversal, allocation, period closure, and number allocation RPCs.
+14. **Release validation:** apply to a clean test database, migrate representative existing data, run integrity/security tests, and verify rollback procedures before production deployment.
+
+Where references form a dependency cycle—for example, business documents pointing to journal entries while journal entries reference source documents—create the base tables first and add the later foreign keys in a subsequent migration.
+
+## 4. Canonical table inventory
+
+The data model contains 24 core business tables plus three RBAC tables. The complete column reference later in this document is the canonical inventory of documented fields. Use actual migration DDL to confirm SQL types, defaults, nullability, and deployed constraints.
+
+| Domain | Tables | Main responsibility |
+| --- | --- | --- |
+| Organization | `organizations`, `organization_users` | Tenant identity and user membership |
+| RBAC | `roles`, `permissions`, `role_permissions` | Role definitions and granular permission assignment |
+| Accounting setup | `accounting_periods`, `accounts`, `number_sequences` | Period control, chart of accounts, document numbering |
+| Master data | `contacts`, `products`, `units_of_measure`, `expense_categories` | Shared business entities and classification |
+| General ledger | `journal_entries`, `account_transactions` | Journal headers and debit/credit lines |
+| Inventory | `inventory_transactions`, `inventory_balances` | Auditable stock movements and current balance |
+| Purchasing | `purchase`, `purchase_items`, `purchase_returns`, `purchase_return_items` | Supplier invoices and purchase returns |
+| Sales | `sales`, `sales_items`, `sales_returns`, `sales_return_items` | Customer invoices and sales returns |
+| Expense and payment | `expenses`, `payments`, `payment_allocations` | Expenses, settlements, and document allocations |
+
+
+## 5. System model
 
 Zero ERP is a multi-organization ERP. An authenticated person can be a member of one or more organizations. Every business operation must be scoped to the active organization, and every referenced business record must belong to that same organization.
 
@@ -20,7 +148,7 @@ Core domains:
 
 The core business schema contains 24 tables. The complete Zero ERP data model consists of those tables plus `roles`, `permissions`, and `role_permissions`, with `organization_users.role_id` linking each membership to its role.
 
-## 2. Relationship map
+## 6. Relationship map
 
 The following relationship map is the canonical relational contract. Foreign keys and tenant boundaries must be enforced in PostgreSQL, not only in application code.
 
@@ -106,7 +234,7 @@ The following relationship map is the canonical relational contract. Foreign key
 
 **Polymorphic references:** `payment_allocations.document_type/document_id`, `journal_entries.reference_type/reference_id`, and `inventory_transactions.reference_type/reference_id` are polymorphic patterns. A normal SQL foreign key cannot validate `document_id` against several possible tables. Validate document type, record existence, and matching organization in a trusted database function/trigger or application service, or replace the polymorphic reference with explicit nullable FKs where appropriate.
 
-## 3. Production data-integrity constraints
+## 7. Production data-integrity constraints
 
 The database must enforce the following integrity rules using foreign keys, unique constraints, check constraints, indexes, triggers, and transactional functions where appropriate.
 
@@ -135,7 +263,7 @@ The database must enforce the following integrity rules using foreign keys, uniq
 - Ensure payment allocations are non-negative and their sum does not exceed the available/unallocated payment amount, unless over-allocation is an explicit feature.
 - Define allowed status transitions and make posting/reversal idempotent.
 
-## 4. Required RPC contracts
+## 8. Required RPC contracts
 
 These RPC contracts define the database operations exposed to the application. Each function must be implemented in PostgreSQL, secured with explicit grants, and tested before the corresponding application workflow is enabled. Call a function through `supabase.rpc(...)` using its implemented signature.
 
@@ -164,7 +292,7 @@ These RPC contracts define the database operations exposed to the application. E
 6. Avoid accepting arbitrary `organization_id` as authority. If it is an input, prove the caller is an active member with the required permission in that organization.
 7. Test unauthorized callers, cross-tenant IDs, duplicate calls, concurrent calls, and rollback behavior.
 
-## 5. Required Row-Level Security (RLS) policies
+## 9. Required Row-Level Security (RLS) policies
 
 The policies below define the required access-control behavior for Supabase-exposed tables. Enable RLS on every tenant-owned table and verify the resulting policies in PostgreSQL as part of deployment and regression testing.
 
@@ -247,7 +375,7 @@ order by p.proname;
 
 Also inspect function execute grants and table grants; a function's existence alone does not mean it is safely exposed or callable from Supabase RPC.
 
-## 6. RBAC workflow
+## 10. RBAC workflow
 
 ### Organization creation
 1. Authenticated creator requests organization creation.
@@ -265,7 +393,7 @@ Also inspect function execute grants and table grants; a function's existence al
 - Check that a role and membership share the same organization on every assignment.
 - This contract assigns one role per organization membership. A future multi-role model must use a dedicated membership-role junction table and a coordinated migration.
 
-## 7. Financial and inventory transaction lifecycle
+## 11. Financial and inventory transaction lifecycle
 
 Required lifecycle:
 
@@ -277,7 +405,7 @@ Required lifecycle:
 
 Enforce this lifecycle in database transactions and the application service layer; UI validation alone is insufficient.
 
-## 8. Test plan
+## 12. Test plan
 
 ### Tenant isolation
 - User in organization A cannot read, update, delete, or infer rows in organization B.
@@ -305,7 +433,7 @@ Enforce this lifecycle in database transactions and the application service laye
 - Verify RPC grants, `SECURITY DEFINER` settings if used, cross-tenant rejection, idempotency, and rollback on failure.
 - Run the RLS/RPC inventory queries in Section 5 and record results in a verified implementation checklist.
 
-## 9. Production release acceptance checklist
+## 13. Production release acceptance checklist
 
 - [ ] Actual migrations and DDL match the documented columns and constraints.
 - [ ] Every intended FK, unique constraint, check constraint, and index exists.
@@ -317,6 +445,6 @@ Enforce this lifecycle in database transactions and the application service laye
 - [ ] Cross-organization negative tests pass.
 - [ ] No service-role secret is exposed to client-side code.
 
-## 10. Production governance
+## 14. Production governance
 
 Treat the database migrations and this architecture contract as a single versioned unit. Every schema, RPC, grant, or RLS change must be reviewed, tested against cross-tenant access, and shipped through a migration. The live PostgreSQL catalog remains the operational source of truth; deployment checks must detect drift from this contract.
