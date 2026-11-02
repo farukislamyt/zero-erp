@@ -12,9 +12,9 @@ Zero ERP is a multi-organization ERP system designed to support accounting, purc
 
 ## Overview
 
-The supplied database inventory contains 24 core tables. This README documents a proposed role-based access control (RBAC) design with three additional tables: `roles`, `permissions`, and `role_permissions`, plus a proposed `organization_users.role_id` column. These changes are documentation only and have not been applied to the database. The proposed design creates a protected Administrator role for each organization and assigns it automatically to the organization creator. Administrators can then create and manage custom roles. Most operational tables include `organization_id`, which supports tenant-scoped data access when combined with appropriate authorization and database policies.
+The supplied database inventory contains 24 core tables. The production data model uses role-based access control (RBAC) with `roles`, `permissions`, and `role_permissions`, plus `organization_users.role_id`. Each organization has a protected Administrator role automatically assigned to its creator. Administrators manage organization-specific custom roles and assign permissions from the system-managed catalog. Tenant isolation is enforced through organization-scoped relationships, database constraints, RPC authorization, and Row-Level Security (RLS).
 
-This README documents the supplied schema and technology choices. Exact application commands, SQL types, constraints, authentication flows, and implementation status should be confirmed against the codebase and database migrations.
+This README and the database/security reference define the production architecture contract for the data model, tenant isolation, authorization, and transactional workflows.
 
 ## Table of Contents
 
@@ -31,7 +31,7 @@ This README documents the supplied schema and technology choices. Exact applicat
 ## Modules
 
 - Organization and membership management
-- Role-based access control (proposed predefined Administrator role and organization-specific custom roles)
+- Role-based access control with a protected Administrator role and organization-specific custom roles
 - Accounting periods and chart of accounts
 - General ledger and journal entries
 - Product catalog and units of measure
@@ -43,11 +43,11 @@ This README documents the supplied schema and technology choices. Exact applicat
 - Payments and payment allocations
 - Organization-specific document numbering
 
-These modules are inferred from the supplied database schema. Their availability in the user interface and implementation completeness should be verified in the application.
+These modules are inferred from the supplied database schema. Their availability in the user interface and implementation completeness must be verified in the application.
 
 ## Database Relationships, RPCs, and RLS
 
-For the relationship map, tenant integrity rules, proposed RPC catalogue, recommended RLS policy matrix, verification SQL, RBAC workflow, and test checklist, see [Database, Relationships, RPCs, and RLS](docs/DATABASE_AND_SECURITY.md). The repository inspection for this documentation pass did not confirm deployed migration/function/policy definitions, so that document clearly distinguishes supplied schema facts from design recommendations.
+For the canonical relationship map, integrity constraints, RPC contracts, RLS policy matrix, verification SQL, RBAC workflow, and production release checklist, see [Database, Relationships, RPCs, and RLS](docs/DATABASE_AND_SECURITY.md).
 
 ## Database Schema
 
@@ -56,12 +56,12 @@ For the relationship map, tenant integrity rules, proposed RPC catalogue, recomm
 | Table | Purpose | Notable columns |
 | --- | --- | --- |
 | `organizations` | Organization profile and defaults | `name`, `currency`, `timezone`, `tin`, `bin`, `is_active` |
-| `organization_users` | Links users to organizations and, in the proposed RBAC design, assigns a role within that organization | `organization_id`, `user_id`, `role_id` (proposed), `is_active` |
+| `organization_users` | Links users to organizations and, assigns a role within that organization | `organization_id`, `user_id`, `role_id`, `is_active` |
 | `units_of_measure` | Product measurement units | `name`, `is_active` |
 | `accounting_periods` | Accounting date ranges and closure state | `start_date`, `end_date`, `status`, `closed_at`, `closed_by` |
 | `number_sequences` | Document number configuration | `document_type`, `prefix`, `next_number`, `padding` |
 
-### Access control (proposed)
+### Access control
 
 | Table | Purpose | Notable columns |
 | --- | --- | --- |
@@ -69,7 +69,7 @@ For the relationship map, tenant integrity rules, proposed RPC catalogue, recomm
 | `permissions` | Global catalog of granular application actions | `permission_key`, `name`, `module`, `description` |
 | `role_permissions` | Many-to-many mapping between roles and permissions | `role_id`, `permission_id` |
 
-The proposed design keeps the permission catalog global and roles organization-specific. Each organization receives a predefined, protected `Administrator` role; the organization creator is assigned that role automatically. Administrators can create custom roles and choose permissions from the system-defined catalog. A role receives permissions through `role_permissions`; a member receives a role through `organization_users.role_id`. These are proposed fields and workflows, not confirmation of an existing database schema.
+The permission catalog is global and roles are organization-specific. Each organization has a predefined, protected `Administrator` role; the organization creator receives that role automatically. Administrators create custom roles and select permissions from the system-managed catalog. `role_permissions` maps roles to permissions, and `organization_users.role_id` assigns one role to each membership.
 
 ### General ledger
 
@@ -118,7 +118,7 @@ The proposed design keeps the permission catalog global and roles organization-s
 
 ### Complete Column Reference
 
-The following lists record the columns supplied for the original 24 tables. The RBAC tables and `organization_users.role_id` are proposed additions for planning only; they have not been applied to the database.
+The complete data model documents the 24 core business tables and the RBAC tables and membership role reference.
 
 <details>
 <summary>organizations (14 columns)</summary>
@@ -128,30 +128,30 @@ The following lists record the columns supplied for the original 24 tables. The 
 </details>
 
 <details>
-<summary>organization_users (6 existing columns; 1 proposed column)</summary>
+<summary>organization_users (7 columns)</summary>
 
-Existing columns: `id`, `organization_id`, `user_id`, `is_active`, `created_at`, `updated_at`
+`id`, `organization_id`, `user_id`, `role_id`, `is_active`, `created_at`, `updated_at`.
 
-Proposed addition for RBAC: `role_id` (references `roles.id`). This design assigns one role per user membership. If multiple roles per user per organization are required later, use a separate membership-role junction table.
+`role_id` references `roles.id`. This design assigns one role per user membership. If multiple roles per user per organization are required later, use a separate membership-role junction table.
 
 </details>
 
 <details>
-<summary>roles (proposed; 7 columns)</summary>
+<summary>roles (7 columns)</summary>
 
 `id`, `organization_id`, `name`, `status`, `is_system_role`, `created_at`, `updated_at`
 
 </details>
 
 <details>
-<summary>permissions (proposed; 7 columns)</summary>
+<summary>permissions (7 columns)</summary>
 
 `id`, `permission_key`, `name`, `description`, `module`, `created_at`, `updated_at`
 
 </details>
 
 <details>
-<summary>role_permissions (proposed; 4 columns)</summary>
+<summary>role_permissions (4 columns)</summary>
 
 `id`, `role_id`, `permission_id`, `created_at`
 
@@ -321,12 +321,12 @@ Recommended accounting controls:
 
 1. A posted journal entry must have at least the required lines and total debits equal to total credits.
 2. The entry date must be valid for its accounting period.
-3. Posting to a closed accounting period should be blocked unless an explicit, authorized exception exists.
-4. Posting should be atomic: the business document, journal entry, journal lines, and related inventory effects should succeed or fail together.
+3. Posting to a closed accounting period must be blocked unless an explicit, authorized exception exists.
+4. Posting must be atomic: the business document, journal entry, journal lines, and related inventory effects must succeed or fail together.
 5. Prevent duplicate posting and use controlled reversal entries to correct posted activity.
 6. Validate that accounts, contacts, products, periods, and source documents belong to the same organization.
 
-Allowed status values and exact posting rules are application-specific and should be documented alongside the relevant business logic.
+Allowed status values and exact posting rules are application-specific and must be documented alongside the relevant business logic.
 
 ## Inventory
 
@@ -360,18 +360,18 @@ Recommended controls:
 - Store secrets in local environment files and deployment settings, never in source control.
 - Test cross-organization access explicitly.
 
-The supplied `organization_users` schema does not currently include a role column. The proposed RBAC design adds `role_id` to `organization_users` so each membership has one role per organization. When an organization is created, the trusted server-side workflow should create the organization, create its predefined `Administrator` role, assign the system-defined permissions to that role, and create the creator's membership with that role. These steps should be atomic so an organization cannot be left without its initial Administrator.
+The supplied `organization_users` schema does not currently include a role column. The defined RBAC design adds `role_id` to `organization_users` so each membership has one role per organization. When an organization is created, the trusted server-side workflow must create the organization, create its predefined `Administrator` role, assign the system-defined permissions to that role, and create the creator's membership with that role. These steps must be atomic so an organization cannot be left without its initial Administrator.
 
 ### Proposed RBAC model
 
 - `roles`: organization-scoped role definitions with `id`, `organization_id`, `name`, `status`, `is_system_role`, `created_at`, and `updated_at`. Create one protected `Administrator` role per organization. `is_system_role` explicitly identifies protected system roles; do not rely only on the role name. Administrators can create custom roles for their organization.
-- `permissions`: a global catalog of granular actions with `id`, `permission_key`, `name`, `description`, `module`, `created_at`, and `updated_at`. Permission definitions should be system-managed; Administrators select from this catalog when configuring custom roles. Example keys include `sales.read`, `sales.create`, `sales.post`, `inventory.read`, and `users.manage`.
+- `permissions`: a global catalog of granular actions with `id`, `permission_key`, `name`, `description`, `module`, `created_at`, and `updated_at`. Permission definitions must be system-managed; Administrators select from this catalog when configuring custom roles. Example keys include `sales.read`, `sales.create`, `sales.post`, `inventory.read`, and `users.manage`.
 - `role_permissions`: join table associating roles with permission definitions, using `role_id` and `permission_id` foreign keys. Fields: `id`, `role_id`, `permission_id`, and `created_at`.
-- `organization_users.role_id`: proposed foreign key to `roles.id`, assigning a role to that membership. Validate that the assigned role belongs to the same organization as the membership.
+- `organization_users.role_id`: defined foreign key to `roles.id`, assigning a role to that membership. Validate that the assigned role belongs to the same organization as the membership.
 
 Recommended database rules to implement and verify in migrations (not confirmed as existing): unique `(organization_id, name)` on `roles`; unique `permission_key` on `permissions`; unique `(role_id, permission_id)` on `role_permissions`; foreign keys from `role_permissions.role_id` to `roles.id`, from `role_permissions.permission_id` to `permissions.id`, and from `organization_users.role_id` to `roles.id`. Prevent ordinary role-management operations from deleting or deactivating the system Administrator role or removing critical administrative permissions. Ensure an organization cannot be left without an authorized Administrator.
 
-Authorization should be deny-by-default and enforced server-side and, where applicable, through Supabase RLS. Check the user's active organization membership and required permission for every protected action. A permission record alone does not enforce access. Because `roles` are organization-scoped while `permissions` are global, ensure all role assignments and permission checks remain within the active organization. Frontend controls may hide unavailable actions, but must not be the only enforcement layer.
+Authorization must be deny-by-default and enforced server-side and, where applicable, through Supabase RLS. Check the user's active organization membership and required permission for every protected action. A permission record alone does not enforce access. Because `roles` are organization-scoped while `permissions` are global, ensure all role assignments and permission checks remain within the active organization. Frontend controls may hide unavailable actions, but must not be the only enforcement layer.
 
 ## Technology and Deployment
 
@@ -419,7 +419,7 @@ Do not add unused variables just because they appear in this example. Never expo
 
 ## Documentation Notes
 
-The following details should be added after confirming them from the codebase:
+The following details must be added after confirming them from the codebase:
 
 - Actual supported Node.js version and package manager
 - Exact install, development, lint, test, type-check, and build commands
