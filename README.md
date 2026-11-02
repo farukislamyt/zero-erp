@@ -317,7 +317,7 @@ The complete data model documents the 24 core business tables and the RBAC table
 
 The ledger model separates journal headers (`journal_entries`) from journal lines (`account_transactions`). Business documents include a `posted_journal_entry_id` reference where applicable.
 
-Recommended accounting controls:
+Required accounting controls:
 
 1. A posted journal entry must have at least the required lines and total debits equal to total credits.
 2. The entry date must be valid for its accounting period.
@@ -348,7 +348,7 @@ The presence of valuation fields does not, by itself, establish which costing al
 
 Most business tables include `organization_id`. This is useful for multi-tenant data partitioning, but tenant isolation must be enforced by database policies and application authorization.
 
-Recommended controls:
+Required controls:
 
 - Enable and test Supabase RLS policies on tables exposed through the Supabase API.
 - Verify the authenticated user's organization membership for every read and write.
@@ -362,14 +362,14 @@ Recommended controls:
 
 The supplied `organization_users` schema does not currently include a role column. The defined RBAC design adds `role_id` to `organization_users` so each membership has one role per organization. When an organization is created, the trusted server-side workflow must create the organization, create its predefined `Administrator` role, assign the system-defined permissions to that role, and create the creator's membership with that role. These steps must be atomic so an organization cannot be left without its initial Administrator.
 
-### Proposed RBAC model
+### RBAC model
 
 - `roles`: organization-scoped role definitions with `id`, `organization_id`, `name`, `status`, `is_system_role`, `created_at`, and `updated_at`. Create one protected `Administrator` role per organization. `is_system_role` explicitly identifies protected system roles; do not rely only on the role name. Administrators can create custom roles for their organization.
 - `permissions`: a global catalog of granular actions with `id`, `permission_key`, `name`, `description`, `module`, `created_at`, and `updated_at`. Permission definitions must be system-managed; Administrators select from this catalog when configuring custom roles. Example keys include `sales.read`, `sales.create`, `sales.post`, `inventory.read`, and `users.manage`.
 - `role_permissions`: join table associating roles with permission definitions, using `role_id` and `permission_id` foreign keys. Fields: `id`, `role_id`, `permission_id`, and `created_at`.
 - `organization_users.role_id`: defined foreign key to `roles.id`, assigning a role to that membership. Validate that the assigned role belongs to the same organization as the membership.
 
-Recommended database rules to implement and verify in migrations (not confirmed as existing): unique `(organization_id, name)` on `roles`; unique `permission_key` on `permissions`; unique `(role_id, permission_id)` on `role_permissions`; foreign keys from `role_permissions.role_id` to `roles.id`, from `role_permissions.permission_id` to `permissions.id`, and from `organization_users.role_id` to `roles.id`. Prevent ordinary role-management operations from deleting or deactivating the system Administrator role or removing critical administrative permissions. Ensure an organization cannot be left without an authorized Administrator.
+Production database constraints: enforce unique `(organization_id, name)` on `roles`; unique `permission_key` on `permissions`; unique `(role_id, permission_id)` on `role_permissions`; foreign keys from `role_permissions.role_id` to `roles.id`, from `role_permissions.permission_id` to `permissions.id`, and from `organization_users.role_id` to `roles.id`. Prevent ordinary role-management operations from deleting or deactivating the system Administrator role or removing critical administrative permissions. Ensure an organization cannot be left without an authorized Administrator.
 
 Authorization must be deny-by-default and enforced server-side and, where applicable, through Supabase RLS. Check the user's active organization membership and required permission for every protected action. A permission record alone does not enforce access. Because `roles` are organization-scoped while `permissions` are global, ensure all role assignments and permission checks remain within the active organization. Frontend controls may hide unavailable actions, but must not be the only enforcement layer.
 
