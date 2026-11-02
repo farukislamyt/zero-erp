@@ -53,9 +53,12 @@ begin
       message = 'Entry date is required.';
   end if;
 
-  if p_lines is null
-     or pg_catalog.jsonb_typeof(p_lines) <> 'array'
-     or pg_catalog.jsonb_array_length(p_lines) < 2 then
+  if p_lines is null or pg_catalog.jsonb_typeof(p_lines) <> 'array' then
+    raise exception using errcode = '22023',
+      message = 'Journal lines must be provided as a JSON array.';
+  end if;
+
+  if pg_catalog.jsonb_array_length(p_lines) < 2 then
     raise exception using errcode = '22023',
       message = 'At least two journal lines are required.';
   end if;
@@ -203,7 +206,8 @@ begin
     description text,
     debit numeric,
     credit numeric,
-    contact_id uuid
+    contact_id uuid,
+    ordinality bigint
   );
 
   return v_journal_entry_id;
