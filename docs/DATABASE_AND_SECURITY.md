@@ -61,7 +61,7 @@ The following relationship map is the canonical relational contract. Foreign key
 | `accounts.id` | `products.inventory_account_id`, `sales_account_id`, `cogs_account_id` | 1:N per role | Ledger mapping; all accounts must belong to the product's organization |
 | `organizations.id` | `contacts.organization_id` | 1:N | Customers, suppliers, and counterparties |
 | `organizations.id` | `inventory_balances.organization_id` | 1:N | Organization-scoped stock snapshot |
-| `products.id` | `inventory_balances.product_id` | 1:N logically; usually one current balance per product | Recommended unique `(organization_id, product_id)` if one row is intended |
+| `products.id` | `inventory_balances.product_id` | 1:N logically; usually one current balance per product | Enforce unique `(organization_id, product_id)` so each organization has one current balance row per product |
 | `products.id` | `inventory_transactions.product_id` | 1:N | Inventory movement history |
 | `contacts.id` | Purchase/sales/return/payment/expense counterparty columns | 1:N | Supplier/customer/contact references; validate exact FK columns |
 | `expense_categories.id` | `expenses.expense_category_id` | 1:N | Expense classification |
@@ -184,9 +184,9 @@ The policies below define the required access-control behavior for Supabase-expo
 | --- | --- | --- | --- | --- |
 | `organizations` | Active member of that organization | Through trusted organization-creation RPC | Active member with organization-settings permission | Normally blocked; use controlled archival/deactivation |
 | `organization_users` | Self membership and/or authorized organization Administrator | Trusted invite/join/admin flow only | Authorized Administrator; protect last Administrator and role assignment rules | Controlled removal flow; protect last Administrator |
-| Proposed `roles` | Active organization member with role-read permission | Authorized Administrator/role manager; no client-created system role | Authorized role manager; protect system Administrator | Block system role deletion; custom role only if safe and unassigned |
-| Proposed `permissions` | Authenticated users only if the global catalog is intended to be visible | No client writes; system migration/maintainer only | No client writes; system migration/maintainer only | No client writes |
-| Proposed `role_permissions` | Active organization member with role-read permission, scoped through role's organization | Authorized role manager; validate role organization | Usually replace rows via a controlled RPC | Authorized role manager; never remove required admin access |
+| `roles` | Active organization member with role-read permission | Authorized Administrator/role manager; no client-created system role | Authorized role manager; protect system Administrator | Block system role deletion; custom role only if safe and unassigned |
+| `permissions` | Authenticated users only if the global catalog is intended to be visible | No client writes; system migration/maintainer only | No client writes; system migration/maintainer only | No client writes |
+| `role_permissions` | Active organization member with role-read permission, scoped through role's organization | Authorized role manager; validate role organization | Usually replace rows via a controlled RPC | Authorized role manager; never remove required admin access |
 | All accounting/master/transaction tables | Active membership in row's organization plus read permission | Create permission and same-tenant checks | Update permission; posted financial records require controlled workflow | Deny for posted/financial history; use void/reversal/archival workflows |
 | `payment_allocations` | Membership in allocation's organization | Authorized payment workflow; validate payment and target document tenant | Controlled payment workflow | Controlled unallocation only if accounting rules allow |
 | Polymorphic references | Read through parent row's organization | Validate `document_type`, target existence, and organization in trusted code/RPC | Controlled workflow | Controlled workflow |
