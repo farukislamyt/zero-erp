@@ -12,7 +12,7 @@ Zero ERP is a multi-organization ERP system designed to support accounting, purc
 
 ## Overview
 
-The database design contains 24 core tables organized around organization-scoped business records and a general ledger. Most operational tables include `organization_id`, which supports tenant-scoped data access when combined with appropriate authorization and database policies.
+The supplied database inventory contains 24 core tables. This README also documents a proposed role-based access control (RBAC) design with three additional tables: `roles`, `permissions`, and `role_permissions`. Together, the reference covers 27 tables, but the three RBAC tables and the related `organization_users.role_id` column are proposals for documentation only; they have not been applied to the database. Most operational tables include `organization_id`, which supports tenant-scoped data access when combined with appropriate authorization and database policies.
 
 This README documents the supplied schema and technology choices. Exact application commands, SQL types, constraints, authentication flows, and implementation status should be confirmed against the codebase and database migrations.
 
@@ -30,6 +30,7 @@ This README documents the supplied schema and technology choices. Exact applicat
 ## Modules
 
 - Organization and membership management
+- Role-based access control (proposed roles, permissions, and role-permission assignments)
 - Accounting periods and chart of accounts
 - General ledger and journal entries
 - Product catalog and units of measure
@@ -50,10 +51,20 @@ These modules are inferred from the supplied database schema. Their availability
 | Table | Purpose | Notable columns |
 | --- | --- | --- |
 | `organizations` | Organization profile and defaults | `name`, `currency`, `timezone`, `tin`, `bin`, `is_active` |
-| `organization_users` | Links users to organizations | `organization_id`, `user_id`, `is_active` |
+| `organization_users` | Links users to organizations and, in the proposed RBAC design, assigns a role within that organization | `organization_id`, `user_id`, `role_id` (proposed), `is_active` |
 | `units_of_measure` | Product measurement units | `name`, `is_active` |
 | `accounting_periods` | Accounting date ranges and closure state | `start_date`, `end_date`, `status`, `closed_at`, `closed_by` |
 | `number_sequences` | Document number configuration | `document_type`, `prefix`, `next_number`, `padding` |
+
+### Access control (proposed)
+
+| Table | Purpose | Notable columns |
+| --- | --- | --- |
+| `roles` | Organization-scoped roles assigned to organization members | `organization_id`, `name`, `description`, `is_system_role`, `is_active` |
+| `permissions` | Global catalog of granular application actions | `permission_key`, `name`, `module`, `description` |
+| `role_permissions` | Many-to-many mapping between roles and permissions | `role_id`, `permission_id` |
+
+The proposed design keeps permission definitions global and assigns roles to individual organizations. A role receives permissions through `role_permissions`; a member receives a role through `organization_users.role_id`. See [Organization Isolation and Security](#organization-isolation-and-security) for enforcement guidance. These are proposed documentation fields, not confirmation of an existing database schema.
 
 ### General ledger
 
@@ -102,7 +113,7 @@ These modules are inferred from the supplied database schema. Their availability
 
 ### Complete Column Reference
 
-The following lists record the columns provided for each table. Column order follows the supplied schema inventory.
+The following lists record the columns provided for the original 24 tables. The three RBAC tables and the `organization_users.role_id` addition are proposed design fields for planning; they are not part of the supplied schema inventory and have not been applied to the database.
 
 <details>
 <summary>organizations (14 columns)</summary>
@@ -112,9 +123,32 @@ The following lists record the columns provided for each table. Column order fol
 </details>
 
 <details>
-<summary>organization_users (6 columns)</summary>
+<summary>organization_users (6 existing columns; 1 proposed column)</summary>
 
-`id`, `organization_id`, `user_id`, `is_active`, `created_at`, `updated_at`
+Existing columns: `id`, `organization_id`, `user_id`, `is_active`, `created_at`, `updated_at`
+
+Proposed addition for RBAC: `role_id` (references `roles.id`). If one user can have multiple roles in the same organization, use a separate membership-role junction table instead of a single `role_id` column.
+
+</details>
+
+<details>
+<summary>roles (proposed; 8 columns)</summary>
+
+`id`, `organization_id`, `name`, `description`, `is_system_role`, `is_active`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>permissions (proposed; 7 columns)</summary>
+
+`id`, `permission_key`, `name`, `description`, `module`, `created_at`, `updated_at`
+
+</details>
+
+<details>
+<summary>role_permissions (proposed; 4 columns)</summary>
+
+`id`, `role_id`, `permission_id`, `created_at`
 
 </details>
 
@@ -321,7 +355,18 @@ Recommended controls:
 - Store secrets in local environment files and deployment settings, never in source control.
 - Test cross-organization access explicitly.
 
-The listed `organization_users` schema does not show a role column. If role-based access is required, document where roles and permissions are stored and how they are enforced.
+The supplied `organization_users` schema does not currently include a role column. The proposed RBAC design adds `role_id` to `organization_users` so a user can have one role per organization. If multiple roles per user per organization are required, introduce an `organization_user_roles` junction table instead.
+
+### Proposed RBAC model
+
+- `roles`: organization-scoped role definitions. Suggested fields are `id`, `organization_id`, `name`, `description`, `is_system_role`, `is_active`, `created_at`, and `updated_at`.
+- `permissions`: a global catalog of granular actions. Suggested fields are `id`, `permission_key`, `name`, `description`, `module`, `created_at`, and `updated_at`. Example permission keys could be `sales.read`, `sales.create`, `sales.post`, `inventory.read`, and `users.manage`; define keys to match actual application actions.
+- `role_permissions`: join table associating roles with permission definitions, using `role_id` and `permission_id` foreign keys. Suggested fields are `id`, `role_id`, `permission_id`, and `created_at`.
+- `organization_users.role_id`: proposed foreign key to `roles.id`, assigning one role to that membership. Validate that the assigned role belongs to the same `organization_id` as the membership.
+
+Recommended database rules to implement and verify in migrations (not confirmed as existing): unique `(organization_id, name)` on `roles`; unique `permission_key` on `permissions`; unique `(role_id, permission_id)` on `role_permissions`; foreign keys from `role_permissions.role_id` to `roles.id`, from `role_permissions.permission_id` to `permissions.id`, and from `organization_users.role_id` to `roles.id`. Consider whether system roles should be editable or deletable.
+
+Authorization should be deny-by-default and enforced server-side and, where applicable, through Supabase RLS. Check both the user's active organization membership and the permission required for each action. A permission record alone does not enforce access. Because `roles` are organization-scoped while `permissions` are global, ensure all role assignments and permission checks remain within the active organization.
 
 ## Technology and Deployment
 
