@@ -384,7 +384,7 @@ revoke all on public.organizations, public.organization_users, public.roles,
   public.permissions, public.role_permissions, public.accounting_periods,
   public.accounts, public.units_of_measure, public.contacts, public.products,
   public.expense_categories, public.number_sequences
-from anon;
+from anon, authenticated;
 
 grant select on public.organizations, public.organization_users, public.roles,
   public.permissions, public.role_permissions, public.accounting_periods,
