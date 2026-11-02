@@ -14,13 +14,13 @@ Zero ERP is a multi-organization ERP system designed to support accounting, purc
 
 The supplied database inventory contains 24 core tables. The production data model uses role-based access control (RBAC) with `roles`, `permissions`, and `role_permissions`, plus `organization_users.role_id`. Each organization has a protected Administrator role automatically assigned to its creator. Administrators manage organization-specific custom roles and assign permissions from the system-managed catalog. Tenant isolation is enforced through organization-scoped relationships, database constraints, RPC authorization, and Row-Level Security (RLS).
 
-This README and the database/security reference define the production architecture contract for the data model, tenant isolation, authorization, and transactional workflows.
+This README and the database blueprint define the target relational model, tenant isolation, authorization, integrity rules, and transactional workflows.
 
 ## Table of Contents
 
 - [Modules](#modules)
 - [Database Schema](#database-schema)
-- [Database Relationships, RPCs, and RLS](docs/DATABASE_AND_SECURITY.md)
+- [Database Blueprint](docs/DATABASE_AND_SECURITY.md)
 - [Accounting and Posting](#accounting-and-posting)
 - [Inventory](#inventory)
 - [Organization Isolation and Security](#organization-isolation-and-security)
@@ -45,9 +45,9 @@ This README and the database/security reference define the production architectu
 
 These modules are inferred from the supplied database schema. Their availability in the user interface and implementation completeness must be verified in the application.
 
-## Database Relationships, RPCs, and RLS
+## Database Blueprint
 
-For the canonical relationship map, integrity constraints, RPC contracts, RLS policy matrix, verification SQL, RBAC workflow, and production release checklist, see [Database, Relationships, RPCs, and RLS](docs/DATABASE_AND_SECURITY.md).
+For the logical ER diagram, schema dependency order, relationship map, table inventory, integrity constraints, RPC contracts, RLS policy matrix, verification SQL, RBAC workflow, and production release checklist, see the [Database Blueprint](docs/DATABASE_AND_SECURITY.md).
 
 ## Database Schema
 
