@@ -547,7 +547,7 @@ revoke all on public.journal_entries, public.account_transactions,
   public.inventory_transactions, public.inventory_balances, public.purchase,
   public.purchase_items, public.purchase_returns, public.purchase_return_items,
   public.sales, public.sales_items, public.sales_returns, public.sales_return_items,
-  public.expenses, public.payments, public.payment_allocations from anon;
+  public.expenses, public.payments, public.payment_allocations from anon, authenticated;
 
 grant select on public.journal_entries, public.account_transactions,
   public.inventory_transactions, public.inventory_balances, public.purchase,
