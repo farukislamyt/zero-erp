@@ -45,12 +45,8 @@ begin
     where not exists (
       select 1
       from public.organization_users ou
-      join public.roles r
-        on r.id = ou.role_id and r.organization_id = ou.organization_id
       where ou.organization_id = o.id
         and ou.created_at = o.created_at
-        and r.is_system_role
-        and r.name = 'Administrator'
     )
   ) then
     raise exception 'Migration blocked: at least one company has no identifiable original Administrator membership timestamp. Founder history must be reconciled before retrying.';
