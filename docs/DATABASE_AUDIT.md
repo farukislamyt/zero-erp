@@ -2,7 +2,7 @@
 
 **Audit date:** 2026-11-03  
 **Branch:** `feat/database-migrations`  
-**Scope:** Static, line-by-line review of `supabase/migrations/20261103000000_initial_database_schema.sql` (4,645 lines at the current revision), the database smoke test, workflow, README, and database blueprint.  
+**Scope:** Static, line-by-line review of `supabase/migrations/20261103000000_initial_database_schema.sql` (4,751 lines at the current revision), the database smoke test, workflow, README, and database blueprint.  
 **Verification boundary:** This is a source audit. It is not a live Supabase audit and does not establish that the SQL has executed successfully on a real Supabase project. PostgreSQL runtime, Auth API, concurrency, and full-year transaction and reconciliation tests remain required.
 
 ## Executive summary
@@ -56,6 +56,24 @@ The schema is a substantial tenant-scoped PostgreSQL foundation, but it is **not
 
 **Fix:** the smoke test now checks the complete intended RPC grant list, confirms the legacy one-step journal RPC remains disabled, checks for direct table write grants/anonymous table access, and exercises organization creation with both invalid and valid timezones plus the disabled-sequence rejection path.
 
+### 4. Draft creation called a nonexistent PostgreSQL function
+
+**Problem:** `save_draft_transaction_document` called `pg_catalog.jsonb_object_length()`, which PostgreSQL does not provide. The empty-header validation path therefore failed with an undefined-function runtime error instead of the intended validation error.
+
+**Fix:** the check now compares the JSONB value with `'{}'::jsonb`. The smoke test exercises both the rejected empty expense draft and successful creation of a manual journal draft, so this exact path is covered.
+
+### 5. Opening-balance initialization could race operational posting
+
+**Problem:** opening balances acquired an exclusive organization-row lock, but purchase, sales, expense, payment, return, reversal, and manual-journal posting routines did not acquire a compatible lock. A posting transaction could therefore pass the opening-balance precondition concurrently with initialization.
+
+**Fix:** opening-balance posting now acquires its exclusive organization lock before authorization checks. All eight enabled operational posting/reversal routines acquire a shared lock on the same active organization row before authorization and document locking. Shared locks allow normal postings to proceed concurrently with one another while excluding the one-time opening-balance initialization.
+
+### 6. Contact subledger validation could race posting and reversals
+
+**Problem:** payment posting serialized by locking the contact row, but some other operations that change receivable/payable balances did not use the same lock. A supplier payment could race a purchase/return, or a customer receipt/refund could race a sales return or journal reversal, and validate against a stale contact balance.
+
+**Fix:** purchase and return posting now lock their supplier/customer contact; journal reversals and confirmed manual-journal posting lock all affected contacts in deterministic UUID order. Existing sales, expense, and contact-payment paths already locked the relevant contact. The smoke test checks that the expected organization and contact locks remain present.
+
 ## Critical incomplete workflows
 
 These are genuine blockers for a complete end-to-end ERP workflow. They are not safely fixed by granting direct table writes; each needs a permission-checked, tenant-scoped, transactional RPC and corresponding tests.
@@ -80,6 +98,9 @@ These are genuine blockers for a complete end-to-end ERP workflow. They are not 
 
 - The one-step `post_manual_journal_entry` function is intentionally not executable by browser roles. Manual journals should use Draft → Confirmed → `post_confirmed_journal_entry`; do not re-enable the legacy shortcut.
 - `post_contact_payment` is a contact-level settlement model. It correctly refuses invoice-allocation rows rather than silently ignoring them.
+- Normal posting routines use a shared organization-row lock; the one-time opening-balance routine uses an exclusive lock. This prevents opening initialization from racing an operational posting without serializing ordinary postings with one another.
+- Contact-level receivable/payable changes share contact-row locks across purchase, sales, expense, payment, return, manual-journal posting, and reversal paths. The current smoke test verifies lock declarations, but a true multi-session concurrency stress test is still outstanding.
+- The 28 explicit indexes do not yet provide a dedicated index for every child-side foreign key. Review FK-heavy joins and parent-row delete/update plans (notably product account mappings, expense-category account mapping, and several expense/payment/return references) before scaling to large tenants.
 - `payment_allocations` should be treated as dormant schema until its validation and posting semantics are implemented.
 - `create_organization_with_admin` does not create the initial chart of accounts. The product onboarding workflow must not present a newly created organization as ready to transact until setup is completed.
 - The current schema assigns one role per membership. Multiple roles per user per organization would require a deliberate data-model migration.
@@ -90,8 +111,8 @@ These are genuine blockers for a complete end-to-end ERP workflow. They are not 
 
 | Test layer | Current coverage | Status |
 |---|---|---|
-| Clean PostgreSQL bootstrap | Workflow applies canonical SQL to PostgreSQL 17 | Configured; runtime result must be read from GitHub Actions |
-| Schema catalog smoke checks | Table/policy counts, RLS, security-definer search path, triggers, grants, write boundary | Expanded in this audit |
+| Clean PostgreSQL bootstrap | Workflow applies canonical SQL to PostgreSQL 17 | Passed on latest audit commit; [run 41620687416](https://github.com/farukislamyt/zero-erp/actions/runs/41620687416) |
+| Schema catalog smoke checks | Table/policy counts, RLS, security-definer search path, triggers, grants, write boundary, period absence, draft save, posting lock declarations | Expanded in this audit |
 | Organization setup guard tests | Invalid timezone rejection and valid org/admin creation | Added to smoke test |
 | Number sequence guard test | Disabled sequence must reject allocation | Added to smoke test |
 | Supabase Auth integration | Real signup/verify/login/JWT/refresh/logout | Not implemented |
