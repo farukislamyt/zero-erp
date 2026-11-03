@@ -6430,7 +6430,7 @@ revoke all on function public.complete_organization_invitation(uuid,uuid,uuid,uu
 do $grant_service_role$
 begin
   if exists(select 1 from pg_catalog.pg_roles where rolname='service_role') then
-    grant execute on function public.complete_organization_invitation(uuid,uuid,uuid,uuid) to service_role;
+    execute 'GRANT EXECUTE ON FUNCTION public.complete_organization_invitation(uuid,uuid,uuid,uuid) TO service_role';
   end if;
 end;
 $grant_service_role$;
