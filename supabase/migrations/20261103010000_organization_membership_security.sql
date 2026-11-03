@@ -175,6 +175,29 @@ create trigger organization_users_guard_creator_record
 before update or delete on public.organization_users
 for each row execute function public.guard_organization_creator_membership();
 
+-- The founder marker depends on organizations.created_at, so that timestamp
+-- must itself be immutable even for trusted server-side maintenance paths.
+create or replace function public.guard_organization_created_at()
+returns trigger
+language plpgsql
+set search_path = ''
+as $
+begin
+  if new.created_at is distinct from old.created_at then
+    raise exception using errcode = '42501',
+      message = 'Organization creation timestamp is immutable because it anchors the permanent company-creator record.';
+  end if;
+  return new;
+end;
+$;
+
+drop trigger if exists organizations_guard_created_at on public.organizations;
+create trigger organizations_guard_created_at
+before update of created_at on public.organizations
+for each row execute function public.guard_organization_created_at();
+
+revoke all on function public.guard_organization_created_at() from public, anon, authenticated;
+
 -- Enforce exactly one active Administrator per company and permit assigning
 -- the system Administrator role only through the create/transfer RPCs.
 create or replace function public.guard_administrator_membership()
