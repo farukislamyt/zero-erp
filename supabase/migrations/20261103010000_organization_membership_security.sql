@@ -149,6 +149,7 @@ declare
   v_active_admins integer := 0;
   v_org_id uuid;
   v_old_id uuid;
+  v_needs_admin_claim boolean := false;
   v_transfer_allowed boolean :=
     coalesce(pg_catalog.current_setting('app.allow_admin_transfer', true), '') = 'on';
 begin
@@ -182,12 +183,19 @@ begin
 
   perform 1 from public.organizations o where o.id = v_org_id for update;
 
-  if tg_op <> 'DELETE' and new.is_active and v_new_is_admin
-     and (tg_op = 'INSERT'
-       or not old.is_active
-       or not v_old_is_admin
-       or old.organization_id is distinct from new.organization_id
-       or old.role_id is distinct from new.role_id) then
+  if tg_op <> 'DELETE' and new.is_active and v_new_is_admin then
+    if tg_op = 'INSERT' then
+      v_needs_admin_claim := true;
+    else
+      v_needs_admin_claim :=
+        not old.is_active
+        or not v_old_is_admin
+        or old.organization_id is distinct from new.organization_id
+        or old.role_id is distinct from new.role_id;
+    end if;
+  end if;
+
+  if v_needs_admin_claim then
     select count(*) into v_active_admins
     from public.organization_users ou
     join public.roles r
@@ -209,14 +217,32 @@ begin
     end if;
   end if;
 
-  if tg_op <> 'INSERT' and old.is_active and v_old_is_admin then
-    if tg_op = 'DELETE'
-       or (tg_op = 'UPDATE' and (
-         not new.is_active
+  if tg_op = 'DELETE' then
+    if v_old_is_admin and old.is_active then
+      select count(*) into v_active_admins
+      from public.organization_users ou
+      join public.roles r
+        on r.id = ou.role_id and r.organization_id = ou.organization_id
+      where ou.organization_id = old.organization_id
+        and ou.is_active
+        and r.is_system_role
+        and r.name = 'Administrator'
+        and ou.id <> old.id;
+
+      if v_active_admins < 1 and not v_transfer_allowed then
+        raise exception using errcode = '23514',
+          message = 'An organization must retain an active Administrator.';
+      end if;
+    end if;
+    return old;
+  end if;
+
+  if tg_op = 'UPDATE' then
+    if old.is_active and v_old_is_admin
+       and (not new.is_active
          or not v_new_is_admin
          or new.organization_id is distinct from old.organization_id
-         or new.role_id is distinct from old.role_id
-       )) then
+         or new.role_id is distinct from old.role_id) then
       select count(*) into v_active_admins
       from public.organization_users ou
       join public.roles r
@@ -234,7 +260,6 @@ begin
     end if;
   end if;
 
-  if tg_op = 'DELETE' then return old; end if;
   return new;
 end;
 $$;
