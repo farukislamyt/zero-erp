@@ -44,6 +44,54 @@ The database uses PostgreSQL built-ins and Supabase-managed `auth.users` / `auth
 - The original organization creator is identified by the creator membership whose `created_at` equals `organizations.created_at`. The final migration rejects any update or delete to that membership and rejects any later Administrator assignment.
 - A partial unique index enforces at most one active organization membership per Auth user.
 
+## Bootstrap seed data
+
+### Global permissions
+
+The 43 permission records listed in the permission catalog above are inserted/upserted by the initial bootstrap. During organization creation, all rows in `public.permissions` are assigned to the newly created system Administrator role through `role_permissions`.
+
+### Default chart of accounts
+
+The final `create_organization_with_admin` RPC calls `seed_default_chart_of_accounts`. The function inserts these 22 system accounts (all are created active and marked `is_system_account = true`):
+
+| Code | Account name | Account type | Parent code | Normal balance | Control account | Postable |
+|---|---|---|---|---|---|---|
+| 1000 | Assets | asset | — | debit | false | false |
+| 1100 | Current Assets | asset | 1000 | debit | false | false |
+| 1110 | Cash and Bank | asset | 1100 | debit | false | true |
+| 1120 | Accounts Receivable | asset | 1100 | debit | true | true |
+| 1130 | Inventory | asset | 1100 | debit | false | true |
+| 1140 | Other Current Assets | asset | 1100 | debit | false | true |
+| 2000 | Liabilities | liability | — | credit | false | false |
+| 2100 | Current Liabilities | liability | 2000 | credit | false | false |
+| 2110 | Accounts Payable | liability | 2100 | credit | true | true |
+| 3000 | Equity | equity | — | credit | false | false |
+| 3100 | Owner Capital | equity | 3000 | credit | false | true |
+| 3200 | Retained Earnings | equity | 3000 | credit | false | true |
+| 3300 | Opening Balance Equity | equity | 3000 | credit | false | true |
+| 4000 | Revenue | revenue | — | credit | false | false |
+| 4100 | Sales Revenue | revenue | 4000 | credit | false | true |
+| 4200 | Purchase Return Gain | revenue | 4000 | credit | false | true |
+| 4300 | Inventory Adjustment Gain | revenue | 4000 | credit | false | true |
+| 5000 | Expenses | expense | — | debit | false | false |
+| 5100 | Cost of Goods Sold | expense | 5000 | debit | false | true |
+| 5200 | Purchase Return Loss | expense | 5000 | debit | false | true |
+| 5300 | Inventory Adjustment Loss | expense | 5000 | debit | false | true |
+| 5400 | General Expenses | expense | 5000 | debit | false | true |
+
+The function also inserts the `GEN` / `General Expenses` expense category mapped to account `5400`, and these active document-number sequences (each starts at `next_number = 1`, `padding = 5`):
+
+| Document type | Prefix |
+|---|---|
+| `purchase` | `PUR-` |
+| `sale` | `SAL-` |
+| `expense` | `EXP-` |
+| `payment` | `PAY-` |
+| `journal_entry` | `JRN-` |
+| `purchase_return` | `PR-` |
+| `sales_return` | `SR-` |
+| `inventory_adjustment` | `IA-` |
+
 ## Table-by-table reference
 
 Every column definition below is transcribed from the effective table-creation DDL. Constraint definitions include inline constraints and later `ALTER TABLE ... ADD CONSTRAINT` statements. Indexes, triggers, and RLS policies are listed under the table to which they apply.
@@ -1434,7 +1482,7 @@ The list below is the effective final function set after migration overrides and
 | `public.add_organization_user_by_email` | `p_organization_id uuid, p_email text, p_role_id uuid` | `uuid` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103010000_organization_membership_security.sql` | Adds an existing email-verified Supabase Auth user to the organization with an active organization role. |
 | `public.update_organization_user_role` | `p_organization_id uuid, p_membership_id uuid, p_role_id uuid` | `void` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103010000_organization_membership_security.sql` | Changes an ordinary membership's assigned role after organization/permission validation; creator membership is protected by triggers. |
 | `public.set_organization_user_active` | `p_organization_id uuid, p_membership_id uuid, p_is_active boolean` | `void` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103010000_organization_membership_security.sql` | Activates/deactivates an ordinary membership subject to role and creator protections. |
-| `public.post_manual_journal_entry` | `p_organization_id uuid, p_entry_number text, p_entry_date date, p_description text, p_lines jsonb` | `uuid` | Internal/helper function | Yes | No explicit authenticated EXECUTE grant, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Legacy one-step manual journal posting function; EXECUTE is revoked from client roles. Use the draft/confirm/post workflow. |
+| `public.post_manual_journal_entry` | `p_organization_id uuid, p_entry_number text, p_entry_date date, p_description text, p_lines jsonb` | `uuid` | Internal/helper function | Yes | No authenticated EXECUTE grant; PUBLIC, anon and authenticated revoked | `20261103000000_initial_database_schema.sql` | Legacy one-step manual journal posting function; EXECUTE is revoked from client roles. Use the draft/confirm/post workflow. |
 | `public.post_purchase` | `p_organization_id uuid, p_purchase_id uuid` | `uuid` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Posts a confirmed purchase and its ledger/inventory effects atomically. |
 | `public.post_opening_balances` | `p_organization_id uuid, p_entry_date date, p_account_lines jsonb, p_party_balances jsonb, p_inventory_lines jsonb, p_description text default 'Opening balances'` | `uuid` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Posts one-time opening general-ledger, party receivable/payable, and inventory balances. |
 | `public.post_contact_payment` | `p_organization_id uuid, p_payment_id uuid` | `uuid` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Posts a contact-level receipt/payment/refund/transfer settlement and its ledger effects. |
@@ -2481,7 +2529,8 @@ These are database facts, not UI promises:
 - `payment_allocations.document_id`, `journal_entries.reference_id`, and `inventory_transactions.reference_id` are polymorphic UUID references; they are not ordinary foreign keys to all target document tables.
 - `organization_users` has one `role_id`; multiple roles per membership are not represented.
 - The default chart of accounts is seeded by `seed_default_chart_of_accounts`, which the final organization-creation RPC invokes.
-- `post_inventory_adjustment` exists and is granted to `authenticated`; its authorization/validation is inside the function.
+- `post_inventory_adjustment` exists and is granted to `authenticated`, but its current call to `next_document_number(..., 'inventory_adjustment')` is incompatible with the allocator's permission CASE expression (which has no `inventory_adjustment` branch); see [Database Audit](DATABASE_AUDIT.md#4-findings-requiring-attention).
+- `report_receivables_aging` exists, but its payment-allocation subquery currently lacks a `payment_date <= p_as_of_date` condition; historical results can include later payments. See the audit.
 - Reporting RPCs exist for trial balance, general ledger, profit and loss, balance sheet, inventory valuation, contact balances, receivables aging, payables aging and unapplied payments.
 - `payment_allocations` is a real table with a controlled setter/validator, but the exact operational limitations of each payment type are enforced by the posting/validation function bodies; do not infer universal invoice allocation support beyond those implementations.
 - There is no accounting-period table, period column, period permission, period-close function or period-lock workflow in this migration chain.
