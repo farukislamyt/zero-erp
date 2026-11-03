@@ -40,7 +40,7 @@ DECLARE
   v_unapplied_total numeric(20,4);
   v_inventory_total numeric(20,4);
   v_second_user_id uuid := '00000000-0000-0000-0000-000000000002';
-  v_invited_user_id uuid := '00000000-0000-0000-0000-000000000004';
+  v_fourth_user_id uuid := '00000000-0000-0000-0000-000000000004';
   v_custom_sales_account_id uuid;
   v_balance_sheet_assets numeric(20,4);
   v_balance_sheet_equity_liabilities numeric(20,4);
@@ -49,6 +49,10 @@ DECLARE
   v_third_user_id uuid := '00000000-0000-0000-0000-000000000003';
   v_manager_role_id uuid;
   v_third_membership_id uuid;
+  v_fourth_membership_first_org uuid;
+  v_fourth_membership_second_org uuid;
+  v_second_member_role_id uuid;
+  v_added_membership_id uuid;
   v_admin_role_id uuid;
   v_second_unit_id uuid;
   v_second_product_id uuid;
@@ -336,9 +340,6 @@ BEGIN
     first_contact_id uuid,
     second_contact_id uuid,
     second_user_id uuid NOT NULL,
-    invited_user_id uuid,
-    invitation_role_id uuid,
-    inviter_user_id uuid
   ) ON COMMIT PRESERVE ROWS;
   GRANT SELECT ON zeroerp_smoke_context TO authenticated,service_role;
   INSERT INTO zeroerp_smoke_context (
@@ -614,9 +615,17 @@ BEGIN
     v_test_organization_id,v_role_id,'Smoke Sales Clerk Renamed','active'
   );
 
-  -- A delegated user with users.manage cannot promote themselves to Administrator.
+  -- Ordinary custom roles cannot receive control-plane permissions.
+  BEGIN
+    PERFORM public.create_custom_role(
+      v_test_organization_id,'Invalid Member Manager',ARRAY['users.manage','users.read']
+    );
+    RAISE EXCEPTION 'A custom role was allowed to receive users.manage';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+
   v_manager_role_id := public.create_custom_role(
-    v_test_organization_id,'Smoke Member Manager',ARRAY['users.manage','users.read']
+    v_test_organization_id,'Smoke Member Manager',ARRAY['users.read']
   );
   INSERT INTO auth.users(id) VALUES(v_third_user_id) ON CONFLICT(id) DO NOTHING;
   INSERT INTO public.organization_users(organization_id,user_id,role_id,is_active)
@@ -635,11 +644,57 @@ BEGIN
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true
   );
-  INSERT INTO auth.users(id) VALUES(v_invited_user_id) ON CONFLICT(id) DO NOTHING;
-  UPDATE zeroerp_smoke_context
-  SET invited_user_id=v_invited_user_id,
-      invitation_role_id=v_manager_role_id,
-      inviter_user_id='00000000-0000-0000-0000-000000000001';
+  -- Add a pre-existing, email-verified account. No invitation is sent.
+  INSERT INTO auth.users(id,email,email_confirmed_at)
+  VALUES(v_fourth_user_id,'verified.member@example.invalid',pg_catalog.now())
+  ON CONFLICT(id) DO UPDATE
+    SET email=excluded.email,email_confirmed_at=excluded.email_confirmed_at;
+
+  v_added_membership_id := public.add_organization_user_by_email(
+    v_test_organization_id,'verified.member@example.invalid',v_manager_role_id
+  );
+  v_fourth_membership_first_org := v_added_membership_id;
+
+  -- An active member cannot join another company until deactivated by the
+  -- current company's Administrator.
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub','00000000-0000-0000-0000-000000000002',true
+  );
+  v_second_member_role_id := public.create_custom_role(
+    v_second_organization_id,'Smoke Second Company Member',ARRAY['contacts.read']
+  );
+  BEGIN
+    PERFORM public.add_organization_user_by_email(
+      v_second_organization_id,'verified.member@example.invalid',v_second_member_role_id
+    );
+    RAISE EXCEPTION 'An active member was added to a second company';
+  EXCEPTION WHEN SQLSTATE '23505' THEN NULL;
+  END;
+
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true
+  );
+  PERFORM public.set_organization_user_active(
+    v_test_organization_id,v_fourth_membership_first_org,false
+  );
+
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub','00000000-0000-0000-0000-000000000002',true
+  );
+  v_fourth_membership_second_org := public.add_organization_user_by_email(
+    v_second_organization_id,'verified.member@example.invalid',v_second_member_role_id
+  );
+
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true
+  );
+  BEGIN
+    PERFORM public.set_organization_user_active(
+      v_test_organization_id,v_fourth_membership_first_org,true
+    );
+    RAISE EXCEPTION 'A user with another active company membership was reactivated';
+  EXCEPTION WHEN SQLSTATE '23505' THEN NULL;
+  END;
 
   PERFORM public.update_organization_profile(
     v_test_organization_id,'Database smoke test organization','+8801000000000',
@@ -935,14 +990,26 @@ BEGIN
     RAISE EXCEPTION 'One or more new ERP operational RPCs are missing';
   END IF;
 
-  IF to_regprocedure('public.complete_organization_invitation(uuid,uuid,uuid,uuid)') IS NULL
-     OR has_function_privilege('authenticated',
-       'public.complete_organization_invitation(uuid,uuid,uuid,uuid)','EXECUTE')
+  IF to_regprocedure('public.complete_organization_invitation(uuid,uuid,uuid,uuid)') IS NOT NULL THEN
+    RAISE EXCEPTION 'Invitation-only membership finalization must not exist';
+  END IF;
+
+  IF to_regprocedure('public.transfer_organization_administrator(uuid,uuid)') IS NULL
+     OR to_regprocedure('public.is_org_administrator(uuid)') IS NULL
+     OR to_regprocedure('public.is_organization_creator(uuid,uuid)') IS NULL
+     OR NOT has_function_privilege('authenticated',
+       'public.transfer_organization_administrator(uuid,uuid)','EXECUTE')
      OR has_function_privilege('anon',
-       'public.complete_organization_invitation(uuid,uuid,uuid,uuid)','EXECUTE')
-     OR NOT has_function_privilege('service_role',
-       'public.complete_organization_invitation(uuid,uuid,uuid,uuid)','EXECUTE') THEN
-    RAISE EXCEPTION 'Auth invitation finalization must be service-role-only';
+       'public.transfer_organization_administrator(uuid,uuid)','EXECUTE') THEN
+    RAISE EXCEPTION 'Administrator transfer/identity functions or grants are incorrect';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_indexes
+    WHERE schemaname='public'
+      AND indexname='organization_users_one_active_company_per_user'
+  ) THEN
+    RAISE EXCEPTION 'One-active-company-per-user unique index is missing';
   END IF;
 
   RAISE NOTICE
@@ -951,31 +1018,6 @@ BEGIN
 END;
 $tests$;
 
-
--- Exercise the invitation finalizer with the service-role grant.
-SET ROLE service_role;
-DO $invite$
-DECLARE
-  v_org uuid;
-  v_user uuid;
-  v_role uuid;
-  v_inviter uuid;
-  v_membership_id uuid;
-BEGIN
-  SELECT first_organization_id,invited_user_id,invitation_role_id,inviter_user_id
-  INTO v_org,v_user,v_role,v_inviter
-  FROM zeroerp_smoke_context;
-  v_membership_id := public.complete_organization_invitation(v_org,v_user,v_role,v_inviter);
-  IF NOT EXISTS (
-    SELECT 1 FROM public.organization_users
-    WHERE id=v_membership_id AND organization_id=v_org AND user_id=v_user
-      AND role_id=v_role AND is_active
-  ) THEN
-    RAISE EXCEPTION 'Service-role invitation finalization did not create the intended membership';
-  END IF;
-END;
-$invite$;
-RESET ROLE;
 
 -- Run read and RPC isolation checks as the authenticated role, not as the
 -- PostgreSQL owner that executes the bootstrap smoke block.
