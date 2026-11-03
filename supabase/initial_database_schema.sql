@@ -3669,6 +3669,7 @@ $function$;
 revoke all on function public.save_draft_transaction_document(uuid, text, jsonb, jsonb, uuid) from public, anon;
 grant execute on function public.save_draft_transaction_document(uuid, text, jsonb, jsonb, uuid) to authenticated;
 
+
 create or replace function public.confirm_transaction_document(
   p_organization_id uuid,
   p_document_type text,
@@ -3678,7 +3679,7 @@ returns void
 language plpgsql
 security definer
 set search_path = ''
-as $$
+as $function$
 declare
   v_user_id uuid := (select auth.uid());
   v_table text;
@@ -3689,6 +3690,7 @@ declare
   v_total numeric(20,4);
   v_debit numeric(20,4);
   v_credit numeric(20,4);
+  v_source_status text;
 begin
   if v_user_id is null or not public.is_active_org_member(p_organization_id) then
     raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
@@ -3727,9 +3729,11 @@ begin
     select p.total_amount into v_total from public.purchase p
     where p.organization_id = p_organization_id and p.id = p_document_id;
     if v_count < 1 or v_subtotal <> (select subtotal from public.purchase where organization_id = p_organization_id and id = p_document_id)
-       or v_total <> v_subtotal - (select discount_amount from public.purchase where organization_id = p_organization_id and id = p_document_id) then
-      raise exception using errcode = '23514', message = 'Purchase must have items and consistent subtotal, discount, and total before confirmation.';
+       or v_total <> v_subtotal - (select discount_amount from public.purchase where organization_id = p_organization_id and id = p_document_id)
+       or v_total <= 0 then
+      raise exception using errcode = '23514', message = 'Purchase must have items and consistent positive subtotal, discount, and total before confirmation.';
     end if;
+
   elsif p_document_type = 'sales' then
     select count(*)::integer, coalesce(sum(si.line_total), 0)
       into v_count, v_subtotal
@@ -3738,21 +3742,133 @@ begin
     select s.total_amount into v_total from public.sales s
     where s.organization_id = p_organization_id and s.id = p_document_id;
     if v_count < 1 or v_subtotal <> (select subtotal from public.sales where organization_id = p_organization_id and id = p_document_id)
-       or v_total <> v_subtotal - (select discount_amount from public.sales where organization_id = p_organization_id and id = p_document_id) then
-      raise exception using errcode = '23514', message = 'Sales invoice must have items and consistent subtotal, discount, and total before confirmation.';
+       or v_total <> v_subtotal - (select discount_amount from public.sales where organization_id = p_organization_id and id = p_document_id)
+       or v_total <= 0 then
+      raise exception using errcode = '23514', message = 'Sales invoice must have items and consistent positive subtotal, discount, and total before confirmation.';
     end if;
+
+  elsif p_document_type = 'expense' then
+    if not exists (
+      select 1
+      from public.expenses e
+      join public.expense_categories ec on ec.organization_id = e.organization_id and ec.id = e.expense_category_id
+      join public.accounts ea on ea.organization_id = ec.organization_id and ea.id = ec.expense_account_id
+      join public.accounts pa on pa.organization_id = e.organization_id and pa.id = e.payable_account_id
+      where e.organization_id = p_organization_id and e.id = p_document_id
+        and e.amount > 0 and ec.is_active
+        and ea.is_active and ea.is_postable and ea.account_type = 'expense'
+        and pa.is_active and pa.is_postable and pa.account_type = 'liability'
+        and ((e.contact_id is null and not pa.is_control_account)
+          or (e.contact_id is not null and pa.is_control_account
+            and exists (select 1 from public.contacts c where c.organization_id = e.organization_id and c.id = e.contact_id and c.is_active)))
+    ) then
+      raise exception using errcode = '23514', message = 'Expense requires an active mapped expense category, a valid liability account, and a valid optional contact.';
+    end if;
+
+  elsif p_document_type = 'payment' then
+    if not exists (
+      select 1 from public.payments p
+      join public.accounts cash on cash.organization_id = p.organization_id and cash.id = p.account_id
+      where p.organization_id = p_organization_id and p.id = p_document_id
+        and p.amount > 0 and cash.is_active and cash.is_postable
+        and cash.account_type = 'asset' and not cash.is_control_account
+        and (
+          (p.payment_type = 'transfer' and p.contact_id is null
+            and p.settlement_account_id is not null and p.settlement_account_id <> p.account_id
+            and exists (select 1 from public.accounts dest where dest.organization_id = p.organization_id
+              and dest.id = p.settlement_account_id and dest.is_active and dest.is_postable
+              and dest.account_type = 'asset' and not dest.is_control_account))
+          or
+          (p.payment_type in ('receipt','payment','refund') and p.contact_id is not null
+            and exists (select 1 from public.contacts c where c.organization_id = p.organization_id
+              and c.id = p.contact_id and c.is_active)
+            and exists (select 1 from public.accounts ctl where ctl.organization_id = p.organization_id
+              and ctl.id = p.settlement_account_id and ctl.is_active and ctl.is_postable
+              and ctl.is_control_account
+              and ((p.payment_type = 'receipt' and ctl.account_type = 'asset')
+                or (p.payment_type = 'payment' and ctl.account_type = 'liability')
+                or (p.payment_type = 'refund' and ctl.account_type in ('asset','liability')))))
+        )
+    ) then
+      raise exception using errcode = '23514', message = 'Payment requires valid cash/bank, settlement account, contact, and payment-type configuration.';
+    end if;
+
   elsif p_document_type = 'purchase_return' then
-    select count(*)::integer into v_count from public.purchase_return_items
-    where organization_id = p_organization_id and purchase_return_id = p_document_id;
-    if v_count < 1 then
-      raise exception using errcode = '23514', message = 'Purchase return must contain at least one return item before confirmation.';
+    select count(*)::integer, coalesce(sum(ri.line_total),0)
+      into v_count, v_subtotal
+    from public.purchase_return_items ri
+    where ri.organization_id = p_organization_id and ri.purchase_return_id = p_document_id;
+    select pr.total_amount into v_total from public.purchase_returns pr
+    where pr.organization_id = p_organization_id and pr.id = p_document_id;
+    if v_count < 1 or v_subtotal <> (select subtotal from public.purchase_returns where organization_id = p_organization_id and id = p_document_id)
+       or v_total <> v_subtotal - (select discount_amount from public.purchase_returns where organization_id = p_organization_id and id = p_document_id)
+       or v_total <= 0 then
+      raise exception using errcode = '23514', message = 'Purchase return must have items and consistent positive subtotal, discount, and total.';
     end if;
+    select p.status into v_source_status
+    from public.purchase_returns pr join public.purchase p
+      on p.organization_id = pr.organization_id and p.id = pr.purchase_id
+    where pr.organization_id = p_organization_id and pr.id = p_document_id
+      and pr.supplier_id = p.supplier_id and pr.payable_account_id = p.payable_account_id;
+    if v_source_status not in ('posted','partially_returned') then
+      raise exception using errcode = '23514', message = 'Purchase return must reference a posted, not-fully-returned purchase with matching supplier and payable account.';
+    end if;
+    if exists (
+      select 1
+      from public.purchase_return_items ri
+      join public.purchase_items pi on pi.organization_id = ri.organization_id and pi.id = ri.purchase_item_id
+      where ri.organization_id = p_organization_id and ri.purchase_return_id = p_document_id
+        and (pi.purchase_id <> (select purchase_id from public.purchase_returns where organization_id = p_organization_id and id = p_document_id)
+          or pi.product_id <> ri.product_id or pi.unit_cost <> ri.unit_cost
+          or ri.line_total <> round(ri.quantity * ri.unit_cost,4)
+          or ri.quantity + coalesce((
+            select sum(pri.quantity)
+            from public.purchase_return_items pri
+            join public.purchase_returns pr on pr.organization_id = pri.organization_id and pr.id = pri.purchase_return_id
+            where pri.organization_id = p_organization_id and pri.purchase_item_id = ri.purchase_item_id and pr.status = 'posted'
+          ),0) > pi.quantity)
+    ) then
+      raise exception using errcode = '23514', message = 'Purchase return lines must match original items and cannot exceed remaining purchased quantities.';
+    end if;
+
   elsif p_document_type = 'sales_return' then
-    select count(*)::integer into v_count from public.sales_return_items
-    where organization_id = p_organization_id and sales_return_id = p_document_id;
-    if v_count < 1 then
-      raise exception using errcode = '23514', message = 'Sales return must contain at least one return item before confirmation.';
+    select count(*)::integer, coalesce(sum(ri.line_total),0)
+      into v_count, v_subtotal
+    from public.sales_return_items ri
+    where ri.organization_id = p_organization_id and ri.sales_return_id = p_document_id;
+    select sr.total_amount into v_total from public.sales_returns sr
+    where sr.organization_id = p_organization_id and sr.id = p_document_id;
+    if v_count < 1 or v_subtotal <> (select subtotal from public.sales_returns where organization_id = p_organization_id and id = p_document_id)
+       or v_total <> v_subtotal - (select discount_amount from public.sales_returns where organization_id = p_organization_id and id = p_document_id)
+       or v_total <= 0 then
+      raise exception using errcode = '23514', message = 'Sales return must have items and consistent positive subtotal, discount, and total.';
     end if;
+    select s.status into v_source_status
+    from public.sales_returns sr join public.sales s
+      on s.organization_id = sr.organization_id and s.id = sr.sales_id
+    where sr.organization_id = p_organization_id and sr.id = p_document_id
+      and sr.customer_id = s.customer_id and sr.receivable_account_id = s.receivable_account_id;
+    if v_source_status not in ('posted','partially_returned') then
+      raise exception using errcode = '23514', message = 'Sales return must reference a posted, not-fully-returned invoice with matching customer and receivable account.';
+    end if;
+    if exists (
+      select 1
+      from public.sales_return_items ri
+      join public.sales_items si on si.organization_id = ri.organization_id and si.id = ri.sales_item_id
+      where ri.organization_id = p_organization_id and ri.sales_return_id = p_document_id
+        and (si.sales_id <> (select sales_id from public.sales_returns where organization_id = p_organization_id and id = p_document_id)
+          or si.product_id <> ri.product_id or si.unit_price <> ri.unit_price
+          or ri.line_total <> round(ri.quantity * ri.unit_price,4)
+          or ri.quantity + coalesce((
+            select sum(sri.quantity)
+            from public.sales_return_items sri
+            join public.sales_returns sr on sr.organization_id = sri.organization_id and sr.id = sri.sales_return_id
+            where sri.organization_id = p_organization_id and sri.sales_item_id = ri.sales_item_id and sr.status = 'posted'
+          ),0) > si.quantity)
+    ) then
+      raise exception using errcode = '23514', message = 'Sales return lines must match original items and cannot exceed remaining sold quantities.';
+    end if;
+
   elsif p_document_type = 'journal_entry' then
     select count(*)::integer, coalesce(sum(debit), 0), coalesce(sum(credit), 0)
       into v_count, v_debit, v_credit
@@ -3768,183 +3884,7 @@ begin
     v_table
   ) using p_organization_id, p_document_id, v_user_id;
 end;
-$$;
-
-create or replace function public.revert_transaction_document_to_draft(
-  p_organization_id uuid,
-  p_document_type text,
-  p_document_id uuid
-)
-returns void
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_user_id uuid := (select auth.uid());
-  v_table text;
-  v_permission text;
-  v_status text;
-begin
-  if v_user_id is null or not public.is_active_org_member(p_organization_id) then
-    raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
-  end if;
-  case p_document_type
-    when 'purchase' then v_table := 'purchase'; v_permission := 'purchases.confirm';
-    when 'sales' then v_table := 'sales'; v_permission := 'sales.confirm';
-    when 'expense' then v_table := 'expenses'; v_permission := 'expenses.confirm';
-    when 'payment' then v_table := 'payments'; v_permission := 'payments.confirm';
-    when 'purchase_return' then v_table := 'purchase_returns'; v_permission := 'purchases.returns.confirm';
-    when 'sales_return' then v_table := 'sales_returns'; v_permission := 'sales.returns.confirm';
-    when 'journal_entry' then v_table := 'journal_entries'; v_permission := 'journal_entries.confirm';
-    else raise exception using errcode = '22023', message = 'Unsupported transaction document type.';
-  end case;
-  if not public.has_org_permission(p_organization_id, v_permission) then
-    raise exception using errcode = '42501', message = 'You do not have permission to revert this document.';
-  end if;
-  execute pg_catalog.format(
-    'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
-  ) into v_status using p_organization_id, p_document_id;
-  if v_status is null then
-    raise exception using errcode = '23503', message = 'Document was not found in this organization.';
-  end if;
-  if v_status <> 'confirmed' then
-    raise exception using errcode = '23514', message = 'Only confirmed documents can be reverted to draft.';
-  end if;
-  execute pg_catalog.format(
-    'update public.%I set status = ''draft'', updated_at = pg_catalog.now() where organization_id = $1 and id = $2',
-    v_table
-  ) using p_organization_id, p_document_id;
-end;
-$$;
-
-create or replace function public.void_transaction_document(
-  p_organization_id uuid,
-  p_document_type text,
-  p_document_id uuid,
-  p_reason text
-)
-returns void
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_user_id uuid := (select auth.uid());
-  v_table text;
-  v_permission text;
-  v_status text;
-begin
-  if v_user_id is null or not public.is_active_org_member(p_organization_id) then
-    raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
-  end if;
-  if p_reason is null or pg_catalog.length(pg_catalog.btrim(p_reason)) < 3 then
-    raise exception using errcode = '22023', message = 'A cancellation reason of at least three characters is required.';
-  end if;
-  case p_document_type
-    when 'purchase' then v_table := 'purchase'; v_permission := 'purchases.confirm';
-    when 'sales' then v_table := 'sales'; v_permission := 'sales.confirm';
-    when 'expense' then v_table := 'expenses'; v_permission := 'expenses.confirm';
-    when 'payment' then v_table := 'payments'; v_permission := 'payments.confirm';
-    when 'purchase_return' then v_table := 'purchase_returns'; v_permission := 'purchases.returns.confirm';
-    when 'sales_return' then v_table := 'sales_returns'; v_permission := 'sales.returns.confirm';
-    when 'journal_entry' then v_table := 'journal_entries'; v_permission := 'journal_entries.confirm';
-    else raise exception using errcode = '22023', message = 'Unsupported transaction document type.';
-  end case;
-  if not public.has_org_permission(p_organization_id, v_permission) then
-    raise exception using errcode = '42501', message = 'You do not have permission to cancel this document.';
-  end if;
-  execute pg_catalog.format(
-    'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
-  ) into v_status using p_organization_id, p_document_id;
-  if v_status is null then
-    raise exception using errcode = '23503', message = 'Document was not found in this organization.';
-  end if;
-  if v_status not in ('draft', 'confirmed') then
-    raise exception using errcode = '23514', message = 'Only draft or confirmed documents can be cancelled; posted documents require reversal or return.';
-  end if;
-  execute pg_catalog.format(
-    'update public.%I set status = ''void'', voided_at = pg_catalog.now(), voided_by = $3, void_reason = pg_catalog.btrim($4), updated_at = pg_catalog.now() where organization_id = $1 and id = $2',
-    v_table
-  ) using p_organization_id, p_document_id, v_user_id, p_reason;
-end;
-$$;
-
-create or replace function public.delete_draft_transaction_document(
-  p_organization_id uuid,
-  p_document_type text,
-  p_document_id uuid
-)
-returns void
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_user_id uuid := (select auth.uid());
-  v_table text;
-  v_permission text;
-  v_status text;
-begin
-  if v_user_id is null or not public.is_active_org_member(p_organization_id) then
-    raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
-  end if;
-  case p_document_type
-    when 'purchase' then v_table := 'purchase'; v_permission := 'purchases.create';
-    when 'sales' then v_table := 'sales'; v_permission := 'sales.create';
-    when 'expense' then v_table := 'expenses'; v_permission := 'expenses.manage';
-    when 'payment' then v_table := 'payments'; v_permission := 'payments.manage';
-    when 'purchase_return' then v_table := 'purchase_returns'; v_permission := 'purchases.returns.create';
-    when 'sales_return' then v_table := 'sales_returns'; v_permission := 'sales.returns.create';
-    when 'journal_entry' then v_table := 'journal_entries'; v_permission := 'journal_entries.create';
-    else raise exception using errcode = '22023', message = 'Unsupported transaction document type.';
-  end case;
-  if not public.has_org_permission(p_organization_id, v_permission) then
-    raise exception using errcode = '42501', message = 'You do not have permission to delete this draft document.';
-  end if;
-  execute pg_catalog.format(
-    'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
-  ) into v_status using p_organization_id, p_document_id;
-  if v_status is null then
-    raise exception using errcode = '23503', message = 'Document was not found in this organization.';
-  end if;
-  if v_status <> 'draft' then
-    raise exception using errcode = '23514', message = 'Only draft documents can be deleted; confirmed documents must first be reverted to draft.';
-  end if;
-
-
-  if p_document_type in ('purchase', 'purchase_return', 'sales', 'sales_return', 'expense')
-     and exists (
-       select 1 from public.payment_allocations pa
-       where pa.organization_id = p_organization_id
-         and pa.document_type = p_document_type
-         and pa.document_id = p_document_id
-     ) then
-    raise exception using errcode = '23514',
-      message = 'This draft document has payment allocations; remove or reassign those allocations before deleting it.';
-  end if;
-
-  case p_document_type
-    when 'purchase' then
-      delete from public.purchase_items where organization_id = p_organization_id and purchase_id = p_document_id;
-    when 'sales' then
-      delete from public.sales_items where organization_id = p_organization_id and sales_id = p_document_id;
-    when 'purchase_return' then
-      delete from public.purchase_return_items where organization_id = p_organization_id and purchase_return_id = p_document_id;
-    when 'sales_return' then
-      delete from public.sales_return_items where organization_id = p_organization_id and sales_return_id = p_document_id;
-    when 'payment' then
-      delete from public.payment_allocations where organization_id = p_organization_id and payment_id = p_document_id;
-    when 'journal_entry' then
-      delete from public.account_transactions where organization_id = p_organization_id and journal_entry_id = p_document_id;
-    else null;
-  end case;
-
-  execute pg_catalog.format(
-    'delete from public.%I where organization_id = $1 and id = $2', v_table
-  ) using p_organization_id, p_document_id;
-end;
-$$;
+$function$;
 
 revoke all on function public.confirm_transaction_document(uuid, text, uuid) from public, anon;
 revoke all on function public.revert_transaction_document_to_draft(uuid, text, uuid) from public, anon;
