@@ -5146,10 +5146,10 @@ begin
     if p_data ? 'account_type' or p_data ? 'normal_balance' then
       if (p_data->>'account_type') is not null and
          (p_data->>'normal_balance') is distinct from
-           case p_data->>'account_type'
+           (case p_data->>'account_type'
              when 'asset' then 'debit' when 'expense' then 'debit'
              when 'liability' then 'credit' when 'equity' then 'credit'
-             when 'revenue' then 'credit' else null end then
+             when 'revenue' then 'credit' else null end) then
         raise exception using errcode = '22023', message = 'Normal balance must match the account type.';
       end if;
     end if;
@@ -5822,7 +5822,7 @@ create or replace function public.report_trial_balance(
   p_organization_id uuid,p_date_from date,p_date_to date
 )
 returns table(account_id uuid,account_code text,account_name text,account_type text,
-  opening_balance numeric,period_debit numeric,period_credit numeric,closing_balance numeric)
+  opening_balance numeric,movement_debit numeric,movement_credit numeric,closing_balance numeric)
 language plpgsql
 security definer
 set search_path = ''
