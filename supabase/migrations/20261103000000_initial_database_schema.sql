@@ -5029,7 +5029,7 @@ begin
     raise exception using errcode = '42501', message = 'Not authorized to update this organization.';
   end if;
   if p_name is null or pg_catalog.length(pg_catalog.btrim(p_name)) not between 1 and 160
-     or p_currency is null or p_currency !~ '^[A-Z]{3}     or p_timezone is null or not exists (
+     or p_currency is null or p_currency !~ '^[A-Z]{3}$' or p_timezone is null or not exists (
        select 1 from pg_catalog.pg_timezone_names tz where tz.name = pg_catalog.btrim(p_timezone)
      ) then
     raise exception using errcode = '22023', message = 'Organization name, ISO currency, or timezone is invalid.';
