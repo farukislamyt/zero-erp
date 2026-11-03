@@ -2984,6 +2984,7 @@ grant execute on function public.post_sales(uuid, uuid) to authenticated;
 
 
 
+
 create or replace function public.reverse_journal_entry(
   p_organization_id uuid,
   p_journal_entry_id uuid,
@@ -3003,6 +3004,18 @@ declare
   v_period_start date;
   v_period_end date;
   v_reversal_id uuid;
+  v_source_status text;
+  v_source_purchase_id uuid;
+  v_source_sales_id uuid;
+  v_inventory record;
+  v_balance_quantity numeric(20,6);
+  v_balance_value numeric(20,4);
+  v_average_cost numeric(20,6);
+  v_new_quantity numeric(20,6);
+  v_new_value numeric(20,4);
+  v_new_average numeric(20,6);
+  v_direction text;
+  v_txn_line integer := 0;
 begin
   if v_user_id is null or not public.is_active_org_member(p_organization_id)
      or not public.has_org_permission(p_organization_id, 'journal_entries.reverse') then
@@ -3019,8 +3032,10 @@ begin
   if not found then
     raise exception using errcode = '23503', message = 'Original journal entry was not found in this organization.';
   end if;
-  if v_original.status <> 'posted' or v_original.entry_type <> 'manual' or v_original.reversal_of_id is not null then
-    raise exception using errcode = '23514', message = 'Only an unreversed posted manual journal entry can be reversed with this function. Source-document journals require their source-specific correction workflow.';
+  if v_original.status <> 'posted' or v_original.reversal_of_id is not null
+     or v_original.entry_type not in ('manual','expense','payment','purchase_return','sales_return') then
+    raise exception using errcode = '23514',
+      message = 'Only posted manual, expense, payment, and return journals can be reversed here. Purchase and sales invoices require return documents; opening balances require a controlled adjustment.';
   end if;
   if exists (
     select 1 from public.journal_entries
@@ -3029,14 +3044,62 @@ begin
     raise exception using errcode = '23514', message = 'This journal entry has already been reversed.';
   end if;
 
+  if v_original.entry_type = 'expense' then
+    select e.status into v_source_status
+    from public.expenses e
+    where e.organization_id = p_organization_id and e.id = v_original.reference_id
+      and e.posted_journal_entry_id = p_journal_entry_id
+    for update;
+    if v_source_status is distinct from 'posted' then
+      raise exception using errcode = '23514', message = 'Expense source document is missing, already reversed, or no longer posted.';
+    end if;
+  elsif v_original.entry_type = 'payment' then
+    select p.status into v_source_status
+    from public.payments p
+    where p.organization_id = p_organization_id and p.id = v_original.reference_id
+      and p.posted_journal_entry_id = p_journal_entry_id
+    for update;
+    if v_source_status is distinct from 'posted' then
+      raise exception using errcode = '23514', message = 'Payment source document is missing, already reversed, or no longer posted.';
+    end if;
+  elsif v_original.entry_type = 'purchase_return' then
+    select pr.status, pr.purchase_id into v_source_status, v_source_purchase_id
+    from public.purchase_returns pr
+    where pr.organization_id = p_organization_id and pr.id = v_original.reference_id
+      and pr.posted_journal_entry_id = p_journal_entry_id
+    for update;
+    if v_source_status is distinct from 'posted' then
+      raise exception using errcode = '23514', message = 'Purchase return source document is missing, already reversed, or no longer posted.';
+    end if;
+    perform 1 from public.purchase
+    where organization_id = p_organization_id and id = v_source_purchase_id
+    for update;
+    if not found then
+      raise exception using errcode = '23503', message = 'Original purchase for this return no longer exists.';
+    end if;
+  elsif v_original.entry_type = 'sales_return' then
+    select sr.status, sr.sales_id into v_source_status, v_source_sales_id
+    from public.sales_returns sr
+    where sr.organization_id = p_organization_id and sr.id = v_original.reference_id
+      and sr.posted_journal_entry_id = p_journal_entry_id
+    for update;
+    if v_source_status is distinct from 'posted' then
+      raise exception using errcode = '23514', message = 'Sales return source document is missing, already reversed, or no longer posted.';
+    end if;
+    perform 1 from public.sales
+    where organization_id = p_organization_id and id = v_source_sales_id
+    for update;
+    if not found then
+      raise exception using errcode = '23503', message = 'Original sales invoice for this return no longer exists.';
+    end if;
+  end if;
+
   select ap.id, ap.status, ap.start_date, ap.end_date
     into v_period_id, v_period_status, v_period_start, v_period_end
   from public.accounting_periods ap
   where ap.organization_id = p_organization_id
     and p_reversal_date between ap.start_date and ap.end_date
-  order by ap.start_date desc
-  limit 1
-  for update;
+  order by ap.start_date desc limit 1 for update;
   if not found or v_period_status <> 'open' then
     raise exception using errcode = '23514', message = 'Reversal date must fall within an open accounting period.';
   end if;
@@ -3056,6 +3119,81 @@ begin
   )
   returning id into v_reversal_id;
 
+  if v_original.entry_type in ('purchase_return','sales_return') then
+    if not exists (
+      select 1 from public.inventory_transactions it
+      where it.organization_id = p_organization_id
+        and it.reference_type = v_original.reference_type
+        and it.reference_id = v_original.reference_id
+    ) then
+      raise exception using errcode = '23514', message = 'Return journal has no inventory movements to reverse.';
+    end if;
+
+    for v_inventory in
+      select distinct it.product_id
+      from public.inventory_transactions it
+      where it.organization_id = p_organization_id
+        and it.reference_type = v_original.reference_type
+        and it.reference_id = v_original.reference_id
+      order by it.product_id
+    loop
+      perform 1 from public.inventory_balances b
+      where b.organization_id = p_organization_id and b.product_id = v_inventory.product_id
+      for update;
+      if not found then
+        raise exception using errcode = '23514', message = 'Inventory balance is missing for a returned product.';
+      end if;
+    end loop;
+
+    for v_inventory in
+      select it.*
+      from public.inventory_transactions it
+      where it.organization_id = p_organization_id
+        and it.reference_type = v_original.reference_type
+        and it.reference_id = v_original.reference_id
+      order by it.product_id, it.transaction_number
+    loop
+      select b.quantity, b.inventory_value, b.average_cost
+        into v_balance_quantity, v_balance_value, v_average_cost
+      from public.inventory_balances b
+      where b.organization_id = p_organization_id and b.product_id = v_inventory.product_id
+      for update;
+
+      if v_original.entry_type = 'purchase_return' then
+        v_direction := 'in';
+        v_new_quantity := v_balance_quantity + v_inventory.quantity;
+        v_new_value := v_balance_value + v_inventory.total_value;
+      else
+        v_direction := 'out';
+        v_new_quantity := v_balance_quantity - v_inventory.quantity;
+        v_new_value := v_balance_value - v_inventory.total_value;
+        if v_new_quantity < 0 or v_new_value < 0 then
+          raise exception using errcode = '23514', message = 'Cannot reverse this sales return because the returned stock has already been consumed.';
+        end if;
+      end if;
+      v_new_average := case when v_new_quantity = 0 then 0 else round(v_new_value / v_new_quantity,6) end;
+
+      update public.inventory_balances
+      set quantity = v_new_quantity, inventory_value = v_new_value,
+          average_cost = v_new_average, updated_at = pg_catalog.now()
+      where organization_id = p_organization_id and product_id = v_inventory.product_id;
+
+      v_txn_line := v_txn_line + 1;
+      insert into public.inventory_transactions (
+        organization_id, transaction_number, product_id, transaction_date,
+        transaction_type, direction, quantity, unit_cost, total_value,
+        reference_type, reference_id, unit_cost_before, average_cost_after, created_by
+      )
+      values (
+        p_organization_id,
+        'REV-' || pg_catalog.replace(v_reversal_id::text,'-','') || '-' || v_txn_line::text,
+        v_inventory.product_id, p_reversal_date, 'adjustment', v_direction,
+        v_inventory.quantity, v_inventory.unit_cost, v_inventory.total_value,
+        'journal_entry_reversal', v_reversal_id, v_average_cost, v_new_average, v_user_id
+      );
+    end loop;
+  end if;
+
   insert into public.account_transactions (
     organization_id, journal_entry_id, account_id, line_number,
     description, debit, credit, contact_id
@@ -3066,8 +3204,7 @@ begin
     'Reversal: ' || coalesce(atx.description, v_original.entry_number),
     atx.credit, atx.debit, atx.contact_id
   from public.account_transactions atx
-  where atx.organization_id = p_organization_id and atx.journal_entry_id = p_journal_entry_id
-  order by atx.line_number;
+  where atx.organization_id = p_organization_id and atx.journal_entry_id = p_journal_entry_id;
 
   if not exists (
     select 1 from public.account_transactions
@@ -3077,8 +3214,86 @@ begin
   end if;
 
   update public.journal_entries
-  set status = 'reversed', updated_at = pg_catalog.now()
+  set status = 'reversed', reversal_journal_entry_id = v_reversal_id,
+      reversed_at = pg_catalog.now(), reversed_by = v_user_id,
+      reversal_reason = pg_catalog.btrim(p_reason), updated_at = pg_catalog.now()
   where organization_id = p_organization_id and id = p_journal_entry_id;
+
+  if v_original.entry_type = 'expense' then
+    update public.expenses
+    set status = 'reversed', reversal_journal_entry_id = v_reversal_id,
+        reversed_at = pg_catalog.now(), reversed_by = v_user_id,
+        reversal_reason = pg_catalog.btrim(p_reason), updated_at = pg_catalog.now()
+    where organization_id = p_organization_id and id = v_original.reference_id;
+  elsif v_original.entry_type = 'payment' then
+    update public.payments
+    set status = 'reversed', reversal_journal_entry_id = v_reversal_id,
+        reversed_at = pg_catalog.now(), reversed_by = v_user_id,
+        reversal_reason = pg_catalog.btrim(p_reason), updated_at = pg_catalog.now()
+    where organization_id = p_organization_id and id = v_original.reference_id;
+  elsif v_original.entry_type = 'purchase_return' then
+    update public.purchase_returns
+    set status = 'reversed', reversal_journal_entry_id = v_reversal_id,
+        reversed_at = pg_catalog.now(), reversed_by = v_user_id,
+        reversal_reason = pg_catalog.btrim(p_reason), updated_at = pg_catalog.now()
+    where organization_id = p_organization_id and id = v_original.reference_id;
+
+    if exists (
+      select 1 from public.purchase_returns pr
+      where pr.organization_id = p_organization_id and pr.purchase_id = v_source_purchase_id and pr.status = 'posted'
+    ) then
+      if exists (
+        select 1 from public.purchase_items pi
+        where pi.organization_id = p_organization_id and pi.purchase_id = v_source_purchase_id
+          and pi.quantity > coalesce((
+            select sum(pri.quantity)
+            from public.purchase_return_items pri
+            join public.purchase_returns pr on pr.organization_id = pri.organization_id and pr.id = pri.purchase_return_id
+            where pri.organization_id = p_organization_id and pri.purchase_item_id = pi.id and pr.status = 'posted'
+          ),0)
+      ) then
+        update public.purchase set status = 'partially_returned', updated_at = pg_catalog.now()
+        where organization_id = p_organization_id and id = v_source_purchase_id;
+      else
+        update public.purchase set status = 'returned', updated_at = pg_catalog.now()
+        where organization_id = p_organization_id and id = v_source_purchase_id;
+      end if;
+    else
+      update public.purchase set status = 'posted', updated_at = pg_catalog.now()
+      where organization_id = p_organization_id and id = v_source_purchase_id;
+    end if;
+  elsif v_original.entry_type = 'sales_return' then
+    update public.sales_returns
+    set status = 'reversed', reversal_journal_entry_id = v_reversal_id,
+        reversed_at = pg_catalog.now(), reversed_by = v_user_id,
+        reversal_reason = pg_catalog.btrim(p_reason), updated_at = pg_catalog.now()
+    where organization_id = p_organization_id and id = v_original.reference_id;
+
+    if exists (
+      select 1 from public.sales_returns sr
+      where sr.organization_id = p_organization_id and sr.sales_id = v_source_sales_id and sr.status = 'posted'
+    ) then
+      if exists (
+        select 1 from public.sales_items si
+        where si.organization_id = p_organization_id and si.sales_id = v_source_sales_id
+          and si.quantity > coalesce((
+            select sum(sri.quantity)
+            from public.sales_return_items sri
+            join public.sales_returns sr on sr.organization_id = sri.organization_id and sr.id = sri.sales_return_id
+            where sri.organization_id = p_organization_id and sri.sales_item_id = si.id and sr.status = 'posted'
+          ),0)
+      ) then
+        update public.sales set status = 'partially_returned', updated_at = pg_catalog.now()
+        where organization_id = p_organization_id and id = v_source_sales_id;
+      else
+        update public.sales set status = 'returned', updated_at = pg_catalog.now()
+        where organization_id = p_organization_id and id = v_source_sales_id;
+      end if;
+    else
+      update public.sales set status = 'posted', updated_at = pg_catalog.now()
+      where organization_id = p_organization_id and id = v_source_sales_id;
+    end if;
+  end if;
 
   return v_reversal_id;
 end;
