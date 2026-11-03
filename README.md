@@ -53,7 +53,7 @@ For the logical ER diagram, schema dependency order, relationship map, table inv
 ## Database Schema
 
 
-The executable bootstrap SQL is maintained in **[`supabase/initial_database_schema.sql`](supabase/initial_database_schema.sql)**. It consolidates the complete database schema, seed data, RLS policies, grants, and posting RPCs into one ordered script. Run it only once against a new/empty Supabase database; do not run it as an upgrade against a database that already contains these objects. For an existing installation, apply the ordered SQL files in [`supabase/migrations/`](supabase/migrations/) instead. The `20261103000100_remove_accounting_periods.sql` migration removes period metadata and the period ID from journal entries while preserving financial documents, journal lines, and transaction dates; back up and verify on staging before production.
+The executable bootstrap SQL is maintained in **[`supabase/migrations/20261103000000_initial_database_schema.sql`](supabase/migrations/20261103000000_initial_database_schema.sql)**. This is the repository's single canonical database SQL file: it contains the complete schema, seed data, RLS policies, grants, triggers, indexes, and posting RPCs. Run it only once against a new/empty Supabase database; it is not an upgrade script for an existing database. No separate incremental SQL migration files are maintained during the current schema-design phase.
 
 ### Organization and configuration
 
@@ -313,7 +313,7 @@ The complete data model documents 23 business tables plus three RBAC tables (26 
 
 </details>
 
-**Schema note:** `supabase/initial_database_schema.sql` is the canonical bootstrap DDL for a new/empty database. This README is a navigation and column reference; use the SQL file as the source of truth for types, defaults, constraints, indexes, triggers, grants, and RLS policies.
+**Schema note:** `supabase/migrations/20261103000000_initial_database_schema.sql` is the canonical bootstrap DDL for a new/empty database. This README is a navigation and column reference; use the SQL file as the source of truth for types, defaults, constraints, indexes, triggers, grants, and RLS policies.
 
 ## Accounting and Posting
 
