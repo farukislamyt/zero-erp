@@ -44,6 +44,10 @@ DECLARE
   v_balance_sheet_assets numeric(20,4);
   v_balance_sheet_equity_liabilities numeric(20,4);
   v_contact_balance_total numeric(20,4);
+  v_third_user_id uuid := '00000000-0000-0000-0000-000000000003';
+  v_manager_role_id uuid;
+  v_third_membership_id uuid;
+  v_admin_role_id uuid;
   v_second_organization_id uuid;
   v_second_contact_id uuid;
 BEGIN
@@ -331,6 +335,8 @@ BEGIN
     'public.save_master_data(uuid,text,jsonb,uuid)',
     'public.create_custom_role(uuid,text,text[])',
     'public.replace_custom_role_permissions(uuid,uuid,text[])',
+    'public.update_custom_role(uuid,uuid,text,text)',
+    'public.validate_role_assignment(uuid,uuid)',
     'public.update_organization_profile(uuid,text,text,text,text,text,text,text,text,text,text)',
     'public.set_payment_allocations(uuid,uuid,jsonb)',
     'public.post_inventory_adjustment(uuid,date,text,jsonb,uuid,uuid)',
@@ -517,6 +523,35 @@ BEGIN
   IF (SELECT count(*) FROM public.role_permissions WHERE role_id=v_role_id) <> 1 THEN
     RAISE EXCEPTION 'Custom role permission replacement failed';
   END IF;
+
+  PERFORM public.update_custom_role(
+    v_test_organization_id,v_role_id,'Smoke Sales Clerk Renamed','inactive'
+  );
+  PERFORM public.update_custom_role(
+    v_test_organization_id,v_role_id,'Smoke Sales Clerk Renamed','active'
+  );
+
+  -- A delegated user with users.manage cannot promote themselves to Administrator.
+  v_manager_role_id := public.create_custom_role(
+    v_test_organization_id,'Smoke Member Manager',ARRAY['users.manage','users.read']
+  );
+  INSERT INTO auth.users(id) VALUES(v_third_user_id) ON CONFLICT(id) DO NOTHING;
+  INSERT INTO public.organization_users(organization_id,user_id,role_id,is_active)
+  VALUES(v_test_organization_id,v_third_user_id,v_manager_role_id,true)
+  RETURNING id INTO v_third_membership_id;
+  SELECT id INTO v_admin_role_id FROM public.roles
+  WHERE organization_id=v_test_organization_id AND is_system_role;
+  PERFORM pg_catalog.set_config('request.jwt.claim.sub',v_third_user_id::text,true);
+  BEGIN
+    PERFORM public.update_organization_user_role(
+      v_test_organization_id,v_third_membership_id,v_admin_role_id
+    );
+    RAISE EXCEPTION 'A delegated member manager promoted themselves to Administrator';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true
+  );
 
   PERFORM public.update_organization_profile(
     v_test_organization_id,'Database smoke test organization','+8801000000000',
