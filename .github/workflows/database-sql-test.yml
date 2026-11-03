@@ -101,6 +101,13 @@ jobs:
           psql -X -v ON_ERROR_STOP=1 \
             --file supabase/migrations/20261103000000_initial_database_schema.sql
 
+      - name: Grant test-only service-role privileges
+        run: |
+          psql -X -v ON_ERROR_STOP=1 <<'SQL'
+          GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO service_role;
+          GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO service_role;
+          SQL
+
       - name: Run database schema smoke tests
         run: |
           psql -X -v ON_ERROR_STOP=1 \
