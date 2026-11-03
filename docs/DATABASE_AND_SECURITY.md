@@ -113,7 +113,7 @@ The full function catalog in [DATABASE_REFERENCE.md](DATABASE_REFERENCE.md#funct
 
 ### Posting and reversals
 
-The final schema defines posting functions for purchases, sales, purchase returns, sales returns, expenses, contact payments, inventory adjustments, opening balances and confirmed manual journals. `reverse_journal_entry` provides controlled journal reversal. These routines use organization-scoped locks and row locks where implemented in their bodies; see the SQL source for exact lock ordering and validation. **Known blocker:** `post_inventory_adjustment` calls the number allocator with `inventory_adjustment`, but `next_document_number` has no permission mapping for that type, so the current adjustment path fails before posting. See [Database Audit](DATABASE_AUDIT.md#4-findings-requiring-attention).
+The final schema defines posting functions for purchases, sales, purchase returns, sales returns, expenses, contact payments, inventory adjustments, opening balances and confirmed manual journals. `reverse_journal_entry` provides controlled journal reversal. These routines use organization-scoped locks and row locks where implemented in their bodies; see the SQL source for exact lock ordering and validation. `next_document_number` maps `inventory_adjustment` to `inventory.adjust`, so the posting path has the required allocator permission check. This is source-level verification; live posting has not been executed.
 
 The legacy `post_manual_journal_entry` function remains defined but client EXECUTE is revoked. The supported manual journal path is draft save → confirm → `post_confirmed_journal_entry`.
 
@@ -133,9 +133,18 @@ The legacy `post_manual_journal_entry` function remains defined but client EXECU
 
 ### Reports
 
-Reporting RPCs exist for trial balance, general ledger, profit and loss, balance sheet, inventory valuation, contact balances, receivables aging, payables aging and unapplied payments. Their exact arguments and return columns are listed in the function catalog. **Known caveat:** receivables aging does not currently exclude payments dated after its as-of date, so historical balances can be understated; see the audit.
+Reporting RPCs exist for trial balance, general ledger, profit and loss, balance sheet, inventory valuation, contact balances, receivables aging, payables aging and unapplied payments. Their exact arguments and return columns are listed in the function catalog. `report_receivables_aging` applies `payment_date <= p_as_of_date` to posted payment allocations, keeping later payments out of historical balances. This is source-level verification; historical report results have not been runtime-tested.
 
-## 7. Important model boundaries
+## 7. Tenant-isolation hardening in the current SQL
+
+- The self-read branch of `organization_users_select_member_or_self` exposes only the caller's own active membership in an active organization. The `users.read` permission branch remains available for authorized organization administrators.
+- `save_draft_transaction_document` validates a supplied manual-journal `reference_id` against an explicit allowlist of reference types and requires the referenced row to belong to the same `p_organization_id`. Unsupported types, missing reference types, and cross-organization or nonexistent targets are rejected.
+- The document-number allocator maps `inventory_adjustment` to `inventory.adjust`.
+- Receivables aging excludes posted payments whose `payment_date` is later than the requested `p_as_of_date`.
+
+These controls were reviewed statically in the canonical SQL. They have not yet been certified through live PostgreSQL/Supabase adversarial tests.
+
+## 8. Important model boundaries
 
 These are explicit properties of the current schema:
 
@@ -146,6 +155,6 @@ These are explicit properties of the current schema:
 - There is no accounting-period table, accounting-period column, period permission, period-close RPC, or period-lock workflow.
 - The SQL migrations do not create application screens, API routes outside PostgreSQL RPCs, Auth email delivery, or deployment infrastructure.
 
-## 8. Source of detail
+## 9. Source of detail
 
 Use [Complete Database Reference](DATABASE_REFERENCE.md) for exact definitions. Use the migration files as the executable authority if any prose ever differs. Documentation changes must be made from the migration source; never modify the schema merely to make it match stale documentation.
