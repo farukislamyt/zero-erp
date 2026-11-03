@@ -207,7 +207,7 @@ $$;
 
 drop trigger if exists organization_users_guard_creator_record on public.organization_users;
 create trigger organization_users_guard_creator_record
-before update or delete on public.organization_users
+before insert or update or delete on public.organization_users
 for each row execute function public.guard_organization_creator_membership();
 
 -- The founder marker depends on organizations.created_at, so that timestamp
