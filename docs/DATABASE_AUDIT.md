@@ -38,6 +38,13 @@ The schema is a substantial tenant-scoped PostgreSQL foundation, but it is **not
 
 ## Fixes applied in this audit
 
+### 7. Membership and creator-history regression coverage
+
+**Coverage added:** the PostgreSQL smoke suite now checks verified-email-only membership addition, non-Administrator denial for role/member administration, rejection of reserved permission grants to custom roles (including direct SQL writes), creator-anchor immutability and anti-forgery, one active company membership, Administrator handover, and the lifetime one-company restriction after the original creator has been deactivated.
+
+**Verification boundary:** CI now applies the bootstrap and the incremental migration in sequence before running these cases. The workflow has not yet returned a confirmed result in this review; real Supabase Auth/JWT and concurrent-session testing remain separate release gates.
+
+
 ### 1. Invalid organization timezones could be stored
 
 **Problem:** organization creation previously checked only that the timezone string was non-empty. Invalid values could be persisted and later cause inconsistent timestamp/reporting behavior.
@@ -83,7 +90,7 @@ These are genuine blockers for a complete end-to-end ERP workflow. They are not 
 | P0 | Master-data CRUD | No permission-checked create/update RPCs for accounts, contacts, products, units, or expense categories. Direct client writes are revoked. | Add validated create/update/activation RPCs for each master-data domain. |
 | P0 | Chart-of-accounts initialization | Organization creation creates only the tenant and Administrator. It does not seed a usable chart of accounts, cash/bank, AR/AP control, revenue, COGS, inventory, or expense accounts. | Define a reviewed default COA template and an idempotent organization setup routine; allow controlled customization. |
 | P0 | Full Auth lifecycle tests | Current CI uses plain PostgreSQL and a minimal `auth.uid()` shim. It does not test real Supabase signup, email verification, login, JWT claims, refresh, or logout. | Run Supabase local stack and test Auth HTTP endpoints with real local JWTs. |
-| P1 | Membership authorization regression tests | Administrator-only membership/role RPCs and custom-role safeguards are implemented in `20261103010000_organization_membership_security.sql`; the database policy has not yet been executed against PostgreSQL or tested under concurrent requests. | Add SQL integration tests for role bypass attempts, Administrator transfer, creator-record immutability, one-company lifetime limit, and one-active-company membership. |
+| P1 | Membership authorization regression tests | Regression cases are now included in `tests/database/schema_smoke_test.sql`; CI applies both the canonical bootstrap and incremental membership migration on PostgreSQL 17. The workflow status has not yet been confirmed. | Confirm the CI run passes; add real Supabase Auth/JWT and concurrent-session tests before production rollout. |
 | P1 | Inventory adjustments | `inventory.adjust` exists, but there is no adjustment document or posting RPC. Stock corrections cannot be performed through the supported client boundary. | Add adjustment header/lines or a controlled adjustment RPC that posts inventory and GL effects atomically. |
 | P1 | Automatic numbering integration | `next_document_number` exists but `save_draft_transaction_document` does not call it. Callers can supply their own numbers; automatic sequence allocation is not part of document creation. | Allocate numbers server-side on document creation and prevent caller override where automatic numbering is configured. |
 | P1 | Invoice-level payment allocation | `payment_allocations` exists, but current payment posting is contact-level and explicitly rejects payments with allocation rows. Invoice outstanding/aging cannot be computed reliably. | Implement invoice subledger allocation, over-allocation protection, unapplied balances, and reversal/unallocation semantics. |
