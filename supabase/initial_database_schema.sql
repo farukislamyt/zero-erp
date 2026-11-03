@@ -2828,7 +2828,7 @@ begin
   execute pg_catalog.format(
     'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
   ) into v_status using p_organization_id, p_document_id;
-  if not found then
+  if v_status is null then
     raise exception using errcode = '23503', message = 'Document was not found in this organization.';
   end if;
   if v_status <> 'draft' then
@@ -2921,7 +2921,7 @@ begin
   execute pg_catalog.format(
     'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
   ) into v_status using p_organization_id, p_document_id;
-  if not found then
+  if v_status is null then
     raise exception using errcode = '23503', message = 'Document was not found in this organization.';
   end if;
   if v_status <> 'confirmed' then
@@ -2973,7 +2973,7 @@ begin
   execute pg_catalog.format(
     'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
   ) into v_status using p_organization_id, p_document_id;
-  if not found then
+  if v_status is null then
     raise exception using errcode = '23503', message = 'Document was not found in this organization.';
   end if;
   if v_status not in ('draft', 'confirmed') then
@@ -3021,7 +3021,7 @@ begin
   execute pg_catalog.format(
     'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
   ) into v_status using p_organization_id, p_document_id;
-  if not found then
+  if v_status is null then
     raise exception using errcode = '23503', message = 'Document was not found in this organization.';
   end if;
   if v_status <> 'draft' then
