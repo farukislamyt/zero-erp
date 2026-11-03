@@ -5382,6 +5382,10 @@ begin
      or p_permission_keys is null then
     raise exception using errcode = '22023', message = 'Role name and permission list are required.';
   end if;
+  perform 1 from public.organizations o
+  where o.id=p_organization_id and o.is_active for update;
+  if not found then raise exception using errcode='23503',message='Active organization was not found.'; end if;
+
   if exists (
     select 1 from unnest(p_permission_keys) as x(permission_key)
     where not public.has_org_permission(p_organization_id,x.permission_key)
@@ -5425,6 +5429,9 @@ begin
     raise exception using errcode = '42501', message = 'Not authorized to change role permissions.';
   end if;
   if p_permission_keys is null then raise exception using errcode = '22023', message = 'Permission list is required.'; end if;
+  perform 1 from public.organizations o
+  where o.id=p_organization_id and o.is_active for update;
+  if not found then raise exception using errcode='23503',message='Active organization was not found.'; end if;
   select r.is_system_role into v_system
   from public.roles r
   where r.organization_id=p_organization_id and r.id=p_role_id and r.status='active'
@@ -6263,6 +6270,85 @@ grant execute on function public.report_inventory_valuation(uuid,date) to authen
 grant execute on function public.report_contact_balances(uuid,date) to authenticated;
 grant execute on function public.report_receivables_aging(uuid,date) to authenticated;
 grant execute on function public.report_payables_aging(uuid,date) to authenticated;
+
+
+
+create or replace function public.validate_role_assignment(
+  p_organization_id uuid,
+  p_role_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id,'users.manage') then
+    raise exception using errcode='42501',message='Not authorized to assign organization roles.';
+  end if;
+  perform 1 from public.organizations o where o.id=p_organization_id and o.is_active for update;
+  if not found then raise exception using errcode='23503',message='Active organization was not found.'; end if;
+  if not exists(select 1 from public.roles r
+    where r.organization_id=p_organization_id and r.id=p_role_id and r.status='active') then
+    raise exception using errcode='23503',message='The selected role must be active and belong to this organization.';
+  end if;
+  if exists (
+    select 1 from public.role_permissions rp
+    join public.permissions p on p.id=rp.permission_id
+    where rp.role_id=p_role_id
+      and not public.has_org_permission(p_organization_id,p.permission_key)
+  ) then
+    raise exception using errcode='42501',
+      message='You cannot assign a role containing permissions you do not hold.';
+  end if;
+end;
+$function$;
+revoke all on function public.validate_role_assignment(uuid,uuid) from public,anon;
+grant execute on function public.validate_role_assignment(uuid,uuid) to authenticated;
+
+create or replace function public.update_custom_role(
+  p_organization_id uuid,
+  p_role_id uuid,
+  p_name text,
+  p_status text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_system boolean;
+begin
+  if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id,'roles.manage') then
+    raise exception using errcode='42501',message='Not authorized to update custom roles.';
+  end if;
+  if p_name is null or pg_catalog.length(pg_catalog.btrim(p_name)) not between 1 and 100
+     or p_status not in ('active','inactive') then
+    raise exception using errcode='22023',message='Role name or status is invalid.';
+  end if;
+  perform 1 from public.organizations o where o.id=p_organization_id and o.is_active for update;
+  if not found then raise exception using errcode='23503',message='Active organization was not found.'; end if;
+  select r.is_system_role into v_system
+  from public.roles r where r.organization_id=p_organization_id and r.id=p_role_id for update;
+  if not found then raise exception using errcode='23503',message='Role was not found in this organization.'; end if;
+  if v_system then raise exception using errcode='42501',message='System roles cannot be renamed or deactivated.'; end if;
+  if p_status='inactive' and exists (
+    select 1 from public.organization_users ou
+    where ou.organization_id=p_organization_id and ou.role_id=p_role_id and ou.is_active
+  ) then
+    raise exception using errcode='23514',message='Reassign or deactivate all active members before deactivating this role.';
+  end if;
+  update public.roles set name=pg_catalog.btrim(p_name),status=p_status
+  where organization_id=p_organization_id and id=p_role_id;
+exception when unique_violation then
+  raise exception using errcode='23505',message='A role with this name already exists.';
+end;
+$function$;
+revoke all on function public.update_custom_role(uuid,uuid,text,text) from public,anon;
+grant execute on function public.update_custom_role(uuid,uuid,text,text) to authenticated;
 
 
 commit;
