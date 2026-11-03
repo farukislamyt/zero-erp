@@ -10,15 +10,13 @@ Zero ERP's database is a tenant-scoped PostgreSQL schema for organization manage
 | [Database Architecture and Security](docs/DATABASE_AND_SECURITY.md) | Effective data model, tenant isolation, Creator/Administrator invariants, RLS/RBAC and transactional workflows. |
 | [Database Audit](docs/DATABASE_AUDIT.md) | Static audit findings, known limitations and verification boundary. |
 
-## Canonical migration chain
+## Canonical database SQL file
 
-Apply the SQL files in timestamp order:
+The complete database bootstrap is maintained in one file:
 
-1. [Initial bootstrap](supabase/migrations/20261103000000_initial_database_schema.sql) — use only to initialize a new/empty database.
-2. [Organization membership security](supabase/migrations/20261103010000_organization_membership_security.sql) — incremental membership/RBAC security update.
-3. [Permanent organization Administrator](supabase/migrations/20261103020000_permanent_organization_administrator.sql) — binds the sole Administrator role to the original organization creator and drops the Administrator-transfer RPC.
+- [`supabase/migrations/20261103000000_initial_database_schema.sql`](supabase/migrations/20261103000000_initial_database_schema.sql) — contains the complete schema, membership/RBAC security, permanent original-Creator Administrator protections, seeds, functions, triggers, RLS policies and grants.
 
-The effective database is the result of all three migrations, not the initial bootstrap file in isolation. Later function definitions replace earlier definitions; later trigger drops/re-creations determine the active trigger set. Do not run the initial bootstrap against an already populated database.
+The file is intended to initialize a **new/empty Supabase database**. It contains the effective SQL previously split across three files, in execution order, inside one transaction. Do not run it against an already populated database.
 
 ## Effective schema at a glance
 
@@ -31,7 +29,7 @@ The effective database is the result of all three migrations, not the initial bo
 - 43 seeded permission keys.
 - No SQL views, materialized views, user-defined sequences, custom enum/type/domain definitions, or accounting-period subsystem.
 
-See the [Complete Database Reference](docs/DATABASE_REFERENCE.md) for exact definitions. If prose documentation and executable SQL ever differ, the migration chain is authoritative; update the documentation from the SQL rather than changing the database to match stale prose.
+See the [Complete Database Reference](docs/DATABASE_REFERENCE.md) for exact definitions. If prose documentation and executable SQL ever differ, the bootstrap SQL file is authoritative; update the documentation from the SQL rather than changing the database to match stale prose.
 
 ## Current database boundaries
 
@@ -44,4 +42,4 @@ See the [Complete Database Reference](docs/DATABASE_REFERENCE.md) for exact defi
 
 ## Verification
 
-Documentation has been statically compared with the SQL migration chain on `feat/database-migrations`. No live Supabase project was modified as part of the documentation work. PostgreSQL execution, Supabase Auth integration, runtime behavior and concurrency testing remain separate verification steps.
+Documentation has been statically compared with the canonical bootstrap SQL file on `feat/database-migrations`. No live Supabase project was modified as part of the documentation work. PostgreSQL execution, Supabase Auth integration, runtime behavior and concurrency testing remain separate verification steps.
