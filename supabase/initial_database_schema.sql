@@ -408,7 +408,6 @@ to authenticated;
 -- ============================================================================
 
 -- Zero ERP: ledger, inventory, purchasing, sales, expenses, and payments
--- Depends on 20261102000100_core_foundation.sql.
 -- All financial and inventory writes remain unavailable to client roles until the
 -- posting and allocation RPCs have been implemented and granted explicitly.
 
@@ -420,7 +419,13 @@ create table public.journal_entries (
   entry_date date not null,
   entry_type text not null
     check (entry_type in ('manual', 'purchase', 'purchase_return', 'sale', 'sales_return', 'expense', 'payment', 'reversal', 'opening_balance', 'adjustment')),
-  status text not null default 'draft' check (status in ('draft', 'posted', 'reversed', 'void')),
+  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'reversed', 'void')),
+  confirmed_at timestamptz,
+  confirmed_by uuid references auth.users(id) on delete set null,
+  posted_by uuid references auth.users(id) on delete set null,
+  voided_at timestamptz,
+  voided_by uuid references auth.users(id) on delete set null,
+  void_reason text,
   reference_type text,
   reference_id uuid,
   description text,
@@ -441,7 +446,11 @@ create table public.journal_entries (
     on delete restrict,
   constraint journal_entries_not_self_reversal_chk check (reversal_of_id is distinct from id),
   constraint journal_entries_posted_timestamp_chk
-    check ((status in ('posted', 'reversed') and posted_at is not null) or status in ('draft', 'void'))
+    check ((status in ('posted', 'reversed') and posted_at is not null) or status in ('draft', 'confirmed', 'void')),
+  constraint journal_entries_confirmed_timestamp_chk
+    check (status <> 'confirmed' or (confirmed_at is not null and confirmed_by is not null)),
+  constraint journal_entries_void_timestamp_chk
+    check (status <> 'void' or (voided_at is not null and voided_by is not null and nullif(pg_catalog.btrim(void_reason), '') is not null))
 );
 
 create table public.account_transactions (
@@ -522,7 +531,13 @@ create table public.purchase (
   invoice_id text not null check (pg_catalog.length(pg_catalog.btrim(invoice_id)) between 1 and 80),
   supplier_id uuid not null,
   invoice_date date not null,
-  status text not null default 'draft' check (status in ('draft', 'approved', 'posted', 'partially_returned', 'returned', 'void')),
+  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'partially_returned', 'returned', 'void')),
+  confirmed_at timestamptz,
+  confirmed_by uuid references auth.users(id) on delete set null,
+  posted_by uuid references auth.users(id) on delete set null,
+  voided_at timestamptz,
+  voided_by uuid references auth.users(id) on delete set null,
+  void_reason text,
   subtotal numeric(20, 4) not null default 0 check (subtotal >= 0),
   discount_amount numeric(20, 4) not null default 0 check (discount_amount >= 0),
   total_amount numeric(20, 4) not null default 0 check (total_amount >= 0),
@@ -574,7 +589,13 @@ create table public.purchase_returns (
   purchase_id uuid not null,
   supplier_id uuid not null,
   return_date date not null,
-  status text not null default 'draft' check (status in ('draft', 'posted', 'void')),
+  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'void')),
+  confirmed_at timestamptz,
+  confirmed_by uuid references auth.users(id) on delete set null,
+  posted_by uuid references auth.users(id) on delete set null,
+  voided_at timestamptz,
+  voided_by uuid references auth.users(id) on delete set null,
+  void_reason text,
   subtotal numeric(20, 4) not null default 0 check (subtotal >= 0),
   discount_amount numeric(20, 4) not null default 0 check (discount_amount >= 0),
   total_amount numeric(20, 4) not null default 0 check (total_amount >= 0),
@@ -634,7 +655,13 @@ create table public.sales (
   invoice_id text not null check (pg_catalog.length(pg_catalog.btrim(invoice_id)) between 1 and 80),
   customer_id uuid not null,
   invoice_date date not null,
-  status text not null default 'draft' check (status in ('draft', 'approved', 'posted', 'partially_returned', 'returned', 'void')),
+  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'partially_returned', 'returned', 'void')),
+  confirmed_at timestamptz,
+  confirmed_by uuid references auth.users(id) on delete set null,
+  posted_by uuid references auth.users(id) on delete set null,
+  voided_at timestamptz,
+  voided_by uuid references auth.users(id) on delete set null,
+  void_reason text,
   subtotal numeric(20, 4) not null default 0 check (subtotal >= 0),
   discount_amount numeric(20, 4) not null default 0 check (discount_amount >= 0),
   total_amount numeric(20, 4) not null default 0 check (total_amount >= 0),
@@ -688,7 +715,13 @@ create table public.sales_returns (
   sales_id uuid not null,
   customer_id uuid not null,
   return_date date not null,
-  status text not null default 'draft' check (status in ('draft', 'posted', 'void')),
+  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'void')),
+  confirmed_at timestamptz,
+  confirmed_by uuid references auth.users(id) on delete set null,
+  posted_by uuid references auth.users(id) on delete set null,
+  voided_at timestamptz,
+  voided_by uuid references auth.users(id) on delete set null,
+  void_reason text,
   subtotal numeric(20, 4) not null default 0 check (subtotal >= 0),
   discount_amount numeric(20, 4) not null default 0 check (discount_amount >= 0),
   total_amount numeric(20, 4) not null default 0 check (total_amount >= 0),
@@ -754,7 +787,13 @@ create table public.expenses (
   expense_date date not null,
   amount numeric(20, 4) not null check (amount > 0),
   description text,
-  status text not null default 'draft' check (status in ('draft', 'approved', 'posted', 'void')),
+  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'void')),
+  confirmed_at timestamptz,
+  confirmed_by uuid references auth.users(id) on delete set null,
+  posted_by uuid references auth.users(id) on delete set null,
+  voided_at timestamptz,
+  voided_by uuid references auth.users(id) on delete set null,
+  void_reason text,
   posted_journal_entry_id uuid,
   created_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default pg_catalog.now(),
@@ -785,7 +824,13 @@ create table public.payments (
   amount numeric(20, 4) not null check (amount > 0),
   account_id uuid not null,
   settlement_account_id uuid,
-  status text not null default 'draft' check (status in ('draft', 'approved', 'posted', 'void')),
+  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'void')),
+  confirmed_at timestamptz,
+  confirmed_by uuid references auth.users(id) on delete set null,
+  posted_by uuid references auth.users(id) on delete set null,
+  voided_at timestamptz,
+  voided_by uuid references auth.users(id) on delete set null,
+  void_reason text,
   posted_journal_entry_id uuid,
   description text,
   created_by uuid references auth.users(id) on delete set null,
@@ -985,6 +1030,7 @@ values
   ('accounts.manage', 'Manage chart of accounts', 'Create and update chart of accounts.', 'accounting'),
   ('journal_entries.read', 'View journal entries', 'View journal entries and lines.', 'accounting'),
   ('journal_entries.create', 'Create journal entries', 'Create draft journal entries.', 'accounting'),
+  ('journal_entries.confirm', 'Confirm journal entries', 'Confirm balanced draft journal entries before posting.', 'accounting'),
   ('journal_entries.post', 'Post journal entries', 'Post balanced journal entries.', 'accounting'),
   ('journal_entries.reverse', 'Reverse journal entries', 'Create controlled reversals of posted entries.', 'accounting'),
   ('contacts.read', 'View contacts', 'View customers, suppliers, and other contacts.', 'contacts'),
@@ -995,17 +1041,23 @@ values
   ('inventory.adjust', 'Adjust inventory', 'Post authorized inventory adjustments.', 'inventory'),
   ('purchases.read', 'View purchases', 'View purchase invoices and returns.', 'purchases'),
   ('purchases.create', 'Create purchases', 'Create and update draft purchase documents.', 'purchases'),
+  ('purchases.confirm', 'Confirm purchases', 'Confirm purchase documents before posting.', 'purchases'),
   ('purchases.post', 'Post purchases', 'Post purchases and related stock/accounting effects.', 'purchases'),
   ('purchases.returns.post', 'Post purchase returns', 'Post purchase returns.', 'purchases'),
+  ('purchases.returns.confirm', 'Confirm purchase returns', 'Confirm purchase return documents before posting.', 'purchases'),
   ('sales.read', 'View sales', 'View sales invoices and returns.', 'sales'),
   ('sales.create', 'Create sales', 'Create and update draft sales documents.', 'sales'),
+  ('sales.confirm', 'Confirm sales', 'Confirm sales invoices before posting.', 'sales'),
   ('sales.post', 'Post sales', 'Post sales and related stock/accounting effects.', 'sales'),
   ('sales.returns.post', 'Post sales returns', 'Post sales returns.', 'sales'),
+  ('sales.returns.confirm', 'Confirm sales returns', 'Confirm sales return documents before posting.', 'sales'),
   ('expenses.read', 'View expenses', 'View expense records.', 'expenses'),
   ('expenses.manage', 'Manage expenses', 'Create and update draft expenses.', 'expenses'),
+  ('expenses.confirm', 'Confirm expenses', 'Confirm expense documents before posting.', 'expenses'),
   ('expenses.post', 'Post expenses', 'Post expenses to the ledger.', 'expenses'),
   ('payments.read', 'View payments', 'View payments and allocations.', 'payments'),
   ('payments.manage', 'Manage payments', 'Create payments and manage draft allocations.', 'payments'),
+  ('payments.confirm', 'Confirm payments', 'Confirm payments and receipts before posting.', 'payments'),
   ('payments.post', 'Post payments', 'Post payments and allocation effects.', 'payments'),
   ('reports.read', 'View reports', 'View organization financial and operational reports.', 'reports')
 on conflict (permission_key) do update
@@ -1381,7 +1433,10 @@ begin
     entry_type,
     status,
     description,
+    confirmed_at,
+    confirmed_by,
     posted_at,
+    posted_by,
     created_by
   )
   values (
@@ -1393,6 +1448,9 @@ begin
     'posted',
     nullif(pg_catalog.btrim(coalesce(p_description, '')), ''),
     pg_catalog.now(),
+    v_user_id,
+    pg_catalog.now(),
+    v_user_id,
     v_user_id
   )
   returning id into v_journal_entry_id;
@@ -1489,8 +1547,8 @@ begin
   if not found then
     raise exception using errcode = '23503', message = 'Purchase document was not found in this organization.';
   end if;
-  if v_purchase.status not in ('draft', 'approved') or v_purchase.posted_journal_entry_id is not null then
-    raise exception using errcode = '23514', message = 'Only an unposted draft or approved purchase can be posted.';
+  if v_purchase.status <> 'confirmed' or v_purchase.posted_journal_entry_id is not null then
+    raise exception using errcode = '23514', message = 'Only a confirmed, unposted purchase can be posted.';
   end if;
 
   select c.is_active into v_supplier_active
@@ -1678,7 +1736,7 @@ begin
   );
 
   update public.purchase
-  set status = 'posted', posted_journal_entry_id = v_journal_id, updated_at = pg_catalog.now()
+  set status = 'posted', posted_journal_entry_id = v_journal_id, posted_by = v_user_id, updated_at = pg_catalog.now()
   where organization_id = p_organization_id and id = p_purchase_id;
 
   return v_journal_id;
@@ -2241,9 +2299,9 @@ begin
       message = 'This payment or receipt has already been posted.';
   end if;
 
-  if v_payment.status not in ('draft', 'approved') then
+  if v_payment.status <> 'confirmed' then
     raise exception using errcode = '23514',
-      message = 'Only draft or approved payments and receipts can be posted.';
+      message = 'Only confirmed payments and receipts can be posted.';
   end if;
 
   if v_payment.payment_type not in ('receipt', 'payment') then
@@ -2419,6 +2477,7 @@ begin
   update public.payments
   set status = 'posted',
       posted_journal_entry_id = v_journal_entry_id,
+      posted_by = v_user_id,
       updated_at = pg_catalog.now()
   where organization_id = p_organization_id
     and id = p_payment_id;
@@ -2494,8 +2553,8 @@ begin
   if not found then
     raise exception using errcode = '23503', message = 'Sales invoice was not found in this organization.';
   end if;
-  if v_sales.status not in ('draft', 'approved') or v_sales.posted_journal_entry_id is not null then
-    raise exception using errcode = '23514', message = 'Only an unposted draft or approved sales invoice can be posted.';
+  if v_sales.status <> 'confirmed' or v_sales.posted_journal_entry_id is not null then
+    raise exception using errcode = '23514', message = 'Only a confirmed, unposted sales invoice can be posted.';
   end if;
 
   select c.is_active into v_customer_active
@@ -2710,7 +2769,7 @@ begin
   );
 
   update public.sales
-  set status = 'posted', posted_journal_entry_id = v_journal_id, updated_at = pg_catalog.now()
+  set status = 'posted', posted_journal_entry_id = v_journal_id, posted_by = v_user_id, updated_at = pg_catalog.now()
   where organization_id = p_organization_id and id = p_sales_id;
 
   return v_journal_id;
@@ -2719,6 +2778,286 @@ $$;
 
 revoke all on function public.post_sales(uuid, uuid) from public, anon;
 grant execute on function public.post_sales(uuid, uuid) to authenticated;
+
+
+
+-- ============================================================================
+-- TRANSACTION DOCUMENT LIFECYCLE RPCS
+-- ============================================================================
+
+create or replace function public.confirm_transaction_document(
+  p_organization_id uuid,
+  p_document_type text,
+  p_document_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $
+declare
+  v_user_id uuid := (select auth.uid());
+  v_table text;
+  v_permission text;
+  v_status text;
+  v_count integer;
+  v_subtotal numeric(20,4);
+  v_total numeric(20,4);
+  v_debit numeric(20,4);
+  v_credit numeric(20,4);
+begin
+  if v_user_id is null or not public.is_active_org_member(p_organization_id) then
+    raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
+  end if;
+
+  case p_document_type
+    when 'purchase' then v_table := 'purchase'; v_permission := 'purchases.confirm';
+    when 'sales' then v_table := 'sales'; v_permission := 'sales.confirm';
+    when 'expense' then v_table := 'expenses'; v_permission := 'expenses.confirm';
+    when 'payment' then v_table := 'payments'; v_permission := 'payments.confirm';
+    when 'purchase_return' then v_table := 'purchase_returns'; v_permission := 'purchases.returns.confirm';
+    when 'sales_return' then v_table := 'sales_returns'; v_permission := 'sales.returns.confirm';
+    when 'journal_entry' then v_table := 'journal_entries'; v_permission := 'journal_entries.confirm';
+    else raise exception using errcode = '22023', message = 'Unsupported transaction document type.';
+  end case;
+
+  if not public.has_org_permission(p_organization_id, v_permission) then
+    raise exception using errcode = '42501', message = 'You do not have permission to confirm this document.';
+  end if;
+
+  execute pg_catalog.format(
+    'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
+  ) into v_status using p_organization_id, p_document_id;
+  if not found then
+    raise exception using errcode = '23503', message = 'Document was not found in this organization.';
+  end if;
+  if v_status <> 'draft' then
+    raise exception using errcode = '23514', message = 'Only draft documents can be confirmed.';
+  end if;
+
+  if p_document_type = 'purchase' then
+    select count(*)::integer, coalesce(sum(pi.line_total), 0)
+      into v_count, v_subtotal
+    from public.purchase_items pi
+    where pi.organization_id = p_organization_id and pi.purchase_id = p_document_id;
+    select p.total_amount into v_total from public.purchase p
+    where p.organization_id = p_organization_id and p.id = p_document_id;
+    if v_count < 1 or v_subtotal <> (select subtotal from public.purchase where organization_id = p_organization_id and id = p_document_id)
+       or v_total <> v_subtotal - (select discount_amount from public.purchase where organization_id = p_organization_id and id = p_document_id) then
+      raise exception using errcode = '23514', message = 'Purchase must have items and consistent subtotal, discount, and total before confirmation.';
+    end if;
+  elsif p_document_type = 'sales' then
+    select count(*)::integer, coalesce(sum(si.line_total), 0)
+      into v_count, v_subtotal
+    from public.sales_items si
+    where si.organization_id = p_organization_id and si.sales_id = p_document_id;
+    select s.total_amount into v_total from public.sales s
+    where s.organization_id = p_organization_id and s.id = p_document_id;
+    if v_count < 1 or v_subtotal <> (select subtotal from public.sales where organization_id = p_organization_id and id = p_document_id)
+       or v_total <> v_subtotal - (select discount_amount from public.sales where organization_id = p_organization_id and id = p_document_id) then
+      raise exception using errcode = '23514', message = 'Sales invoice must have items and consistent subtotal, discount, and total before confirmation.';
+    end if;
+  elsif p_document_type = 'purchase_return' then
+    select count(*)::integer into v_count from public.purchase_return_items
+    where organization_id = p_organization_id and purchase_return_id = p_document_id;
+    if v_count < 1 then
+      raise exception using errcode = '23514', message = 'Purchase return must contain at least one return item before confirmation.';
+    end if;
+  elsif p_document_type = 'sales_return' then
+    select count(*)::integer into v_count from public.sales_return_items
+    where organization_id = p_organization_id and sales_return_id = p_document_id;
+    if v_count < 1 then
+      raise exception using errcode = '23514', message = 'Sales return must contain at least one return item before confirmation.';
+    end if;
+  elsif p_document_type = 'journal_entry' then
+    select count(*)::integer, coalesce(sum(debit), 0), coalesce(sum(credit), 0)
+      into v_count, v_debit, v_credit
+    from public.account_transactions
+    where organization_id = p_organization_id and journal_entry_id = p_document_id;
+    if v_count < 2 or v_debit <= 0 or v_debit <> v_credit then
+      raise exception using errcode = '23514', message = 'Journal entry must have at least two lines and balanced debits and credits before confirmation.';
+    end if;
+  end if;
+
+  execute pg_catalog.format(
+    'update public.%I set status = ''confirmed'', confirmed_at = pg_catalog.now(), confirmed_by = $3, updated_at = pg_catalog.now() where organization_id = $1 and id = $2',
+    v_table
+  ) using p_organization_id, p_document_id, v_user_id;
+end;
+$;
+
+create or replace function public.revert_transaction_document_to_draft(
+  p_organization_id uuid,
+  p_document_type text,
+  p_document_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $
+declare
+  v_user_id uuid := (select auth.uid());
+  v_table text;
+  v_permission text;
+  v_status text;
+begin
+  if v_user_id is null or not public.is_active_org_member(p_organization_id) then
+    raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
+  end if;
+  case p_document_type
+    when 'purchase' then v_table := 'purchase'; v_permission := 'purchases.confirm';
+    when 'sales' then v_table := 'sales'; v_permission := 'sales.confirm';
+    when 'expense' then v_table := 'expenses'; v_permission := 'expenses.confirm';
+    when 'payment' then v_table := 'payments'; v_permission := 'payments.confirm';
+    when 'purchase_return' then v_table := 'purchase_returns'; v_permission := 'purchases.returns.confirm';
+    when 'sales_return' then v_table := 'sales_returns'; v_permission := 'sales.returns.confirm';
+    when 'journal_entry' then v_table := 'journal_entries'; v_permission := 'journal_entries.confirm';
+    else raise exception using errcode = '22023', message = 'Unsupported transaction document type.';
+  end case;
+  if not public.has_org_permission(p_organization_id, v_permission) then
+    raise exception using errcode = '42501', message = 'You do not have permission to revert this document.';
+  end if;
+  execute pg_catalog.format(
+    'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
+  ) into v_status using p_organization_id, p_document_id;
+  if not found then
+    raise exception using errcode = '23503', message = 'Document was not found in this organization.';
+  end if;
+  if v_status <> 'confirmed' then
+    raise exception using errcode = '23514', message = 'Only confirmed documents can be reverted to draft.';
+  end if;
+  execute pg_catalog.format(
+    'update public.%I set status = ''draft'', confirmed_at = null, confirmed_by = null, updated_at = pg_catalog.now() where organization_id = $1 and id = $2',
+    v_table
+  ) using p_organization_id, p_document_id;
+end;
+$;
+
+create or replace function public.void_transaction_document(
+  p_organization_id uuid,
+  p_document_type text,
+  p_document_id uuid,
+  p_reason text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $
+declare
+  v_user_id uuid := (select auth.uid());
+  v_table text;
+  v_permission text;
+  v_status text;
+begin
+  if v_user_id is null or not public.is_active_org_member(p_organization_id) then
+    raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
+  end if;
+  if p_reason is null or pg_catalog.length(pg_catalog.btrim(p_reason)) < 3 then
+    raise exception using errcode = '22023', message = 'A cancellation reason of at least three characters is required.';
+  end if;
+  case p_document_type
+    when 'purchase' then v_table := 'purchase'; v_permission := 'purchases.confirm';
+    when 'sales' then v_table := 'sales'; v_permission := 'sales.confirm';
+    when 'expense' then v_table := 'expenses'; v_permission := 'expenses.confirm';
+    when 'payment' then v_table := 'payments'; v_permission := 'payments.confirm';
+    when 'purchase_return' then v_table := 'purchase_returns'; v_permission := 'purchases.returns.confirm';
+    when 'sales_return' then v_table := 'sales_returns'; v_permission := 'sales.returns.confirm';
+    when 'journal_entry' then v_table := 'journal_entries'; v_permission := 'journal_entries.confirm';
+    else raise exception using errcode = '22023', message = 'Unsupported transaction document type.';
+  end case;
+  if not public.has_org_permission(p_organization_id, v_permission) then
+    raise exception using errcode = '42501', message = 'You do not have permission to cancel this document.';
+  end if;
+  execute pg_catalog.format(
+    'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
+  ) into v_status using p_organization_id, p_document_id;
+  if not found then
+    raise exception using errcode = '23503', message = 'Document was not found in this organization.';
+  end if;
+  if v_status not in ('draft', 'confirmed') then
+    raise exception using errcode = '23514', message = 'Only draft or confirmed documents can be cancelled; posted documents require reversal or return.';
+  end if;
+  execute pg_catalog.format(
+    'update public.%I set status = ''void'', voided_at = pg_catalog.now(), voided_by = $3, void_reason = pg_catalog.btrim($4), updated_at = pg_catalog.now() where organization_id = $1 and id = $2',
+    v_table
+  ) using p_organization_id, p_document_id, v_user_id, p_reason;
+end;
+$;
+
+create or replace function public.delete_draft_transaction_document(
+  p_organization_id uuid,
+  p_document_type text,
+  p_document_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $
+declare
+  v_user_id uuid := (select auth.uid());
+  v_table text;
+  v_permission text;
+  v_status text;
+begin
+  if v_user_id is null or not public.is_active_org_member(p_organization_id) then
+    raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
+  end if;
+  case p_document_type
+    when 'purchase' then v_table := 'purchase'; v_permission := 'purchases.create';
+    when 'sales' then v_table := 'sales'; v_permission := 'sales.create';
+    when 'expense' then v_table := 'expenses'; v_permission := 'expenses.manage';
+    when 'payment' then v_table := 'payments'; v_permission := 'payments.manage';
+    when 'purchase_return' then v_table := 'purchase_returns'; v_permission := 'purchases.returns.post';
+    when 'sales_return' then v_table := 'sales_returns'; v_permission := 'sales.returns.post';
+    when 'journal_entry' then v_table := 'journal_entries'; v_permission := 'journal_entries.create';
+    else raise exception using errcode = '22023', message = 'Unsupported transaction document type.';
+  end case;
+  if not public.has_org_permission(p_organization_id, v_permission) then
+    raise exception using errcode = '42501', message = 'You do not have permission to delete this draft document.';
+  end if;
+  execute pg_catalog.format(
+    'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
+  ) into v_status using p_organization_id, p_document_id;
+  if not found then
+    raise exception using errcode = '23503', message = 'Document was not found in this organization.';
+  end if;
+  if v_status <> 'draft' then
+    raise exception using errcode = '23514', message = 'Only draft documents can be deleted; confirmed documents must first be reverted to draft.';
+  end if;
+
+  case p_document_type
+    when 'purchase' then
+      delete from public.purchase_items where organization_id = p_organization_id and purchase_id = p_document_id;
+    when 'sales' then
+      delete from public.sales_items where organization_id = p_organization_id and sales_id = p_document_id;
+    when 'purchase_return' then
+      delete from public.purchase_return_items where organization_id = p_organization_id and purchase_return_id = p_document_id;
+    when 'sales_return' then
+      delete from public.sales_return_items where organization_id = p_organization_id and sales_return_id = p_document_id;
+    when 'payment' then
+      delete from public.payment_allocations where organization_id = p_organization_id and payment_id = p_document_id;
+    when 'journal_entry' then
+      delete from public.account_transactions where organization_id = p_organization_id and journal_entry_id = p_document_id;
+    else null;
+  end case;
+
+  execute pg_catalog.format(
+    'delete from public.%I where organization_id = $1 and id = $2', v_table
+  ) using p_organization_id, p_document_id;
+end;
+$;
+
+revoke all on function public.confirm_transaction_document(uuid, text, uuid) from public, anon;
+revoke all on function public.revert_transaction_document_to_draft(uuid, text, uuid) from public, anon;
+revoke all on function public.void_transaction_document(uuid, text, uuid, text) from public, anon;
+revoke all on function public.delete_draft_transaction_document(uuid, text, uuid) from public, anon;
+grant execute on function public.confirm_transaction_document(uuid, text, uuid) to authenticated;
+grant execute on function public.revert_transaction_document_to_draft(uuid, text, uuid) to authenticated;
+grant execute on function public.void_transaction_document(uuid, text, uuid, text) to authenticated;
+grant execute on function public.delete_draft_transaction_document(uuid, text, uuid) to authenticated;
 
 
 commit;
