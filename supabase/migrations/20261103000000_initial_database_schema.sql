@@ -348,7 +348,17 @@ create policy organizations_select_member
 
 create policy organization_users_select_member_or_self
   on public.organization_users for select to authenticated
-  using (user_id = (select auth.uid()) or public.has_org_permission(organization_id, 'users.read'));
+  using (
+    (
+      user_id = (select auth.uid())
+      and is_active
+      and exists (
+        select 1 from public.organizations o
+        where o.id = organization_users.organization_id and o.is_active
+      )
+    )
+    or public.has_org_permission(organization_id, 'users.read')
+  );
 
 create policy roles_select_member
   on public.roles for select to authenticated
@@ -1159,7 +1169,8 @@ begin
     when 'expense' then 'expenses.manage' when 'payment' then 'payments.manage'
     when 'journal_entry' then 'journal_entries.create'
     when 'purchase_return' then 'purchases.returns.create'
-    when 'sales_return' then 'sales.returns.create' else null end;
+    when 'sales_return' then 'sales.returns.create'
+    when 'inventory_adjustment' then 'inventory.adjust' else null end;
   if auth.uid() is null or v_permission is null
      or not public.is_active_org_member(p_organization_id)
      or not public.has_org_permission(p_organization_id, v_permission) then
@@ -4223,6 +4234,60 @@ begin
     raise exception using errcode = '42501', message = 'You do not have permission to create or update this draft document.';
   end if;
 
+  -- A manual journal entry may reference another document only inside this tenant.
+  -- The polymorphic UUID is validated against an explicit, closed set of target tables.
+  if p_document_type = 'journal_entry' and p_header ? 'reference_id'
+     and nullif(p_header->>'reference_id', '') is not null then
+    if p_header->>'reference_type' is null then
+      raise exception using errcode = '22023', message = 'A reference type is required when a reference ID is supplied.';
+    end if;
+    case p_header->>'reference_type'
+      when 'purchase' then
+        if not exists (select 1 from public.purchase x
+          where x.organization_id=p_organization_id and x.id=(p_header->>'reference_id')::uuid) then
+          raise exception using errcode='23503', message='Referenced purchase was not found in this organization.';
+        end if;
+      when 'sales' then
+        if not exists (select 1 from public.sales x
+          where x.organization_id=p_organization_id and x.id=(p_header->>'reference_id')::uuid) then
+          raise exception using errcode='23503', message='Referenced sale was not found in this organization.';
+        end if;
+      when 'expense' then
+        if not exists (select 1 from public.expenses x
+          where x.organization_id=p_organization_id and x.id=(p_header->>'reference_id')::uuid) then
+          raise exception using errcode='23503', message='Referenced expense was not found in this organization.';
+        end if;
+      when 'payment' then
+        if not exists (select 1 from public.payments x
+          where x.organization_id=p_organization_id and x.id=(p_header->>'reference_id')::uuid) then
+          raise exception using errcode='23503', message='Referenced payment was not found in this organization.';
+        end if;
+      when 'purchase_return' then
+        if not exists (select 1 from public.purchase_returns x
+          where x.organization_id=p_organization_id and x.id=(p_header->>'reference_id')::uuid) then
+          raise exception using errcode='23503', message='Referenced purchase return was not found in this organization.';
+        end if;
+      when 'sales_return' then
+        if not exists (select 1 from public.sales_returns x
+          where x.organization_id=p_organization_id and x.id=(p_header->>'reference_id')::uuid) then
+          raise exception using errcode='23503', message='Referenced sales return was not found in this organization.';
+        end if;
+      when 'journal_entry' then
+        if not exists (select 1 from public.journal_entries x
+          where x.organization_id=p_organization_id and x.id=(p_header->>'reference_id')::uuid) then
+          raise exception using errcode='23503', message='Referenced journal entry was not found in this organization.';
+        end if;
+      when 'inventory_adjustment' then
+        if not exists (select 1 from public.journal_entries x
+          where x.organization_id=p_organization_id and x.id=(p_header->>'reference_id')::uuid
+            and x.entry_type='adjustment' and x.reference_type='inventory_adjustment') then
+          raise exception using errcode='23503', message='Referenced inventory adjustment was not found in this organization.';
+        end if;
+      else
+        raise exception using errcode='22023', message='Unsupported journal entry reference type.';
+    end case;
+  end if;
+
   if p_document_type = 'journal_entry' then
     if p_header ? 'entry_type' and p_header->>'entry_type' <> 'manual' then
       raise exception using errcode = '22023', message = 'User-created draft journal entries must have entry_type manual.';
@@ -6146,7 +6211,7 @@ begin
         -coalesce((select sum(pa.allocated_amount) from public.payment_allocations pa
           join public.payments p on p.organization_id=pa.organization_id and p.id=pa.payment_id
           where pa.organization_id=p_organization_id and pa.document_type='sales'
-            and pa.document_id=s.id and p.status='posted'),0)
+            and pa.document_id=s.id and p.status='posted' and p.payment_date<=p_as_of_date),0)
         -coalesce((select sum(sr.total_amount) from public.sales_returns sr
           where sr.organization_id=p_organization_id and sr.sales_id=s.id and sr.status='posted'
             and sr.return_date<=p_as_of_date),0)) as outstanding
