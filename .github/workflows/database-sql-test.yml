@@ -68,7 +68,10 @@ jobs:
 
           CREATE SCHEMA auth;
           CREATE TABLE auth.users (
-            id uuid PRIMARY KEY
+            id uuid PRIMARY KEY,
+            email text,
+            email_confirmed_at timestamptz,
+            created_at timestamptz NOT NULL DEFAULT pg_catalog.now()
           );
 
           CREATE OR REPLACE FUNCTION auth.uid()
@@ -92,6 +95,12 @@ jobs:
           # The bootstrap file manages its own BEGIN/COMMIT transaction.
           psql -X -v ON_ERROR_STOP=1 \
             --file supabase/migrations/20261103000000_initial_database_schema.sql
+
+      - name: Apply the incremental membership-security migration
+        run: |
+          # Verify the upgrade migration also applies cleanly after the canonical bootstrap.
+          psql -X -v ON_ERROR_STOP=1 \
+            --file supabase/migrations/20261103010000_organization_membership_security.sql
 
       - name: Grant test-only service-role privileges
         run: |
