@@ -1240,7 +1240,14 @@ begin
   values (p_organization_id, p_document_type, upper(left(p_document_type, 3)) || '-', 2, 5)
   on conflict (organization_id, document_type) do update
     set next_number = public.number_sequences.next_number + 1, updated_at = pg_catalog.now()
+    where public.number_sequences.is_active
   returning prefix, next_number - 1, padding into v_prefix, v_number, v_padding;
+
+  if not found then
+    raise exception using errcode = '55000',
+      message = 'Document numbering is disabled for this document type in this organization.';
+  end if;
+
   return v_prefix || lpad(v_number::text, v_padding, '0');
 end;
 $function$;
@@ -1282,10 +1289,15 @@ begin
       message = 'Currency must be a three-letter uppercase ISO currency code.';
   end if;
 
-  if p_timezone is null or pg_catalog.length(pg_catalog.btrim(p_timezone)) = 0 then
+  if p_timezone is null
+     or not exists (
+       select 1
+       from pg_catalog.pg_timezone_names tz
+       where tz.name = pg_catalog.btrim(p_timezone)
+     ) then
     raise exception using
       errcode = '22023',
-      message = 'Timezone is required.';
+      message = 'Timezone must be a valid PostgreSQL timezone name.';
   end if;
 
   insert into public.organizations (name, currency, timezone)
