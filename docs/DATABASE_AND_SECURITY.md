@@ -522,7 +522,7 @@ The SQL file remains a one-time bootstrap for a new, empty Supabase database. Do
 - Custom role creation/permission editing and role assignment RPCs beyond the existing membership role-update workflow.
 - Accounting-period close RPC and inventory-adjustment posting RPC.
 - Automatic number allocation inside document creation flows.
-- A formal line-level allocation of invoice-wide sales discounts for partial sales returns. Until this policy is implemented, partial-return discount behavior requires product/accounting acceptance testing before production use.
+- The return confirmation/posting routines now cap each sales return at the proportional original net value of its returned lines after allocating the source invoice-wide discount. Return-specific discounts may reduce, but cannot increase, that cap.
 - Opening customer-credit and supplier-debit balances in the contact subledger; the current opening-balance contract represents customer receivables and supplier payables only.
 
 The SQL remains a one-time bootstrap for an empty database, not a migration to apply over an existing populated database. No live Supabase project has been changed by this repository edit.
