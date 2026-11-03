@@ -874,6 +874,14 @@ BEGIN
     RAISE EXCEPTION 'One or more new ERP operational RPCs are missing';
   END IF;
 
+  IF to_regprocedure('public.complete_organization_invitation(uuid,uuid,uuid,uuid)') IS NULL
+     OR has_function_privilege('authenticated',
+       'public.complete_organization_invitation(uuid,uuid,uuid,uuid)','EXECUTE')
+     OR has_function_privilege('anon',
+       'public.complete_organization_invitation(uuid,uuid,uuid,uuid)','EXECUTE') THEN
+    RAISE EXCEPTION 'Auth invitation finalization must exist and remain service-role-only';
+  END IF;
+
   RAISE NOTICE
     'PASS: % tables, % RLS policies, RPC grants, no direct table writes, organization setup, sequence controls, SECURITY DEFINER search_path, and integrity triggers verified',
     v_table_count, v_policy_count;
