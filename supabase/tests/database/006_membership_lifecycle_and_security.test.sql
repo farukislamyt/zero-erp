@@ -117,6 +117,7 @@ select throws_ok(
     current_setting('test.org_id'),current_setting('test.member_id'),current_setting('test.role_accounts')),
   '23503','The selected role must be active and belong to this organization.',
   'inactive custom role cannot be assigned');
+reset role;
 select throws_ok(
   format('update public.organization_users set is_active=false where organization_id=%L::uuid and created_at=(select created_at from public.organizations where id=%L::uuid)',
     current_setting('test.org_id'),current_setting('test.org_id')),
@@ -133,8 +134,8 @@ select throws_ok(
   '42501','The system Administrator role is permanent and immutable.',
   'direct SQL cannot deactivate system Administrator role');
 select throws_ok(
-  format('delete from public.role_permissions where role_id=(select id from public.roles where organization_id=%L::uuid and name=%L) limit 1',
-    current_setting('test.org_id'),'Administrator'),
+  format('delete from public.role_permissions where role_id=(select id from public.roles where organization_id=%L::uuid and name=%L) and permission_id=(select rp.permission_id from public.role_permissions rp where rp.role_id=(select id from public.roles where organization_id=%L::uuid and name=%L) limit 1)',
+    current_setting('test.org_id'),'Administrator',current_setting('test.org_id'),'Administrator'),
   '42501','Administrator permissions cannot be removed or reassigned.',
   'direct SQL cannot remove Creator Administrator permissions');
 
