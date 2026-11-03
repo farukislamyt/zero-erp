@@ -333,7 +333,7 @@ Transaction documents follow Draft → Confirmed → Posted. Drafts may be edite
 
 ## Inventory
 
-The schema separates movement history (`inventory_transactions`) from the current summary (`inventory_balances`). Product and sales line records also include fields related to inventory, sales, and cost of goods sold.
+The schema separates movement history (`inventory_transactions`) from the current summary (`inventory_balances`). Product and sales line records also include fields related to inventory, sales, and cost of goods sold. Inventory balances enforce non-negative quantity/value; posting routines consume the exact remaining value when stock reaches zero.
 
 Document and test the exact rules for:
 
@@ -363,13 +363,13 @@ Required controls:
 - Store secrets in local environment files and deployment settings, never in source control.
 - Test cross-organization access explicitly.
 
-The supplied `organization_users` schema does not currently include a role column. The defined RBAC design adds `role_id` to `organization_users` so each membership has one role per organization. When an organization is created, the trusted server-side workflow must create the organization, create its predefined `Administrator` role, assign the system-defined permissions to that role, and create the creator's membership with that role. These steps must be atomic so an organization cannot be left without its initial Administrator.
+The current schema includes `organization_users.role_id`, assigning one role per membership. `create_organization_with_admin` atomically creates the organization, its protected `Administrator` role, the system permission assignments, and the creator's membership.
 
 ### RBAC model
 
-- `roles`: organization-scoped role definitions with `id`, `organization_id`, `name`, `status`, `is_system_role`, `created_at`, and `updated_at`. Create one protected `Administrator` role per organization. `is_system_role` explicitly identifies protected system roles; do not rely only on the role name. Administrators can create custom roles for their organization.
+- `roles`: organization-scoped role definitions with `id`, `organization_id`, `name`, `status`, `is_system_role`, `created_at`, and `updated_at`. The bootstrap creates one protected `Administrator` role per organization. Custom-role creation and permission-editing RPCs are planned, not implemented.
 - `permissions`: a global catalog of granular actions with `id`, `permission_key`, `name`, `description`, `module`, `created_at`, and `updated_at`. Permission definitions must be system-managed; Administrators select from this catalog when configuring custom roles. Example keys include `sales.read`, `sales.create`, `sales.post`, `inventory.read`, and `users.manage`.
-- `role_permissions`: join table associating roles with permission definitions, using `role_id` and `permission_id` foreign keys. Fields: `id`, `role_id`, `permission_id`, and `created_at`.
+- `role_permissions`: join table associating roles with permission definitions, using `role_id` and `permission_id` foreign keys. Fields: `id`, `role_id`, `permission_id`, and `created_at`. The initial Administrator permission links are created by the bootstrap; general custom-role editing remains deferred.
 - `organization_users.role_id`: defined foreign key to `roles.id`, assigning a role to that membership. Validate that the assigned role belongs to the same organization as the membership.
 
 Production database constraints: enforce unique `(organization_id, name)` on `roles`; unique `permission_key` on `permissions`; unique `(role_id, permission_id)` on `role_permissions`; foreign keys from `role_permissions.role_id` to `roles.id`, from `role_permissions.permission_id` to `permissions.id`, and from `organization_users.role_id` to `roles.id`. Prevent ordinary role-management operations from deleting or deactivating the system Administrator role or removing critical administrative permissions. Ensure an organization cannot be left without an authorized Administrator.
@@ -444,4 +444,4 @@ A license has not been specified in the supplied project information. Add the ch
 
 ### Current database boundaries
 
-The canonical bootstrap uses Supabase Auth as the identity source and does not create a separate `profiles` table. Organization administrators can add an existing verified Auth user by email, change membership roles, and deactivate/reactivate memberships through permission-checked RPCs. Inviting a not-yet-registered user requires a trusted server or Edge Function using the Supabase Auth Admin API. Invoice-level payment allocations remain deferred; current payment posting is contact-level. See [Database Blueprint](docs/DATABASE_AND_SECURITY.md#final-database-review-and-implementation-boundaries) for current scope and verification limitations.
+The canonical bootstrap uses Supabase Auth as the identity source and does not create a separate `profiles` table. Organization administrators can add an existing verified Auth user by email, change membership roles, and deactivate/reactivate memberships through permission-checked RPCs. Inviting a not-yet-registered user requires a trusted server or Edge Function using the Supabase Auth Admin API. Invoice-level payment allocations remain deferred; current payment posting is contact-level. Read RLS policies enforce module-level `.read` permissions. `next_document_number` is implemented as an atomic permission-checked RPC but is not yet wired into document creation. Custom-role editing, accounting-period closing, inventory adjustments, and invoice-discount allocation for partial returns remain deferred. See [Database Blueprint](docs/DATABASE_AND_SECURITY.md#10-current-audit-fixes-and-remaining-scope) for implementation status and verification limitations.
