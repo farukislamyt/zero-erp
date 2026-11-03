@@ -117,7 +117,7 @@ The full function catalog in [DATABASE_REFERENCE.md](DATABASE_REFERENCE.md#funct
 
 ### Posting and reversals
 
-The final schema defines dedicated posting functions for purchases, sales, purchase returns, sales returns, expenses, contact payments, inventory adjustments, opening balances and confirmed manual journals. `reverse_journal_entry` provides controlled journal reversal. These routines use organization-scoped locks and row locks where implemented in their bodies; see the SQL source for exact lock ordering and validation.
+The final schema defines posting functions for purchases, sales, purchase returns, sales returns, expenses, contact payments, inventory adjustments, opening balances and confirmed manual journals. `reverse_journal_entry` provides controlled journal reversal. These routines use organization-scoped locks and row locks where implemented in their bodies; see the SQL source for exact lock ordering and validation. **Known blocker:** `post_inventory_adjustment` calls the number allocator with `inventory_adjustment`, but `next_document_number` has no permission mapping for that type, so the current adjustment path fails before posting. See [Database Audit](DATABASE_AUDIT.md#4-findings-requiring-attention).
 
 The legacy `post_manual_journal_entry` function remains defined but client EXECUTE is revoked. The supported manual journal path is draft save → confirm → `post_confirmed_journal_entry`.
 
@@ -137,7 +137,7 @@ The legacy `post_manual_journal_entry` function remains defined but client EXECU
 
 ### Reports
 
-Reporting RPCs exist for trial balance, general ledger, profit and loss, balance sheet, inventory valuation, contact balances, receivables aging, payables aging and unapplied payments. Their exact arguments and return columns are listed in the function catalog.
+Reporting RPCs exist for trial balance, general ledger, profit and loss, balance sheet, inventory valuation, contact balances, receivables aging, payables aging and unapplied payments. Their exact arguments and return columns are listed in the function catalog. **Known caveat:** receivables aging does not currently exclude payments dated after its as-of date, so historical balances can be understated; see the audit.
 
 ## 7. Important model boundaries
 
