@@ -6,7 +6,7 @@
 
 - **Platform:** PostgreSQL through Supabase.
 - **Tenant model:** One organization owns each business record; users access organizations through membership.
-- **Core business model:** 24 business tables across organization setup, accounting, master data, inventory, purchasing, sales, expenses, and payments.
+- **Core business model:** 27 physical tables total—24 business tables plus three RBAC tables—across organization setup, accounting, master data, inventory, purchasing, sales, expenses, and payments.
 - **Access-control model:** Three RBAC tables—`roles`, `permissions`, and `role_permissions`—plus `organization_users.role_id`.
 - **Ledger model:** Journal headers and debit/credit lines are separate; posted financial activity is corrected through controlled reversals.
 - **Inventory model:** Immutable movement history is the audit trail; `inventory_balances` is the current stock/valuation snapshot.
@@ -115,7 +115,7 @@ Where references form a dependency cycle—for example, business documents point
 
 ## 4. Canonical table inventory
 
-The data model contains 24 core business tables plus three RBAC tables. The complete column reference later in this document is the canonical inventory of documented fields. Use actual migration DDL to confirm SQL types, defaults, nullability, and deployed constraints.
+The data model contains 24 business tables plus three RBAC tables (27 tables total). The complete column reference later in this document is the canonical inventory of documented fields. Use the bootstrap SQL to confirm SQL types, defaults, nullability, and constraints.
 
 | Domain | Tables | Main responsibility |
 | --- | --- | --- |
@@ -273,6 +273,10 @@ These RPC contracts define the database operations exposed to the application. E
 | `assign_member_role(p_membership_id, p_role_id)` | Assign a role to an organization membership | Caller must be authorized Administrator; role and membership must belong to the same organization |
 | `create_custom_role(p_organization_id, p_name, p_status)` | Create organization-scoped custom role | Verify caller membership and role-management permission; enforce unique organization/name |
 | `set_role_permissions(p_role_id, p_permission_ids)` | Replace/update permissions on a custom role | Validate each permission against global catalog; block unsafe modification of protected Administrator role |
+| `confirm_transaction_document(p_organization_id, p_document_type, p_document_id)` | Confirm a supported draft transaction document | Enforce per-type permission, tenant scope, draft-only transition, and basic document/line validation; no ledger or inventory impact |
+| `revert_transaction_document_to_draft(p_organization_id, p_document_type, p_document_id)` | Unlock a confirmed document for correction | Confirmed-only transition; clear confirmation metadata; no ledger or inventory impact |
+| `void_transaction_document(p_organization_id, p_document_type, p_document_id, p_reason)` | Cancel an unposted document | Draft/confirmed only; require a reason; retain audit metadata; never void posted documents |
+| `delete_draft_transaction_document(p_organization_id, p_document_type, p_document_id)` | Hard-delete a draft and its draft-only child rows | Draft-only; permission checked; posted/confirmed/void records cannot be deleted |
 | `post_journal_entry(p_entry_id)` | Validate and post a journal entry | Balance debits/credits; check period, organization, permissions, idempotency; commit status and posting atomically |
 | `post_opening_balances(p_organization_id, p_accounting_period_id, p_entry_date, p_account_lines, p_party_balances, p_inventory_lines, p_description)` | One-time organization opening balance initialization using existing tables only | Derive customer receivables and supplier payables from contact-tagged control-account lines; derive inventory value from product opening quantities/costs; balance the journal; lock the organization/period; initialize stock; reject duplicate opening posts; commit all effects atomically |
 | `post_contact_payment(p_organization_id, p_payment_id, p_accounting_period_id)` | Post a customer receipt or supplier payment against the existing contact-wise control-account balance | Receipt: debit cash/bank and credit receivables; supplier payment: debit payables and credit cash/bank; validate current outstanding, contact, control account, period and permission; reject overpayment and duplicate posting; update the payment and ledger atomically |
@@ -398,15 +402,18 @@ Also inspect function execute grants and table grants; a function's existence al
 
 ## 11. Financial and inventory transaction lifecycle
 
-Required lifecycle:
+Lifecycle contract implemented in the bootstrap schema:
 
-1. **Draft:** editable; no posted ledger effects.
-2. **Validate:** verify tenant ownership, source documents, account mappings, accounting period, quantities, permissions, and totals.
-3. **Post:** one trusted transaction creates journal entry/lines and inventory effects, then marks the source document posted.
-4. **Reverse/return:** use controlled reversal or return documents; preserve audit history.
-5. **Reconcile:** verify document totals against ledger entries, inventory movements against balances, and payment allocations against payment totals.
+1. **Draft:** editable through a trusted write path; no accounting or inventory impact. Draft documents may be hard-deleted through `delete_draft_transaction_document`.
+2. **Confirmed:** validation passed and the document is locked against direct edits. Confirmation records `confirmed_at` and `confirmed_by`; it creates no ledger or inventory effects. A confirmed document can be reverted to Draft through `revert_transaction_document_to_draft`, then edited or deleted.
+3. **Posted:** only a Confirmed source document may be posted by a posting RPC. Posting records `posted_by` and the posting reference where applicable. Ledger and inventory writes must be atomic and duplicate posting must be rejected.
+4. **Void:** Draft or Confirmed documents can be cancelled with a required reason; `voided_at`, `voided_by`, and `void_reason` preserve the audit trail. Void documents cannot be edited, posted, or hard-deleted.
+5. **Posted corrections:** never edit or hard-delete posted financial records. Use a controlled reversal or a valid return document and retain the original record.
+6. **Generated journals:** journal entries created internally by a source document's posting RPC are posted in the same atomic transaction; they do not need a separate user confirmation step.
 
-Enforce this lifecycle in database transactions and the application service layer; UI validation alone is insufficient.
+The bootstrap defines `confirm_transaction_document`, `revert_transaction_document_to_draft`, `void_transaction_document`, and `delete_draft_transaction_document`. These functions enforce organization membership, explicit lifecycle permissions, status guards, and audit fields. Table writes remain revoked from browser roles so the lifecycle cannot be bypassed by direct client updates.
+
+**Posting coverage limitation:** the current bootstrap has posting implementations for purchases, sales, payments/receipts, manual journal entries, and opening balances. Dedicated `post_expense`, `post_purchase_return`, and `post_sales_return` RPCs are not yet implemented; those document types must not be treated as production-ready for posting until their accounting/inventory rules and functions are implemented and tested.
 
 ### Opening balance initialization (existing tables only)
 
