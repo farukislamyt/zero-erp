@@ -21,6 +21,7 @@ This README and the database blueprint define the target relational model, tenan
 - [Modules](#modules)
 - [Database Schema](#database-schema)
 - [Database Blueprint](docs/DATABASE_AND_SECURITY.md)
+- [Database Audit and Gaps](docs/DATABASE_AUDIT.md)
 - [Accounting and Posting](#accounting-and-posting)
 - [Inventory](#inventory)
 - [Organization Isolation and Security](#organization-isolation-and-security)
