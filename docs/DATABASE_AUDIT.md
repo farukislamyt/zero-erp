@@ -2,7 +2,7 @@
 
 **Audit date:** 2026-11-03  
 **Branch:** `feat/database-migrations`  
-**Scope:** Static, line-by-line review of `supabase/initial_database_schema.sql` (4,645 lines at the current revision), the database smoke test, workflow, README, and database blueprint.  
+**Scope:** Static, line-by-line review of `supabase/migrations/20261103000000_initial_database_schema.sql` (4,645 lines at the current revision), the database smoke test, workflow, README, and database blueprint.  
 **Verification boundary:** This is a source audit. It is not a live Supabase audit and does not establish that the SQL has executed successfully on a real Supabase project. PostgreSQL runtime, Auth API, concurrency, and full-year transaction and reconciliation tests remain required.
 
 ## Executive summary
