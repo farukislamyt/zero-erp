@@ -62,7 +62,6 @@ These are genuine blockers for a complete end-to-end ERP workflow. They are not 
 
 | Priority | Gap | Current state / consequence | Required implementation |
 |---|---|---|---|
-| P0 | Accounting period creation | `accounting_periods.manage` exists, but there is no create-period RPC and direct writes are revoked. A company cannot create its first period through the client. | Create-period RPC with permission, date validation, overlap serialization, and lifecycle rules. |
 | P0 | Financial-year closing | Period status supports `closed`, but there is no close RPC, P&L close journal, retained-earnings transfer, close validation, or close idempotency. | Full close workflow: pre-close checks, P&L calculation, balanced closing journal, period lock, and next-year carry-forward. |
 | P0 | Master-data CRUD | No permission-checked create/update RPCs for accounts, contacts, products, units, or expense categories. Direct client writes are revoked. | Add validated create/update/activation RPCs for each master-data domain. |
 | P0 | Chart-of-accounts initialization | Organization creation creates only the tenant and Administrator. It does not seed a usable chart of accounts, cash/bank, AR/AP control, revenue, COGS, inventory, or expense accounts. | Define a reviewed default COA template and an idempotent organization setup routine; allow controlled customization. |
