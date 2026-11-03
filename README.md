@@ -1,445 +1,47 @@
-# Zero ERP
+# Zero ERP — Database
 
-Zero ERP is a multi-organization ERP system designed to support accounting, purchasing, sales, inventory, expenses, payments, and returns.
+Zero ERP's database is a tenant-scoped PostgreSQL schema for organization management, role-based access control, accounting, inventory, purchasing, sales, returns, expenses, payments and reporting.
 
-## Technology Stack
+## Database documentation
 
-- **Application framework:** Next.js
-- **Database:** PostgreSQL
-- **Backend platform:** Supabase
-- **Deployment:** Vercel
-- **Source control:** GitHub
+| Document | Purpose |
+|---|---|
+| [Complete Database Reference](docs/DATABASE_REFERENCE.md) | Exhaustive table-by-table catalog: every column, constraint, index, trigger, RLS policy, function/RPC signature, permission key and privilege statement. |
+| [Database Architecture and Security](docs/DATABASE_AND_SECURITY.md) | Effective data model, tenant isolation, Creator/Administrator invariants, RLS/RBAC and transactional workflows. |
+| [Database Audit](docs/DATABASE_AUDIT.md) | Static audit findings, known limitations and verification boundary. |
 
-## Overview
+## Canonical migration chain
 
-The database schema contains 26 tables total: 23 business tables plus three RBAC tables. The production data model uses role-based access control (RBAC) with `roles`, `permissions`, and `role_permissions`, plus `organization_users.role_id`. Each organization has a protected Administrator role automatically assigned to its creator. Administrators manage organization-specific custom roles and assign permissions from the system-managed catalog. Tenant isolation is enforced through organization-scoped relationships, database constraints, RPC authorization, and Row-Level Security (RLS).
+Apply the SQL files in timestamp order:
 
-This README and the database blueprint define the target relational model, tenant isolation, authorization, integrity rules, and transactional workflows.
+1. [Initial bootstrap](supabase/migrations/20261103000000_initial_database_schema.sql) — use only to initialize a new/empty database.
+2. [Organization membership security](supabase/migrations/20261103010000_organization_membership_security.sql) — incremental membership/RBAC security update.
+3. [Permanent organization Administrator](supabase/migrations/20261103020000_permanent_organization_administrator.sql) — binds the sole Administrator role to the original organization creator and drops the Administrator-transfer RPC.
 
-## Table of Contents
+The effective database is the result of all three migrations, not the initial bootstrap file in isolation. Later function definitions replace earlier definitions; later trigger drops/re-creations determine the active trigger set. Do not run the initial bootstrap against an already populated database.
 
-- [Modules](#modules)
-- [Database Schema](#database-schema)
-- [Database Blueprint](docs/DATABASE_AND_SECURITY.md)
-- [Database Audit and Gaps](docs/DATABASE_AUDIT.md)
-- [Accounting and Posting](#accounting-and-posting)
-- [Inventory](#inventory)
-- [Organization Isolation and Security](#organization-isolation-and-security)
-- [Technology and Deployment](#technology-and-deployment)
-- [Local Development](#local-development)
-- [Documentation Notes](#documentation-notes)
+## Effective schema at a glance
 
-## Modules
+- 26 public tables and 349 columns.
+- 129 declared table constraints.
+- 30 explicit indexes.
+- RLS enabled on all 26 tables with 26 installed SELECT policies.
+- 37 effective triggers.
+- 53 effective public functions.
+- 43 seeded permission keys.
+- No SQL views, materialized views, user-defined sequences, custom enum/type/domain definitions, or accounting-period subsystem.
 
-- Organization and membership management
-- Role-based access control with a protected Administrator role and organization-specific custom roles
-- Chart of accounts and date-based general ledger
-- General ledger and journal entries
-- Product catalog and units of measure
-- Contacts for customers, suppliers, and other counterparties
-- Purchase invoices and purchase returns
-- Sales invoices and sales returns
-- Inventory movements and valuation
-- Expense categories and expense records
-- Payments and payment allocations
-- Organization-specific document numbering
+See the [Complete Database Reference](docs/DATABASE_REFERENCE.md) for exact definitions. If prose documentation and executable SQL ever differ, the migration chain is authoritative; update the documentation from the SQL rather than changing the database to match stale prose.
 
-These modules are inferred from the supplied database schema. Their availability in the user interface and implementation completeness must be verified in the application.
+## Current database boundaries
 
-## Database Blueprint
+- Each organization is a tenant. Tenant-owned references are protected by organization-scoped foreign keys where defined.
+- Each membership has one role. The permission catalog is global; roles are organization-scoped.
+- The original creator membership is the permanent, immutable Administrator for the organization's lifetime. Administrator transfer is not supported.
+- Direct browser-role table writes are revoked; authenticated clients use explicitly granted, permission-checked RPCs.
+- Database-defined workflows include draft/confirm/post document handling, journal reversals, inventory adjustments, payment allocations, document numbering, opening balances and financial/operational reports.
+- The database schema does not by itself prove that a corresponding UI screen or application workflow is implemented.
 
-For the logical ER diagram, schema dependency order, relationship map, table inventory, integrity constraints, RPC contracts, RLS policy matrix, verification SQL, RBAC workflow, and production release checklist, see the [Database Blueprint](docs/DATABASE_AND_SECURITY.md).
+## Verification
 
-## Database Schema
-
-
-The executable bootstrap SQL is maintained in **[`supabase/migrations/20261103000000_initial_database_schema.sql`](supabase/migrations/20261103000000_initial_database_schema.sql)**. This is the repository's single canonical database SQL file: it contains the complete schema, seed data, RLS policies, grants, triggers, indexes, and posting RPCs. Run it only once against a new/empty Supabase database; it is not an upgrade script for an existing database. No separate incremental SQL migration files are maintained during the current schema-design phase.
-
-### Organization and configuration
-
-| Table | Purpose | Notable columns |
-| --- | --- | --- |
-| `organizations` | Organization profile and defaults | `name`, `currency`, `timezone`, `tin`, `bin`, `is_active` |
-| `organization_users` | Links users to organizations and, assigns a role within that organization | `organization_id`, `user_id`, `role_id`, `is_active` |
-| `units_of_measure` | Product measurement units | `name`, `is_active` |
-| `number_sequences` | Document number configuration | `document_type`, `prefix`, `next_number`, `padding` |
-
-### Access control
-
-| Table | Purpose | Notable columns |
-| --- | --- | --- |
-| `roles` | Organization-scoped roles, including a protected predefined Administrator role | `organization_id`, `name`, `status`, `is_system_role` |
-| `permissions` | Global catalog of granular application actions | `permission_key`, `name`, `module`, `description` |
-| `role_permissions` | Many-to-many mapping between roles and permissions | `role_id`, `permission_id` |
-
-The permission catalog is global and roles are organization-specific. Each organization has a predefined, protected `Administrator` role; the organization creator receives that role automatically. Administrators create custom roles and select permissions from the system-managed catalog. `role_permissions` maps roles to permissions, and `organization_users.role_id` assigns one role to each membership.
-
-### General ledger
-
-| Table | Purpose | Notable columns |
-| --- | --- | --- |
-| `accounts` | Chart of accounts and hierarchy | `account_code`, `account_name`, `account_type`, `parent_account_id`, `normal_balance`, `is_postable` |
-| `journal_entries` | Journal entry headers and lifecycle | `entry_number`, `entry_date`, `entry_type`, `status`, `confirmed_at`, `confirmed_by`, `posted_at`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `reversal_of_id` |
-| `account_transactions` | Debit/credit journal lines | `journal_entry_id`, `account_id`, `line_number`, `debit`, `credit`, `contact_id` |
-
-### Products, contacts, and inventory
-
-| Table | Purpose | Notable columns |
-| --- | --- | --- |
-| `products` | Product records and related ledger accounts | `product_code`, `name`, `unit_id`, `inventory_account_id`, `sales_account_id`, `cogs_account_id` |
-| `contacts` | Business contact records | `contact_number`, `name`, `phone`, `email`, `address` |
-| `inventory_balances` | Current quantity and valuation summary | `product_id`, `quantity`, `average_cost`, `inventory_value` |
-| `inventory_transactions` | Inventory movement and cost history | `transaction_number`, `product_id`, `transaction_date`, `transaction_type`, `direction`, `quantity`, `unit_cost`, `total_value`, `average_cost_after` |
-
-### Purchases and purchase returns
-
-| Table | Purpose | Notable columns |
-| --- | --- | --- |
-| `purchase` | Purchase invoice header | `invoice_id`, `supplier_id`, `invoice_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `payable_account_id`, `posted_journal_entry_id` |
-| `purchase_items` | Purchase invoice lines | `purchase_id`, `line_number`, `product_id`, `quantity`, `unit_cost`, `line_total` |
-| `purchase_returns` | Purchase return header | `return_number`, `purchase_id`, `supplier_id`, `return_date`, `total_amount`, `posted_journal_entry_id` |
-| `purchase_return_items` | Purchase return lines | `purchase_return_id`, `purchase_item_id`, `product_id`, `quantity`, `unit_cost`, `line_total` |
-
-### Sales and sales returns
-
-| Table | Purpose | Notable columns |
-| --- | --- | --- |
-| `sales` | Sales invoice header | `invoice_id`, `customer_id`, `invoice_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `receivable_account_id`, `posted_journal_entry_id` |
-| `sales_items` | Sales lines and cost-of-goods-sold values | `sales_id`, `line_number`, `product_id`, `quantity`, `unit_price`, `line_total`, `cogs_unit_cost`, `cogs_total` |
-| `sales_returns` | Sales return header | `return_number`, `sales_id`, `customer_id`, `return_date`, `total_amount`, `posted_journal_entry_id` |
-| `sales_return_items` | Sales return lines and cost values | `sales_return_id`, `sales_item_id`, `product_id`, `quantity`, `unit_price`, `line_total`, `cogs_unit_cost`, `cogs_total` |
-
-### Expenses and payments
-
-| Table | Purpose | Notable columns |
-| --- | --- | --- |
-| `expense_categories` | Expense classification and ledger mapping | `category_code`, `name`, `expense_account_id`, `is_active` |
-| `expenses` | Expense records | `expense_number`, `expense_category_id`, `contact_id`, `payable_account_id`, `expense_date`, `amount`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `posted_journal_entry_id` |
-| `payments` | Payment records and ledger accounts | `payment_number`, `payment_type`, `contact_id`, `payment_date`, `amount`, `account_id`, `settlement_account_id`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `posted_journal_entry_id` |
-| `payment_allocations` | Allocates payments to referenced documents | `payment_id`, `document_type`, `document_id`, `allocated_amount` |
-
-
-### Complete Column Reference
-
-The complete data model documents 23 business tables plus three RBAC tables (26 total), including the membership role reference.
-
-<details>
-<summary>organizations (14 columns)</summary>
-
-`id`, `name`, `phone`, `email`, `address`, `city`, `country`, `currency`, `timezone`, `tin`, `bin`, `is_active`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>organization_users (7 columns)</summary>
-
-`id`, `organization_id`, `user_id`, `role_id`, `is_active`, `created_at`, `updated_at`.
-
-`role_id` references `roles.id`. This design assigns one role per user membership. If multiple roles per user per organization are required later, use a separate membership-role junction table.
-
-</details>
-
-<details>
-<summary>roles (7 columns)</summary>
-
-`id`, `organization_id`, `name`, `status`, `is_system_role`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>permissions (7 columns)</summary>
-
-`id`, `permission_key`, `name`, `description`, `module`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>role_permissions (4 columns)</summary>
-
-`id`, `role_id`, `permission_id`, `created_at`
-
-</details>
-
-<details>
-<summary>units_of_measure (6 columns)</summary>
-
-`id`, `organization_id`, `name`, `is_active`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-
-`id`, `organization_id`, `name`, `start_date`, `end_date`, `status`, `closed_at`, `closed_by`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>accounts (13 columns)</summary>
-
-`id`, `organization_id`, `account_code`, `account_name`, `account_type`, `parent_account_id`, `normal_balance`, `is_control_account`, `is_system_account`, `is_postable`, `is_active`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>products (12 columns)</summary>
-
-`id`, `organization_id`, `product_code`, `name`, `unit_id`, `inventory_account_id`, `sales_account_id`, `cogs_account_id`, `is_active`, `created_by`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>contacts (11 columns)</summary>
-
-`id`, `organization_id`, `contact_number`, `name`, `phone`, `email`, `address`, `is_active`, `created_by`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>number_sequences (9 columns)</summary>
-
-`id`, `organization_id`, `document_type`, `prefix`, `next_number`, `padding`, `is_active`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>journal_entries (24 columns)</summary>
-
-`id`, `organization_id`, `entry_number`, `entry_date`, `entry_type`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `reference_type`, `reference_id`, `description`, `posted_at`, `reversal_of_id`, `reversal_journal_entry_id`, `reversed_at`, `reversed_by`, `reversal_reason`, `created_by`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>account_transactions (10 columns)</summary>
-
-`id`, `organization_id`, `journal_entry_id`, `account_id`, `line_number`, `description`, `debit`, `credit`, `contact_id`, `created_at`
-
-</details>
-
-<details>
-<summary>purchase (20 columns)</summary>
-
-`id`, `organization_id`, `invoice_id`, `supplier_id`, `invoice_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `payable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>purchase_items (10 columns)</summary>
-
-`id`, `organization_id`, `purchase_id`, `line_number`, `product_id`, `quantity`, `unit_cost`, `line_total`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>sales (20 columns)</summary>
-
-`id`, `organization_id`, `invoice_id`, `customer_id`, `invoice_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `receivable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>sales_items (12 columns)</summary>
-
-`id`, `organization_id`, `sales_id`, `line_number`, `product_id`, `quantity`, `unit_price`, `line_total`, `cogs_unit_cost`, `cogs_total`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>inventory_balances (7 columns)</summary>
-
-`id`, `organization_id`, `product_id`, `quantity`, `average_cost`, `inventory_value`, `updated_at`
-
-</details>
-
-<details>
-<summary>inventory_transactions (16 columns)</summary>
-
-`id`, `organization_id`, `transaction_number`, `product_id`, `transaction_date`, `transaction_type`, `direction`, `quantity`, `unit_cost`, `total_value`, `reference_type`, `reference_id`, `unit_cost_before`, `average_cost_after`, `created_by`, `created_at`
-
-</details>
-
-<details>
-<summary>expense_categories (8 columns)</summary>
-
-`id`, `organization_id`, `category_code`, `name`, `expense_account_id`, `is_active`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>expenses (24 columns)</summary>
-
-`id`, `organization_id`, `expense_number`, `expense_category_id`, `contact_id`, `payable_account_id`, `expense_date`, `amount`, `description`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `posted_journal_entry_id`, `reversal_journal_entry_id`, `reversed_at`, `reversed_by`, `reversal_reason`, `created_by`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>payments (25 columns)</summary>
-
-`id`, `organization_id`, `payment_number`, `payment_type`, `contact_id`, `payment_date`, `amount`, `account_id`, `settlement_account_id`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `posted_journal_entry_id`, `reversal_journal_entry_id`, `reversed_at`, `reversed_by`, `reversal_reason`, `description`, `created_by`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>payment_allocations (8 columns)</summary>
-
-`id`, `organization_id`, `payment_id`, `document_type`, `document_id`, `allocated_amount`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>purchase_returns (26 columns)</summary>
-
-`id`, `organization_id`, `return_number`, `purchase_id`, `supplier_id`, `return_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `payable_account_id`, `purchase_return_variance_account_id`, `posted_journal_entry_id`, `reversal_journal_entry_id`, `reversed_at`, `reversed_by`, `reversal_reason`, `created_by`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>purchase_return_items (11 columns)</summary>
-
-`id`, `organization_id`, `purchase_return_id`, `line_number`, `purchase_item_id`, `product_id`, `quantity`, `unit_cost`, `line_total`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>sales_returns (25 columns)</summary>
-
-`id`, `organization_id`, `return_number`, `sales_id`, `customer_id`, `return_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `receivable_account_id`, `posted_journal_entry_id`, `reversal_journal_entry_id`, `reversed_at`, `reversed_by`, `reversal_reason`, `created_by`, `created_at`, `updated_at`
-
-</details>
-
-<details>
-<summary>sales_return_items (13 columns)</summary>
-
-`id`, `organization_id`, `sales_return_id`, `line_number`, `sales_item_id`, `product_id`, `quantity`, `unit_price`, `line_total`, `cogs_unit_cost`, `cogs_total`, `created_at`, `updated_at`
-
-</details>
-
-**Schema note:** `supabase/migrations/20261103000000_initial_database_schema.sql` is the canonical bootstrap DDL for a new/empty database. This README is a navigation and column reference; use the SQL file as the source of truth for types, defaults, constraints, indexes, triggers, grants, and RLS policies.
-
-## Accounting and Posting
-
-The ledger model separates journal headers (`journal_entries`) from journal lines (`account_transactions`). Business documents include a `posted_journal_entry_id` reference where applicable.
-
-Required accounting controls:
-
-1. A posted journal entry must have at least the required lines and total debits equal to total credits.
-2. Every journal entry retains its source transaction date.
-4. Posting must be atomic: the business document, journal entry, journal lines, and related inventory effects must succeed or fail together.
-5. Prevent duplicate posting and use controlled reversal entries to correct posted activity.
-6. Validate that accounts, contacts, products, and source documents belong to the same organization.
-
-Transaction documents follow Draft → Confirmed → Posted. Drafts may be edited/deleted; Confirmed documents are locked but may be reverted to Draft; Draft/Confirmed documents may be voided with a reason; Posted records cannot be edited or hard-deleted. Supported expense/payment/return journals can be reversed with audit history; purchase/sales invoices are corrected through return documents. Confirmation has no ledger or inventory impact; posting is the only source-document step that applies those effects. See [Database Blueprint](docs/DATABASE_AND_SECURITY.md#financial-and-inventory-transaction-lifecycle) for RPC contracts, variance-account requirements, and remaining accounting boundaries.
-
-## Inventory
-
-The schema separates movement history (`inventory_transactions`) from the current summary (`inventory_balances`). Product and sales line records also include fields related to inventory, sales, and cost of goods sold. Inventory balances enforce non-negative quantity/value; posting routines consume the exact remaining value when stock reaches zero.
-
-Document and test the exact rules for:
-
-- Purchase receipts and stock increases
-- Sales and stock decreases
-- Purchase and sales returns
-- Inventory adjustments
-- Average-cost calculations and rounding
-- Negative stock and non-inventory products
-- Reconciliation between transaction history and balance snapshots
-
-The presence of valuation fields does not, by itself, establish which costing algorithm or transaction timing is implemented.
-
-## Organization Isolation and Security
-
-Most business tables include `organization_id`. This is useful for multi-tenant data partitioning, but tenant isolation must be enforced by database policies and application authorization.
-
-Required controls:
-
-- Enable and test Supabase RLS policies on tables exposed through the Supabase API.
-- Verify the authenticated user's organization membership for every read and write.
-- Never trust a client-supplied `organization_id` without server-side or database authorization.
-- Scope record access by both record ID and organization ID.
-- Validate organization ownership for every referenced record.
-- Consider organization-scoped unique constraints for account codes, product codes, contact numbers, and document numbers.
-- Keep elevated Supabase service-role credentials server-side only.
-- Store secrets in local environment files and deployment settings, never in source control.
-- Test cross-organization access explicitly.
-
-The current schema includes `organization_users.role_id`, assigning one role per membership. `create_organization_with_admin` atomically creates the organization, its protected `Administrator` role, the system permission assignments, and the creator's membership.
-
-### RBAC model
-
-- `roles`: organization-scoped role definitions with `id`, `organization_id`, `name`, `status`, `is_system_role`, `created_at`, and `updated_at`. The bootstrap creates one protected `Administrator` role per organization. Custom-role creation and permission-editing RPCs are planned, not implemented.
-- `permissions`: a global catalog of granular actions with `id`, `permission_key`, `name`, `description`, `module`, `created_at`, and `updated_at`. Permission definitions must be system-managed; Administrators select from this catalog when configuring custom roles. Example keys include `sales.read`, `sales.create`, `sales.post`, `inventory.read`, and `users.manage`.
-- `role_permissions`: join table associating roles with permission definitions, using `role_id` and `permission_id` foreign keys. Fields: `id`, `role_id`, `permission_id`, and `created_at`. The initial Administrator permission links are created by the bootstrap; general custom-role editing remains deferred.
-- `organization_users.role_id`: defined foreign key to `roles.id`, assigning a role to that membership. Validate that the assigned role belongs to the same organization as the membership.
-
-Production database constraints: enforce unique `(organization_id, name)` on `roles`; unique `permission_key` on `permissions`; unique `(role_id, permission_id)` on `role_permissions`; foreign keys from `role_permissions.role_id` to `roles.id`, from `role_permissions.permission_id` to `permissions.id`, and from `organization_users.role_id` to `roles.id`. Prevent ordinary role-management operations from deleting or deactivating the system Administrator role or removing critical administrative permissions. Ensure an organization cannot be left without an authorized Administrator.
-
-Authorization must be deny-by-default and enforced server-side and, where applicable, through Supabase RLS. Check the user's active organization membership and required permission for every protected action. A permission record alone does not enforce access. Because `roles` are organization-scoped while `permissions` are global, ensure all role assignments and permission checks remain within the active organization. Frontend controls may hide unavailable actions, but must not be the only enforcement layer.
-
-## Technology and Deployment
-
-### Next.js
-
-Next.js is the web application framework. Follow the project’s existing routing, server/client component, and data-access conventions.
-
-### Supabase and PostgreSQL
-
-Supabase provides the PostgreSQL platform and may provide authentication or other backend services depending on configuration. During the current schema-design phase, maintain one canonical database SQL file at `supabase/migrations/20261103000000_initial_database_schema.sql`; consolidate schema changes there and test against a fresh, non-production PostgreSQL database. Do not add separate incremental SQL files until the schema is finalized.
-
-### Vercel
-
-Vercel is the deployment target. Configure environment variables for each relevant environment and verify the production build and database connectivity before releasing changes.
-
-## Local Development
-
-The exact package manager, scripts, and migration commands have not been verified in this README. Check the repository's `package.json`, lockfile, and migration setup before using commands.
-
-General workflow:
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/farukislamyt/zero-erp.git
-   cd zero-erp
-   ```
-2. Install dependencies using the package manager specified by the repository.
-3. Configure the required environment variables.
-4. For a fresh/empty non-production database, apply the canonical bootstrap file `supabase/migrations/20261103000000_initial_database_schema.sql` once. It is not an upgrade script for an existing database.
-5. Run the development command defined in `package.json`.
-6. Run the available lint, type-check, test, and production-build scripts before submitting changes.
-
-### Environment variables
-
-Use only the variables required by the actual application. A Supabase setup may use variables such as:
-
-| Variable | Purpose | Security |
-| --- | --- | --- |
-| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project endpoint | Intended to be public |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` or a publishable key | Client-side Supabase access, if used | Must be protected by RLS and permissions |
-| `SUPABASE_SERVICE_ROLE_KEY` | Elevated server-side access, if required | Secret; server only |
-| `DATABASE_URL` | Direct PostgreSQL connection, if required by server tooling | Secret; never commit it |
-
-Do not add unused variables just because they appear in this example. Never expose service-role credentials or database passwords to browser code.
-
-## Documentation Notes
-
-The following details must be added after confirming them from the codebase:
-
-- Actual supported Node.js version and package manager
-- Exact install, development, lint, test, type-check, and build commands
-- Database migration and seed-data procedure
-- Authentication and organization membership flow
-- Implemented Supabase RLS policies
-- Document status values and posting/reversal rules
-- Inventory costing method and stock movement timing
-- Screenshots or a demo link
-- License and contribution requirements
-
-## Contributing
-
-Keep changes focused and consistent with the existing codebase. Include migrations for database changes, explain any effects on existing data, and run the available checks before opening a pull request.
-
-## License
-
-A license has not been specified in the supplied project information. Add the chosen license before distributing or reusing the project publicly.
-
-### Current database boundaries
-
-The canonical bootstrap uses Supabase Auth as the identity source and does not create a separate `profiles` table. Organization administrators can add an existing verified Auth user by email, change membership roles, and deactivate/reactivate memberships through permission-checked RPCs. Inviting a not-yet-registered user requires a trusted server or Edge Function using the Supabase Auth Admin API. Invoice-level payment allocations remain deferred; current payment posting is contact-level. Read RLS policies enforce module-level `.read` permissions. `next_document_number` is implemented as an atomic permission-checked RPC but is not yet wired into document creation. Custom-role editing and inventory adjustments remain deferred; sales-return totals are capped at the original net value of returned lines after proportional invoice-discount allocation. See [Database Blueprint](docs/DATABASE_AND_SECURITY.md#10-current-audit-fixes-and-remaining-scope) for implementation status and verification limitations.
+Documentation has been statically compared with the SQL migration chain on `feat/database-migrations`. No live Supabase project was modified as part of the documentation work. PostgreSQL execution, Supabase Auth integration, runtime behavior and concurrency testing remain separate verification steps.
