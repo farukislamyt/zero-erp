@@ -79,7 +79,7 @@ The permission catalog is global and roles are organization-specific. Each organ
 | Table | Purpose | Notable columns |
 | --- | --- | --- |
 | `accounts` | Chart of accounts and hierarchy | `account_code`, `account_name`, `account_type`, `parent_account_id`, `normal_balance`, `is_postable` |
-| `journal_entries` | Journal entry headers and lifecycle | `entry_number`, `accounting_period_id`, `entry_date`, `entry_type`, `status`, `confirmed_at`, `confirmed_by`, `posted_at`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `reversal_of_id` |
+| `journal_entries` | Journal entry headers and lifecycle | `entry_number`, `entry_date`, `entry_type`, `status`, `confirmed_at`, `confirmed_by`, `posted_at`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `reversal_of_id` |
 | `account_transactions` | Debit/credit journal lines | `journal_entry_id`, `account_id`, `line_number`, `debit`, `credit`, `contact_id` |
 
 ### Products, contacts, and inventory
