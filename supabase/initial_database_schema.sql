@@ -556,7 +556,11 @@ create table public.purchase (
     foreign key (organization_id, payable_account_id)
     references public.accounts (organization_id, id)
     on delete restrict,
-  constraint purchase_discount_limit_chk check (discount_amount <= subtotal)
+  constraint purchase_discount_limit_chk check (discount_amount <= subtotal),
+  constraint purchase_confirmed_timestamp_chk
+    check (status <> 'confirmed' or (confirmed_at is not null and confirmed_by is not null)),
+  constraint purchase_void_timestamp_chk
+    check (status <> 'void' or (voided_at is not null and voided_by is not null and nullif(pg_catalog.btrim(void_reason), '') is not null))
 );
 
 create table public.purchase_items (
@@ -618,7 +622,11 @@ create table public.purchase_returns (
     foreign key (organization_id, payable_account_id)
     references public.accounts (organization_id, id)
     on delete restrict,
-  constraint purchase_returns_discount_limit_chk check (discount_amount <= subtotal)
+  constraint purchase_returns_discount_limit_chk check (discount_amount <= subtotal),
+  constraint purchase_returns_confirmed_timestamp_chk
+    check (status <> 'confirmed' or (confirmed_at is not null and confirmed_by is not null)),
+  constraint purchase_returns_void_timestamp_chk
+    check (status <> 'void' or (voided_at is not null and voided_by is not null and nullif(pg_catalog.btrim(void_reason), '') is not null))
 );
 
 create table public.purchase_return_items (
@@ -680,7 +688,11 @@ create table public.sales (
     foreign key (organization_id, receivable_account_id)
     references public.accounts (organization_id, id)
     on delete restrict,
-  constraint sales_discount_limit_chk check (discount_amount <= subtotal)
+  constraint sales_discount_limit_chk check (discount_amount <= subtotal),
+  constraint sales_confirmed_timestamp_chk
+    check (status <> 'confirmed' or (confirmed_at is not null and confirmed_by is not null)),
+  constraint sales_void_timestamp_chk
+    check (status <> 'void' or (voided_at is not null and voided_by is not null and nullif(pg_catalog.btrim(void_reason), '') is not null))
 );
 
 create table public.sales_items (
@@ -744,7 +756,11 @@ create table public.sales_returns (
     foreign key (organization_id, receivable_account_id)
     references public.accounts (organization_id, id)
     on delete restrict,
-  constraint sales_returns_discount_limit_chk check (discount_amount <= subtotal)
+  constraint sales_returns_discount_limit_chk check (discount_amount <= subtotal),
+  constraint sales_returns_confirmed_timestamp_chk
+    check (status <> 'confirmed' or (confirmed_at is not null and confirmed_by is not null)),
+  constraint sales_returns_void_timestamp_chk
+    check (status <> 'void' or (voided_at is not null and voided_by is not null and nullif(pg_catalog.btrim(void_reason), '') is not null))
 );
 
 create table public.sales_return_items (
@@ -811,7 +827,11 @@ create table public.expenses (
   constraint expenses_account_same_org_fk
     foreign key (organization_id, payable_account_id)
     references public.accounts (organization_id, id)
-    on delete restrict
+    on delete restrict,
+  constraint expenses_confirmed_timestamp_chk
+    check (status <> 'confirmed' or (confirmed_at is not null and confirmed_by is not null)),
+  constraint expenses_void_timestamp_chk
+    check (status <> 'void' or (voided_at is not null and voided_by is not null and nullif(pg_catalog.btrim(void_reason), '') is not null))
 );
 
 create table public.payments (
@@ -849,7 +869,11 @@ create table public.payments (
   constraint payments_settlement_account_same_org_fk
     foreign key (organization_id, settlement_account_id)
     references public.accounts (organization_id, id)
-    on delete restrict
+    on delete restrict,
+  constraint payments_confirmed_timestamp_chk
+    check (status <> 'confirmed' or (confirmed_at is not null and confirmed_by is not null)),
+  constraint payments_void_timestamp_chk
+    check (status <> 'void' or (voided_at is not null and voided_by is not null and nullif(pg_catalog.btrim(void_reason), '') is not null))
 );
 
 create table public.payment_allocations (
