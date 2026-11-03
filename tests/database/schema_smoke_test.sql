@@ -31,6 +31,14 @@ DECLARE
   v_payment_id uuid;
   v_payment_journal_id uuid;
   v_second_adjustment_id uuid;
+  v_second_sales_id uuid;
+  v_partial_payment_id uuid;
+  v_purchase_id uuid;
+  v_supplier_payment_id uuid;
+  v_supplier_payment_journal_id uuid;
+  v_receivable_aging numeric(20,4);
+  v_unapplied_total numeric(20,4);
+  v_inventory_total numeric(20,4);
 BEGIN
   SELECT count(*)
     INTO v_table_count
@@ -465,7 +473,7 @@ BEGIN
     pg_catalog.jsonb_build_object(
       'expense_category_id',v_expense_category_id,
       'payable_account_id',(SELECT id FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='2110'),
-      'expense_date','2026-11-03','amount',125.00,'description','Smoke test expense'
+      'expense_date','2026-11-03','amount',125.00,'contact_id',v_contact_id,'description','Smoke test expense'
     )
   );
   IF NOT EXISTS (
@@ -556,6 +564,84 @@ BEGIN
     RAISE EXCEPTION 'Allocated customer receipt did not post';
   END IF;
 
+
+  -- Partial allocation must expose both the open invoice balance and the unapplied credit.
+  v_second_sales_id := public.save_draft_transaction_document(
+    v_test_organization_id,'sales',
+    pg_catalog.jsonb_build_object(
+      'customer_id',v_contact_id,'invoice_date','2026-11-03',
+      'subtotal',100,'discount_amount',0,'total_amount',100,
+      'receivable_account_id',(SELECT id FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='1120')
+    ),
+    pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+      'line_number',1,'product_id',v_product_id,'quantity',1,'unit_price',100,'line_total',100
+    ))
+  );
+  PERFORM public.confirm_transaction_document(v_test_organization_id,'sales',v_second_sales_id);
+  PERFORM public.post_sales(v_test_organization_id,v_second_sales_id);
+
+  v_partial_payment_id := public.save_draft_transaction_document(
+    v_test_organization_id,'payment',
+    pg_catalog.jsonb_build_object(
+      'payment_type','receipt','contact_id',v_contact_id,'payment_date','2026-11-03',
+      'amount',100,'account_id',(SELECT id FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='1110'),
+      'settlement_account_id',(SELECT id FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='1120'),
+      'description','Smoke test partially allocated receipt'
+    )
+  );
+  PERFORM public.set_payment_allocations(
+    v_test_organization_id,v_partial_payment_id,
+    pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+      'document_type','sales','document_id',v_second_sales_id,'allocated_amount',60
+    ))
+  );
+  PERFORM public.confirm_transaction_document(v_test_organization_id,'payment',v_partial_payment_id);
+  PERFORM public.post_contact_payment(v_test_organization_id,v_partial_payment_id);
+
+  -- Exercise expense and purchase posting, then allocate one supplier payment across both documents.
+  PERFORM public.confirm_transaction_document(v_test_organization_id,'expense',v_expense_draft_id);
+  PERFORM public.post_expense(v_test_organization_id,v_expense_draft_id);
+
+  v_purchase_id := public.save_draft_transaction_document(
+    v_test_organization_id,'purchase',
+    pg_catalog.jsonb_build_object(
+      'supplier_id',v_contact_id,'invoice_date','2026-11-03',
+      'subtotal',250,'discount_amount',0,'total_amount',250,
+      'payable_account_id',(SELECT id FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='2110')
+    ),
+    pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+      'line_number',1,'product_id',v_product_id,'quantity',5,'unit_cost',50,'line_total',250
+    ))
+  );
+  PERFORM public.confirm_transaction_document(v_test_organization_id,'purchase',v_purchase_id);
+  PERFORM public.post_purchase(v_test_organization_id,v_purchase_id);
+
+  v_supplier_payment_id := public.save_draft_transaction_document(
+    v_test_organization_id,'payment',
+    pg_catalog.jsonb_build_object(
+      'payment_type','payment','contact_id',v_contact_id,'payment_date','2026-11-03',
+      'amount',375,'account_id',(SELECT id FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='1110'),
+      'settlement_account_id',(SELECT id FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='2110'),
+      'description','Smoke test supplier settlement'
+    )
+  );
+  PERFORM public.set_payment_allocations(
+    v_test_organization_id,v_supplier_payment_id,
+    pg_catalog.jsonb_build_array(
+      pg_catalog.jsonb_build_object('document_type','purchase','document_id',v_purchase_id,'allocated_amount',250),
+      pg_catalog.jsonb_build_object('document_type','expense','document_id',v_expense_draft_id,'allocated_amount',125)
+    )
+  );
+  PERFORM public.confirm_transaction_document(v_test_organization_id,'payment',v_supplier_payment_id);
+  v_supplier_payment_journal_id := public.post_contact_payment(v_test_organization_id,v_supplier_payment_id);
+  IF NOT EXISTS (
+    SELECT 1 FROM public.payments
+    WHERE organization_id=v_test_organization_id AND id=v_supplier_payment_id
+      AND status='posted' AND posted_journal_entry_id=v_supplier_payment_journal_id
+  ) THEN
+    RAISE EXCEPTION 'Supplier payment allocated across purchase and expense did not post';
+  END IF;
+
   -- Reporting RPCs must be exposed to authenticated users and return balanced totals.
   SELECT sum(movement_debit),sum(movement_credit)
   INTO v_trial_debits,v_trial_credits
@@ -571,6 +657,25 @@ BEGIN
   PERFORM * FROM public.report_payables_aging(v_test_organization_id,'2026-12-31');
   PERFORM * FROM public.report_unapplied_payments(v_test_organization_id,'2026-12-31');
 
+
+  SELECT coalesce(sum(current_amount+days_31_60+days_61_90+over_90),0)
+  INTO v_receivable_aging
+  FROM public.report_receivables_aging(v_test_organization_id,'2026-12-31');
+  SELECT coalesce(sum(unapplied_amount),0)
+  INTO v_unapplied_total
+  FROM public.report_unapplied_payments(v_test_organization_id,'2026-12-31');
+  IF v_receivable_aging<>40 OR v_unapplied_total<>40 THEN
+    RAISE EXCEPTION 'Partial receipt aging/unapplied balances do not reconcile: open invoices %, unapplied credits %',
+      v_receivable_aging,v_unapplied_total;
+  END IF;
+  IF EXISTS (SELECT 1 FROM public.report_payables_aging(v_test_organization_id,'2026-12-31')) THEN
+    RAISE EXCEPTION 'Fully allocated supplier payment left an open payable balance';
+  END IF;
+  SELECT coalesce(sum(inventory_value),0) INTO v_inventory_total
+  FROM public.report_inventory_valuation(v_test_organization_id,'2026-12-31');
+  IF v_inventory_total<>1050 THEN
+    RAISE EXCEPTION 'Inventory valuation mismatch after sales and purchase postings: %',v_inventory_total;
+  END IF;
   IF to_regprocedure('public.set_payment_allocations(uuid,uuid,jsonb)') IS NULL
      OR to_regprocedure('public.post_inventory_adjustment(uuid,date,text,jsonb,uuid,uuid)') IS NULL
      OR to_regprocedure('public.save_master_data(uuid,text,jsonb,uuid)') IS NULL
