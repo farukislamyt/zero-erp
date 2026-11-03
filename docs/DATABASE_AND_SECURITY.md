@@ -130,7 +130,7 @@ The data model contains 23 business tables plus three RBAC tables (26 tables tot
 
 ## 5. System model
 
-Zero ERP is a multi-organization ERP. An authenticated person can be a member of one or more organizations. Every business operation must be scoped to the active organization, and every referenced business record must belong to that same organization.
+Zero ERP is a multi-organization ERP. An authenticated person may retain historical membership records in multiple organizations, but can have at most one active company membership at a time. Every business operation must be scoped to the active organization, and every referenced business record must belong to that same organization.
 
 Core domains:
 
@@ -437,10 +437,11 @@ The opening balance workflow intentionally introduces no staging or sub-ledger t
 
 ### RBAC
 - Organization creator receives Administrator automatically.
-- An ordinary member cannot create roles or change role permissions.
-- A custom role only grants its selected permissions.
-- System Administrator role cannot be deleted/deactivated or stripped of essential access by normal role-management flows.
-- At least one authorized Administrator remains after member removal/role changes.
+- Only the active system Administrator can add/deactivate/reactivate members, assign roles, create/update custom roles, change custom-role permissions, or transfer Administrator authority.
+- An ordinary custom-role member cannot perform administrative operations even if legacy permission rows previously contained `users.manage` or `roles.manage`; the migration removes those legacy grants.
+- A custom role cannot receive `users.manage` or `roles.manage`.
+- The system Administrator role cannot be deleted, deactivated, reassigned through ordinary member-role RPCs, or stripped of its permissions.
+- Exactly one active Administrator remains after every committed membership/role operation.
 
 ### Accounting
 - Unbalanced journals cannot post.
@@ -523,10 +524,9 @@ The initial SQL file remains a one-time bootstrap for a new, empty Supabase data
 ### Explicitly deferred (not implemented)
 
 - Invoice-level payment allocations and invoice-wise outstanding balances.
-- Custom role creation/permission editing and role assignment RPCs beyond the existing membership role-update workflow.
 - Master-data create/update RPCs for accounts, contacts, products, units of measure, and expense categories. Browser-role table writes remain revoked, so these CRUD workflows must use new permission-checked RPCs before the application exposes them.
 - Inventory-adjustment posting RPC.
 - Automatic number allocation inside document creation flows.
 - Opening customer-credit and supplier-debit balances in the contact subledger; the current opening-balance contract represents customer receivables and supplier payables only.
 
-The canonical SQL file is `supabase/migrations/20261103000000_initial_database_schema.sql`. It is a one-time bootstrap for a new/empty database, not an upgrade script for a populated database. During the current schema-design phase, this is the only executable database SQL file; do not apply it as an upgrade to an existing installation. No live Supabase project has been changed by this repository edit. The accounting-period subsystem has been removed: no period relation, column, permission, period-specific function argument or logic, period lock, or period-closing workflow exists. Financial reports use explicit date ranges; historical posting restrictions must not silently recreate period entities.
+The canonical bootstrap is `supabase/migrations/20261103000000_initial_database_schema.sql`, for a new/empty Supabase database only. `supabase/migrations/20261103010000_organization_membership_security.sql` is the incremental upgrade for a database that has already applied the bootstrap. Do not run the bootstrap as an upgrade on a populated installation. No live Supabase project has been changed by this repository edit. The accounting-period subsystem has been removed: no period relation, column, permission, period-specific function argument or logic, period lock, or period-closing workflow exists. Financial reports use explicit date ranges; historical posting restrictions must not silently recreate period entities.
