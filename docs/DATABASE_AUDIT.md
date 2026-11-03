@@ -56,11 +56,19 @@ The following source-level defects identified in the earlier audit have been cor
 
 **Verification:** the final CASE mapping and the call from `post_inventory_adjustment` were inspected statically. No live posting test has been run.
 
-### Fixed — Receivables aging historical cutoff
+### Fixed — Historical aging and unapplied-payment reversal cutoff
 
-The payment-allocation subquery in `report_receivables_aging` now requires the related posted payment's `payment_date <= p_as_of_date`. This aligns its historical payment cutoff with the payable-aging report.
+The receivables-aging, payables-aging, and unapplied-payments reports now evaluate reversals against the accounting-effective date recorded by the linked reversal journal entry (`reversal_journal_entry_id → journal_entries.entry_date`), rather than treating the current document status as if it had always applied.
 
-**Verification:** the final SQL predicate was inspected statically. No historical fixture/report comparison has been run.
+- A payment reversed after the requested as-of date remains included in that historical snapshot; a payment reversed on or before the date is excluded.
+- A sales or purchase invoice remains eligible when its current status is `returned`, because the return itself is applied only when its return date is on or before the requested date.
+- A return reversed after the requested date remains applied to that historical snapshot; a return reversed on or before the date is excluded.
+- A reversed expense or payment is treated as active for the snapshot only when its linked reversal journal entry is dated after the requested date.
+- Unapplied-payment reporting follows the same reversal-date rule.
+
+The reversal journal entry's `entry_date` is used because `reverse_journal_entry` accepts an explicit accounting reversal date. The wall-clock `reversed_at` field is audit metadata and is not the accounting cutoff.
+
+**Verification:** final predicates and their links to the existing reversal journal entries were inspected statically. No PostgreSQL fixture execution or financial reconciliation has been run; runtime verification remains required.
 
 ### Fixed — Own inactive/historical membership metadata exposure
 
