@@ -417,6 +417,15 @@ $$;
 revoke all on function public.create_organization_with_admin(text,text,text) from public, anon;
 grant execute on function public.create_organization_with_admin(text,text,text) to authenticated;
 
+-- Retire legacy custom-role grants for control-plane permissions. These keys
+-- no longer confer any administrative authority to ordinary custom roles.
+delete from public.role_permissions rp
+using public.roles r, public.permissions p
+where rp.role_id = r.id
+  and rp.permission_id = p.id
+  and not r.is_system_role
+  and p.permission_key in ('users.manage', 'roles.manage');
+
 -- All administrative operations are Administrator-exclusive, independent of
 -- permissions accidentally granted to an ordinary custom role.
 create or replace function public.validate_role_assignment(
@@ -525,6 +534,9 @@ begin
   if v_existing_active_org is not null and v_existing_active_org <> p_organization_id then
     raise exception using errcode = '23505',
       message = 'This user is already an active member of another company. Their current company Administrator must deactivate that membership first.';
+  elsif v_existing_active_org = p_organization_id then
+    raise exception using errcode = '23514',
+      message = 'This user is already an active member of this organization.';
   end if;
 
   select public.is_organization_creator(p_organization_id, v_user_id)
