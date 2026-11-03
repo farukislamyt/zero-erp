@@ -6511,15 +6511,19 @@ begin
   from public.organizations o
   where o.id = old.organization_id;
 
+  -- A membership row's identity is historical and cannot be reassigned.
+  if tg_op = 'UPDATE'
+     and (
+       new.organization_id is distinct from old.organization_id
+       or new.user_id is distinct from old.user_id
+       or new.created_at is distinct from old.created_at
+     ) then
+    raise exception using errcode = '42501',
+      message = 'Membership organization, user, and creation timestamp are immutable.';
+  end if;
+
   v_is_creator_record := v_org_created_at is not null
     and old.created_at = v_org_created_at;
-
-  if tg_op = 'UPDATE'
-     and new.created_at = v_org_created_at
-     and old.created_at is distinct from v_org_created_at then
-    raise exception using errcode = '42501',
-      message = 'A membership cannot be rewritten to impersonate the permanent company-creator record.';
-  end if;
 
   if not v_is_creator_record then
     if tg_op = 'DELETE' then return old; end if;
@@ -6531,12 +6535,9 @@ begin
       message = 'The original company-creator membership is a permanent audit record and cannot be deleted.';
   end if;
 
-  if new.organization_id is distinct from old.organization_id
-     or new.user_id is distinct from old.user_id
-     or new.created_at is distinct from old.created_at
-     or new.role_id is distinct from old.role_id then
+  if new.role_id is distinct from old.role_id then
     raise exception using errcode = '42501',
-      message = 'The original company-creator membership identity is immutable.';
+      message = 'The original company-creator Administrator role is immutable.';
   end if;
 
   if old.is_active and not new.is_active and not v_transfer_allowed then
