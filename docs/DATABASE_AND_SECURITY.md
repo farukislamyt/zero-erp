@@ -319,7 +319,7 @@ The policies below define the required access-control behavior for Supabase-expo
 | Table/group | SELECT | INSERT | UPDATE | DELETE |
 | --- | --- | --- | --- | --- |
 | `organizations` | Active member of that organization | Through trusted organization-creation RPC | Active system Administrator only | Normally blocked; use controlled archival/deactivation |
-| `organization_users` | Self membership and/or authorized organization Administrator | Existing verified account only; Administrator-only RPC | Only the active Administrator may add members, change roles, deactivate/reactivate members, or transfer Administrator authority | Preserve the permanent creator record; retain inactive membership history |
+| `organization_users` | Self membership and/or authorized organization Administrator | Existing verified account only; Administrator-only RPC | Only the active Administrator may add members, change roles, deactivate/reactivate members, or transfer Administrator authority; row identity fields are immutable | Preserve the permanent creator record; retain inactive membership history |
 | `roles` | Active organization member with role-read permission | Active system Administrator only; no client-created system role | Active system Administrator only; protect system roles | Block system role deletion; custom role only if safe and unassigned |
 | `permissions` | Authenticated users only if the global catalog is intended to be visible | No client writes; system migration/maintainer only | No client writes; system migration/maintainer only | No client writes |
 | `role_permissions` | Active organization member with role-read permission, scoped through role's organization | Active system Administrator only; validate role organization | Active system Administrator only via controlled RPC | System Administrator permissions are immutable; reserved control-plane keys are blocked on custom roles |
@@ -451,6 +451,7 @@ The opening balance workflow intentionally introduces no staging or sub-ledger t
 - The creator membership is identified by its initial timestamp matching `organizations.created_at`; attempts to delete it, change its organization/user/creation timestamp/role, or rewrite the organization's creation timestamp are rejected.
 - A later membership insert cannot reuse the company's creation timestamp to forge or duplicate the creator marker; only the company-creation RPC temporarily enables that insert, then resets its transaction-local guard.
 - A second membership cannot be inserted or rewritten to impersonate the creator timestamp; every company must have exactly one creator anchor.
+- No membership row can be reassigned to a different Auth user/company or have its `created_at` rewritten; historical membership identity is immutable.
 - Administrator handover deactivates (but retains) the outgoing creator membership and promotes one existing active custom-role member; exactly one active Administrator exists after commit.
 - Two concurrent attempts to activate memberships in different companies for the same user cannot both commit. After deactivation, another company may add the user while the old inactive history remains.
 - Reactivation is rejected while the user is active in another company; the permanent creator record is never reactivated as an ordinary membership.
