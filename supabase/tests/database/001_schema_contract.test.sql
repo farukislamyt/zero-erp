@@ -12,13 +12,18 @@ select ok(not exists(select 1 from pg_catalog.pg_proc p join pg_catalog.pg_names
 select ok(pg_catalog.to_regprocedure('public.transfer_organization_administrator(uuid,uuid)') is null,'Administrator transfer RPC is absent');
 select is((select count(*)::integer from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relkind in ('v','m')),0,'no SQL views or materialized views are present');
 select is((select count(*)::integer from pg_catalog.pg_tables where schemaname='public' and tablename ilike '%period%'),0,'no accounting-period table has been introduced');
-select ok(not exists(select 1 from pg_catalog.pg_tables t where t.schemaname='public' and (
- pg_catalog.has_table_privilege('authenticated','public.'||pg_catalog.quote_ident(t.tablename),'INSERT')
- or pg_catalog.has_table_privilege('authenticated','public.'||pg_catalog.quote_ident(t.tablename),'UPDATE')
- or pg_catalog.has_table_privilege('authenticated','public.'||pg_catalog.quote_ident(t.tablename),'DELETE')
- or pg_catalog.has_table_privilege('anon','public.'||pg_catalog.quote_ident(t.tablename),'INSERT')
- or pg_catalog.has_table_privilege('anon','public.'||pg_catalog.quote_ident(t.tablename),'UPDATE')
- or pg_catalog.has_table_privilege('anon','public.'||pg_catalog.quote_ident(t.tablename),'DELETE'))),'browser roles have no direct public-table write privileges');
+select ok(not exists(
+ select 1
+ from pg_catalog.pg_class c
+ join pg_catalog.pg_namespace n on n.oid=c.relnamespace
+ where n.nspname='public' and c.relkind in ('r','p') and (
+  pg_catalog.has_table_privilege('authenticated',c.oid,'INSERT')
+  or pg_catalog.has_table_privilege('authenticated',c.oid,'UPDATE')
+  or pg_catalog.has_table_privilege('authenticated',c.oid,'DELETE')
+  or pg_catalog.has_table_privilege('anon',c.oid,'INSERT')
+  or pg_catalog.has_table_privilege('anon',c.oid,'UPDATE')
+  or pg_catalog.has_table_privilege('anon',c.oid,'DELETE')
+ )),'browser roles have no direct public-table write privileges');
 select ok(not pg_catalog.has_function_privilege('anon','public.create_organization_with_admin(text,text,text)','EXECUTE'),'anon cannot execute organization creation');
 select ok(pg_catalog.has_function_privilege('authenticated','public.create_organization_with_admin(text,text,text)','EXECUTE'),'authenticated can execute organization creation');
 
