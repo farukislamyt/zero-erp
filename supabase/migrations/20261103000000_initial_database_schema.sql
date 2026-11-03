@@ -1759,6 +1759,13 @@ declare
   v_line record;
   v_last_line integer;
 begin
+  perform 1 from public.organizations o
+  where o.id = p_organization_id and o.is_active
+  for share;
+  if not found then
+    raise exception using errcode = '23503', message = 'Active organization was not found.';
+  end if;
+
   v_user_id := (select auth.uid());
   if v_user_id is null then
     raise exception using errcode = '42501', message = 'Authentication is required to post a purchase.';
@@ -1783,7 +1790,8 @@ begin
 
   select c.is_active into v_supplier_active
   from public.contacts c
-  where c.organization_id = p_organization_id and c.id = v_purchase.supplier_id;
+  where c.organization_id = p_organization_id and c.id = v_purchase.supplier_id
+  for update;
   if coalesce(v_supplier_active, false) is not true then
     raise exception using errcode = '23503', message = 'Supplier must be active and belong to this organization.';
   end if;
@@ -2005,6 +2013,18 @@ begin
       message = 'Authentication is required to post opening balances.';
   end if;
 
+  -- Exclusive organization lock serializes initialization against every operational poster.
+  perform 1
+  from public.organizations o
+  where o.id = p_organization_id
+    and o.is_active
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503',
+      message = 'Active organization was not found.';
+  end if;
+
   if not public.is_active_org_member(p_organization_id)
      or not public.has_org_permission(p_organization_id, 'opening_balances.post') then
     raise exception using errcode = '42501',
@@ -2021,18 +2041,6 @@ begin
      or p_inventory_lines is null or pg_catalog.jsonb_typeof(p_inventory_lines) <> 'array' then
     raise exception using errcode = '22023',
       message = 'Account, party, and inventory lines must each be supplied as JSON arrays.';
-  end if;
-
-  -- Serialize organization-level opening posts and prevent a second opening balance.
-  perform 1
-  from public.organizations o
-  where o.id = p_organization_id
-    and o.is_active
-  for update;
-
-  if not found then
-    raise exception using errcode = '23503',
-      message = 'Active organization was not found.';
   end if;
 
   if exists (
@@ -2478,6 +2486,13 @@ declare
   v_journal_entry_id uuid;
   v_entry_number text;
 begin
+  perform 1 from public.organizations o
+  where o.id = p_organization_id and o.is_active
+  for share;
+  if not found then
+    raise exception using errcode = '23503', message = 'Active organization was not found.';
+  end if;
+
   if v_user_id is null or not public.is_active_org_member(p_organization_id)
      or not public.has_org_permission(p_organization_id, 'payments.post') then
     raise exception using errcode = '42501', message = 'You are not authorized to post payments for this organization.';
@@ -2729,6 +2744,13 @@ declare
   v_last_line integer;
   v_line_number integer := 0;
 begin
+  perform 1 from public.organizations o
+  where o.id = p_organization_id and o.is_active
+  for share;
+  if not found then
+    raise exception using errcode = '23503', message = 'Active organization was not found.';
+  end if;
+
   v_user_id := (select auth.uid());
   if v_user_id is null then
     raise exception using errcode = '42501', message = 'Authentication is required to post a sales invoice.';
@@ -2996,7 +3018,15 @@ declare
   v_new_average numeric(20,6);
   v_direction text;
   v_txn_line integer := 0;
+  v_contact_id uuid;
 begin
+  perform 1 from public.organizations o
+  where o.id = p_organization_id and o.is_active
+  for share;
+  if not found then
+    raise exception using errcode = '23503', message = 'Active organization was not found.';
+  end if;
+
   if v_user_id is null or not public.is_active_org_member(p_organization_id)
      or not public.has_org_permission(p_organization_id, 'journal_entries.reverse') then
     raise exception using errcode = '42501', message = 'You are not authorized to reverse journal entries for this organization.';
@@ -3073,6 +3103,23 @@ begin
       raise exception using errcode = '23503', message = 'Original sales invoice for this return no longer exists.';
     end if;
   end if;
+
+  -- Serialize AR/AP changes with contact-level payment posting.
+  for v_contact_id in
+    select distinct atx.contact_id
+    from public.account_transactions atx
+    where atx.organization_id = p_organization_id
+      and atx.journal_entry_id = p_journal_entry_id
+      and atx.contact_id is not null
+    order by atx.contact_id
+  loop
+    perform 1 from public.contacts c
+    where c.organization_id = p_organization_id and c.id = v_contact_id
+    for update;
+    if not found then
+      raise exception using errcode = '23503', message = 'A journal contact no longer exists in this organization.';
+    end if;
+  end loop;
 
   insert into public.journal_entries (
     organization_id, entry_number, entry_date,
@@ -3290,6 +3337,13 @@ declare
   v_payable_account public.accounts%rowtype;
   v_journal_id uuid;
 begin
+  perform 1 from public.organizations o
+  where o.id = p_organization_id and o.is_active
+  for share;
+  if not found then
+    raise exception using errcode = '23503', message = 'Active organization was not found.';
+  end if;
+
   if v_user_id is null or not public.is_active_org_member(p_organization_id)
      or not public.has_org_permission(p_organization_id, 'expenses.post') then
     raise exception using errcode = '42501', message = 'You are not authorized to post expenses for this organization.';
@@ -3414,6 +3468,13 @@ declare
   v_account record;
   v_variance_account public.accounts%rowtype;
 begin
+  perform 1 from public.organizations o
+  where o.id = p_organization_id and o.is_active
+  for share;
+  if not found then
+    raise exception using errcode = '23503', message = 'Active organization was not found.';
+  end if;
+
   if v_user_id is null or not public.is_active_org_member(p_organization_id)
      or not public.has_org_permission(p_organization_id, 'purchases.returns.post') then
     raise exception using errcode = '42501', message = 'You are not authorized to post purchase returns for this organization.';
@@ -3433,6 +3494,13 @@ begin
   if not found or v_purchase.status not in ('posted','partially_returned') then
     raise exception using errcode = '23514', message = 'Purchase return requires a posted purchase that has not been fully returned.';
   end if;
+  perform 1 from public.contacts c
+  where c.organization_id = p_organization_id and c.id = v_purchase.supplier_id and c.is_active
+  for update;
+  if not found then
+    raise exception using errcode = '23503', message = 'Supplier must be active and belong to this organization.';
+  end if;
+
   if v_return.supplier_id <> v_purchase.supplier_id
      or v_return.payable_account_id <> v_purchase.payable_account_id then
     raise exception using errcode = '23514', message = 'Purchase return supplier and payable account must match the original purchase.';
@@ -3680,6 +3748,13 @@ declare
   v_last_line integer;
   v_line record;
 begin
+  perform 1 from public.organizations o
+  where o.id = p_organization_id and o.is_active
+  for share;
+  if not found then
+    raise exception using errcode = '23503', message = 'Active organization was not found.';
+  end if;
+
   if v_user_id is null or not public.is_active_org_member(p_organization_id)
      or not public.has_org_permission(p_organization_id, 'sales.returns.post') then
     raise exception using errcode = '42501', message = 'You are not authorized to post sales returns for this organization.';
@@ -3699,6 +3774,13 @@ begin
   if not found or v_sales.status not in ('posted','partially_returned') then
     raise exception using errcode = '23514', message = 'Sales return requires a posted sales invoice that has not been fully returned.';
   end if;
+  perform 1 from public.contacts c
+  where c.organization_id = p_organization_id and c.id = v_sales.customer_id and c.is_active
+  for update;
+  if not found then
+    raise exception using errcode = '23503', message = 'Customer must be active and belong to this organization.';
+  end if;
+
   if v_return.customer_id <> v_sales.customer_id
      or v_return.receivable_account_id <> v_sales.receivable_account_id then
     raise exception using errcode = '23514', message = 'Sales return customer and receivable account must match the original sales invoice.';
@@ -3956,7 +4038,15 @@ declare
   v_line_count integer;
   v_debit numeric(20,4);
   v_credit numeric(20,4);
+  v_contact_id uuid;
 begin
+  perform 1 from public.organizations o
+  where o.id = p_organization_id and o.is_active
+  for share;
+  if not found then
+    raise exception using errcode = '23503', message = 'Active organization was not found.';
+  end if;
+
   if v_user_id is null or not public.is_active_org_member(p_organization_id)
      or not public.has_org_permission(p_organization_id, 'journal_entries.post') then
     raise exception using errcode = '42501', message = 'You are not authorized to post journal entries for this organization.';
@@ -4004,6 +4094,22 @@ begin
   ) then
     raise exception using errcode = '23514', message = 'Every journal contact must be active and belong to this organization.';
   end if;
+
+  for v_contact_id in
+    select distinct atx.contact_id
+    from public.account_transactions atx
+    where atx.organization_id = p_organization_id
+      and atx.journal_entry_id = p_journal_entry_id
+      and atx.contact_id is not null
+    order by atx.contact_id
+  loop
+    perform 1 from public.contacts c
+    where c.organization_id = p_organization_id and c.id = v_contact_id
+    for update;
+    if not found then
+      raise exception using errcode = '23503', message = 'A journal contact no longer exists in this organization.';
+    end if;
+  end loop;
 
   update public.journal_entries
   set status = 'posted', posted_at = pg_catalog.now(), posted_by = v_user_id, updated_at = pg_catalog.now()
@@ -4113,7 +4219,7 @@ begin
   end loop;
 
   if p_document_id is null then
-    if pg_catalog.jsonb_object_length(p_header) = 0 then
+    if p_header = '{}'::jsonb then
       raise exception using errcode = '22023', message = 'A new draft requires header fields.';
     end if;
     select
