@@ -459,4 +459,4 @@ The opening balance workflow intentionally introduces no staging or sub-ledger t
 
 ## 14. Production governance
 
-Treat the database migrations and this architecture contract as a single versioned unit. Every schema, RPC, grant, or RLS change must be reviewed, tested against cross-tenant access, and shipped through a migration. The live PostgreSQL catalog remains the operational source of truth; deployment checks must detect drift from this contract.
+Treat `supabase/initial_database_schema.sql` and this architecture contract as a single versioned unit. The SQL file is the canonical bootstrap for a new, empty Supabase PostgreSQL database; run it once through the Supabase SQL Editor after Supabase Auth is available. It is not an incremental upgrade script and must not be run against a database that already contains these objects. Future schema changes must update this canonical file, then be validated from a clean database and regression-tested before release. The live PostgreSQL catalog remains the operational source of truth; deployment checks must detect drift from this contract.
