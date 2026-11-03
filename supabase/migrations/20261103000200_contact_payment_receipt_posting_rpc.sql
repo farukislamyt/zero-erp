@@ -115,11 +115,14 @@ begin
       message = 'Cash/bank account and party control account must be different.';
   end if;
 
+  -- Serialize concurrent receipts/payments for this party before checking
+  -- its current outstanding, preventing two payments from spending the same balance.
   perform 1
   from public.contacts c
   where c.organization_id = p_organization_id
     and c.id = v_payment.contact_id
-    and c.is_active;
+    and c.is_active
+  for update;
 
   if not found then
     raise exception using errcode = '23503',
