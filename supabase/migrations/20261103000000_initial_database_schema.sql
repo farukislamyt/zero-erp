@@ -6843,6 +6843,7 @@ declare
   v_user_id uuid;
   v_membership_id uuid;
   v_existing_active_org uuid;
+  v_is_creator boolean;
 begin
   if (select auth.uid()) is null or not public.is_org_administrator(p_organization_id) then
     raise exception using errcode = '42501',
@@ -7002,7 +7003,6 @@ as $function$
 declare
   v_role_id uuid;
   v_is_system boolean;
-  v_is_creator boolean;
 begin
   if (select auth.uid()) is null or not public.is_org_administrator(p_organization_id) then
     raise exception using errcode = '42501',
@@ -7357,18 +7357,24 @@ security definer
 set search_path = ''
 as $function$
 begin
-  if (select auth.uid()) is null or not public.is_org_administrator(p_organization_id) then
-    raise exception using errcode = '42501', message = 'Only the organization Administrator can update company details.';
+  if (select auth.uid()) is null
+     or not public.is_org_administrator(p_organization_id) then
+    raise exception using errcode = '42501',
+      message = 'Only the organization Administrator can update company details.';
   end if;
-  if p_name is null or pg_catalog.length(pg_catalog.btrim(p_name)) not between 1 and 160
-     or p_currency is null or p_currency !~ '^[A-Z]{3}
-drop function if exists public.complete_organization_invitation(uuid,uuid,uuid,uuid);
 
-commit;
- or p_timezone is null or not exists (
-       select 1 from pg_catalog.pg_timezone_names tz where tz.name = pg_catalog.btrim(p_timezone)
+  if p_name is null
+     or pg_catalog.length(pg_catalog.btrim(p_name)) not between 1 and 160
+     or p_currency is null
+     or p_currency !~ '^[A-Z]{3}
+     or p_timezone is null
+     or not exists (
+       select 1
+       from pg_catalog.pg_timezone_names tz
+       where tz.name = pg_catalog.btrim(p_timezone)
      ) then
-    raise exception using errcode = '22023', message = 'Organization name, ISO currency, or timezone is invalid.';
+    raise exception using errcode = '22023',
+      message = 'Organization name, ISO currency, or timezone is invalid.';
   end if;
 
   update public.organizations
@@ -7383,12 +7389,13 @@ commit;
       tin = nullif(pg_catalog.btrim(coalesce(p_tin,'')), ''),
       bin = nullif(pg_catalog.btrim(coalesce(p_bin,'')), '')
   where id = p_organization_id and is_active;
+
   if not found then
-    raise exception using errcode = '23503', message = 'Active organization was not found.';
+    raise exception using errcode = '23503',
+      message = 'Active organization was not found.';
   end if;
 end;
 $function$;
-revoke all on function public.update_organization_profile(uuid,text,text,text,text,text,text,text,text,text,text) from public, anon;
 revoke all on function public.update_organization_profile(uuid,text,text,text,text,text,text,text,text,text,text) from public, anon;
 grant execute on function public.update_organization_profile(uuid,text,text,text,text,text,text,text,text,text,text) to authenticated;
 
