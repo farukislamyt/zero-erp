@@ -1,0 +1,101 @@
+name: Database SQL Tests
+
+on:
+  push:
+    branches:
+      - "**"
+    paths:
+      - "supabase/**"
+      - "tests/database/**"
+      - ".github/workflows/database-sql-test.yml"
+  pull_request:
+    paths:
+      - "supabase/**"
+      - "tests/database/**"
+      - ".github/workflows/database-sql-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-sql-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bootstrap-and-smoke-test:
+    name: PostgreSQL 17 bootstrap and schema checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: zero_erp_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d zero_erp_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGDATABASE: zero_erp_test
+      PGUSER: postgres
+      PGPASSWORD: postgres
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
+      - name: Prepare minimal Supabase Auth compatibility layer
+        run: |
+          psql -X -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE anon NOLOGIN;
+          CREATE ROLE authenticated NOLOGIN;
+
+          CREATE SCHEMA auth;
+          CREATE TABLE auth.users (
+            id uuid PRIMARY KEY
+          );
+
+          CREATE OR REPLACE FUNCTION auth.uid()
+          RETURNS uuid
+          LANGUAGE sql
+          STABLE
+          AS $$
+            SELECT NULLIF(
+              pg_catalog.current_setting('request.jwt.claim.sub', true),
+              ''
+            )::uuid;
+          $$;
+
+          GRANT USAGE ON SCHEMA auth TO anon, authenticated;
+          GRANT SELECT ON auth.users TO authenticated;
+          GRANT EXECUTE ON FUNCTION auth.uid() TO anon, authenticated;
+          SQL
+
+      - name: Apply canonical database bootstrap
+        run: |
+          psql -X -v ON_ERROR_STOP=1 \
+            --single-transaction \
+            --file supabase/initial_database_schema.sql
+
+      - name: Run database schema smoke tests
+        run: |
+          psql -X -v ON_ERROR_STOP=1 \
+            --file tests/database/schema_smoke_test.sql
+
+      - name: Check patch whitespace
+        run: git diff --check
