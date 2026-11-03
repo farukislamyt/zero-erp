@@ -366,6 +366,8 @@ as $$
   select exists (
     select 1
     from public.organization_users ou
+    join public.organizations o
+      on o.id = ou.organization_id and o.is_active
     join public.roles r
       on r.id = ou.role_id
      and r.organization_id = ou.organization_id
