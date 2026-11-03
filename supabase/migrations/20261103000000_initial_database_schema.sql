@@ -5098,6 +5098,7 @@ declare
   v_id uuid := coalesce(p_record_id, pg_catalog.gen_random_uuid());
   v_has_created_by boolean := false;
   v_system boolean;
+  v_current_is_control boolean;
   v_has_activity boolean;
   v_default_id uuid;
   v_parent_type text;
@@ -5160,13 +5161,14 @@ begin
              when 'revenue' then 'credit' else null end) then
         raise exception using errcode='22023',message='Normal balance must match the account type.';
       end if;
-      if p_data->>'account_type' is not null and p_data->>'normal_balance' is null then
-        raise exception using errcode='22023',message='Account type and normal balance must be supplied together.';
+      if p_data->>'account_type' is not null and p_data->>'normal_balance' is null
+         and (p_record_id is null or p_data->>'account_type' is distinct from v_current_account_type) then
+        raise exception using errcode='22023',message='Changing account type requires a matching normal balance.';
       end if;
     end if;
     if p_record_id is not null then
-      select a.is_system_account,a.account_type,a.normal_balance
-      into v_system,v_current_account_type,v_current_normal_balance
+      select a.is_system_account,a.account_type,a.normal_balance,a.is_control_account
+      into v_system,v_current_account_type,v_current_normal_balance,v_current_is_control
       from public.accounts a
       where a.organization_id=p_organization_id and a.id=p_record_id
       for update;
@@ -5204,7 +5206,7 @@ begin
         raise exception using errcode='23514',message='An account with ledger activity, active mappings, or child accounts cannot be deactivated.';
       end if;
     end if;
-    if coalesce((p_data->>'is_control_account')::boolean,false)
+    if coalesce((p_data->>'is_control_account')::boolean,v_current_is_control,false)
        and coalesce(p_data->>'account_type',v_current_account_type) not in ('asset','liability') then
       raise exception using errcode='23514',message='Only asset or liability accounts can be control accounts.';
     end if;
@@ -5290,7 +5292,7 @@ begin
     ) then
       raise exception using errcode='23514',message='Expense category must map to an active, postable expense account.';
     end if;
-
+  end if;
 
   if p_record_id is not null and p_entity_type='contact' and p_data->>'is_active'='false' then
     if exists (
