@@ -2527,7 +2527,7 @@ begin
             into v_doc_contact_id, v_doc_account_id, v_doc_total, v_doc_status
           from public.sales s
           where s.organization_id = p_organization_id and s.id = v_allocation.document_id;
-          if not found or v_doc_status not in ('posted','partially_returned','returned')
+          if v_doc_status is null or v_doc_status not in ('posted','partially_returned','returned')
              or v_doc_contact_id <> v_payment.contact_id or v_doc_account_id <> v_payment.settlement_account_id then
             raise exception using errcode = '23514', message = 'Sales allocation must target a posted invoice for this customer and receivable account.';
           end if;
@@ -2548,7 +2548,7 @@ begin
             into v_doc_contact_id, v_doc_account_id, v_doc_total, v_doc_status
           from public.purchase p
           where p.organization_id = p_organization_id and p.id = v_allocation.document_id;
-          if not found or v_doc_status not in ('posted','partially_returned','returned')
+          if v_doc_status is null or v_doc_status not in ('posted','partially_returned','returned')
              or v_doc_contact_id <> v_payment.contact_id or v_doc_account_id <> v_payment.settlement_account_id then
             raise exception using errcode = '23514', message = 'Purchase allocation must target a posted invoice for this supplier and payable account.';
           end if;
@@ -2938,6 +2938,110 @@ grant execute on function public.post_sales(uuid, uuid) to authenticated;
 
 
 
+
+create or replace function public.reverse_journal_entry(
+  p_organization_id uuid,
+  p_journal_entry_id uuid,
+  p_reversal_date date,
+  p_reason text
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_original public.journal_entries%rowtype;
+  v_period_id uuid;
+  v_period_status text;
+  v_period_start date;
+  v_period_end date;
+  v_reversal_id uuid;
+begin
+  if v_user_id is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, 'journal_entries.reverse') then
+    raise exception using errcode = '42501', message = 'You are not authorized to reverse journal entries for this organization.';
+  end if;
+  if p_reversal_date is null or p_reason is null or pg_catalog.length(pg_catalog.btrim(p_reason)) < 3 then
+    raise exception using errcode = '22023', message = 'A reversal date and reason of at least three characters are required.';
+  end if;
+
+  select * into v_original
+  from public.journal_entries
+  where organization_id = p_organization_id and id = p_journal_entry_id
+  for update;
+  if not found then
+    raise exception using errcode = '23503', message = 'Original journal entry was not found in this organization.';
+  end if;
+  if v_original.status <> 'posted' or v_original.entry_type <> 'manual' or v_original.reversal_of_id is not null then
+    raise exception using errcode = '23514', message = 'Only an unreversed posted manual journal entry can be reversed with this function. Source-document journals require their source-specific correction workflow.';
+  end if;
+  if exists (
+    select 1 from public.journal_entries
+    where organization_id = p_organization_id and reversal_of_id = p_journal_entry_id
+  ) then
+    raise exception using errcode = '23514', message = 'This journal entry has already been reversed.';
+  end if;
+
+  select ap.id, ap.status, ap.start_date, ap.end_date
+    into v_period_id, v_period_status, v_period_start, v_period_end
+  from public.accounting_periods ap
+  where ap.organization_id = p_organization_id
+    and p_reversal_date between ap.start_date and ap.end_date
+  order by ap.start_date desc
+  limit 1
+  for update;
+  if not found or v_period_status <> 'open' then
+    raise exception using errcode = '23514', message = 'Reversal date must fall within an open accounting period.';
+  end if;
+
+  insert into public.journal_entries (
+    organization_id, entry_number, accounting_period_id, entry_date,
+    entry_type, status, reference_type, reference_id, description,
+    posted_at, posted_by, reversal_of_id, created_by
+  )
+  values (
+    p_organization_id,
+    'REV-' || pg_catalog.replace(p_journal_entry_id::text,'-',''),
+    v_period_id, p_reversal_date, 'reversal', 'posted',
+    'journal_entry_reversal', p_journal_entry_id,
+    'Reversal of ' || v_original.entry_number || ': ' || pg_catalog.btrim(p_reason),
+    pg_catalog.now(), v_user_id, p_journal_entry_id, v_user_id
+  )
+  returning id into v_reversal_id;
+
+  insert into public.account_transactions (
+    organization_id, journal_entry_id, account_id, line_number,
+    description, debit, credit, contact_id
+  )
+  select
+    p_organization_id, v_reversal_id, atx.account_id,
+    row_number() over (order by atx.line_number)::integer,
+    'Reversal: ' || coalesce(atx.description, v_original.entry_number),
+    atx.credit, atx.debit, atx.contact_id
+  from public.account_transactions atx
+  where atx.organization_id = p_organization_id and atx.journal_entry_id = p_journal_entry_id
+  order by atx.line_number;
+
+  if not exists (
+    select 1 from public.account_transactions
+    where organization_id = p_organization_id and journal_entry_id = v_reversal_id
+  ) then
+    raise exception using errcode = '23514', message = 'Original journal entry has no ledger lines to reverse.';
+  end if;
+
+  update public.journal_entries
+  set status = 'reversed', updated_at = pg_catalog.now()
+  where organization_id = p_organization_id and id = p_journal_entry_id;
+
+  return v_reversal_id;
+end;
+$function$;
+
+revoke all on function public.reverse_journal_entry(uuid, uuid, date, text) from public, anon;
+grant execute on function public.reverse_journal_entry(uuid, uuid, date, text) to authenticated;
+
 create or replace function public.post_expense(
   p_organization_id uuid,
   p_expense_id uuid
@@ -3115,6 +3219,13 @@ begin
   if v_return.supplier_id <> v_purchase.supplier_id
      or v_return.payable_account_id <> v_purchase.payable_account_id then
     raise exception using errcode = '23514', message = 'Purchase return supplier and payable account must match the original purchase.';
+  end if;
+
+  if v_return.total_amount + coalesce((
+    select sum(pr.total_amount) from public.purchase_returns pr
+    where pr.organization_id = p_organization_id and pr.purchase_id = v_purchase.id and pr.status = 'posted'
+  ),0) > v_purchase.total_amount then
+    raise exception using errcode = '23514', message = 'Cumulative purchase returns cannot exceed the original purchase total.';
   end if;
 
   select count(*)::integer, coalesce(sum(line_total),0)
@@ -3362,6 +3473,13 @@ begin
   if v_return.customer_id <> v_sales.customer_id
      or v_return.receivable_account_id <> v_sales.receivable_account_id then
     raise exception using errcode = '23514', message = 'Sales return customer and receivable account must match the original sales invoice.';
+  end if;
+
+  if v_return.total_amount + coalesce((
+    select sum(sr.total_amount) from public.sales_returns sr
+    where sr.organization_id = p_organization_id and sr.sales_id = v_sales.id and sr.status = 'posted'
+  ),0) > v_sales.total_amount then
+    raise exception using errcode = '23514', message = 'Cumulative sales returns cannot exceed the original sales invoice total.';
   end if;
 
   select count(*)::integer, coalesce(sum(line_total),0), max(line_number)
