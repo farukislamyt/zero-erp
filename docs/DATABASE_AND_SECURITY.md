@@ -205,8 +205,8 @@ The following relationship map is the canonical relational contract. Foreign key
 | `purchase_items.id` | `purchase_return_items.purchase_item_id` | 1:N | Links a return line to its original purchase line |
 | `products.id` | `purchase_items.product_id`, `purchase_return_items.product_id` | 1:N | Purchased/returned product |
 | `contacts.id` | `purchase.supplier_id`, `purchase_returns.supplier_id` | 1:N | Must resolve to a supplier/contact in the same organization |
-| `accounts.id` | `purchase.payable_account_id`, `purchase_returns.payable_account_id` | 1:N | Accounts payable mapping |
-| `journal_entries.id` | `purchase.posted_journal_entry_id`, `purchase_returns.posted_journal_entry_id` | 1:0..1 required | Posting reference |
+| `accounts.id` | `purchase.payable_account_id`, `purchase_returns.payable_account_id`, `purchase_returns.purchase_return_variance_account_id` | 1:N | Accounts payable and purchase-return price-variance mappings |
+| `journal_entries.id` | `purchase.posted_journal_entry_id`, `purchase_returns.posted_journal_entry_id`, `purchase_returns.reversal_journal_entry_id` | 1:0..1 | Posting and reversal references |
 
 ### Sales and sales returns
 
@@ -219,7 +219,7 @@ The following relationship map is the canonical relational contract. Foreign key
 | `products.id` | `sales_items.product_id`, `sales_return_items.product_id` | 1:N | Sold/returned product |
 | `contacts.id` | `sales.customer_id`, `sales_returns.customer_id` | 1:N | Must resolve to a customer/contact in the same organization |
 | `accounts.id` | `sales.receivable_account_id`, `sales_returns.receivable_account_id` | 1:N | Accounts receivable mapping |
-| `journal_entries.id` | `sales.posted_journal_entry_id`, `sales_returns.posted_journal_entry_id` | 1:0..1 required | Posting reference |
+| `journal_entries.id` | `sales.posted_journal_entry_id`, `sales_returns.posted_journal_entry_id`, `sales_returns.reversal_journal_entry_id` | 1:0..1 | Posting and reversal references |
 
 ### Expenses and payments
 
