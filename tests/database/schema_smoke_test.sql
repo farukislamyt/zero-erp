@@ -1,5 +1,5 @@
 -- ZERO ERP database bootstrap smoke tests.
--- Runs after initial_database_schema.sql against a disposable PostgreSQL database.
+-- Runs after the canonical bootstrap and incremental membership migration against a disposable PostgreSQL database.
 -- This verifies bootstrap execution and critical catalog/security invariants; it
 -- is not a substitute for authenticated workflow, concurrency, or business tests.
 
@@ -397,6 +397,7 @@ BEGIN
     'public.add_organization_user_by_email(uuid,text,uuid)',
     'public.update_organization_user_role(uuid,uuid,uuid)',
     'public.set_organization_user_active(uuid,uuid,boolean)',
+    'public.transfer_organization_administrator(uuid,uuid)',
     'public.post_purchase(uuid,uuid)',
     'public.post_opening_balances(uuid,date,jsonb,jsonb,jsonb,text)',
     'public.post_contact_payment(uuid,uuid)',
