@@ -97,7 +97,8 @@ begin
     select 1 from public.accounts a
     where a.organization_id = p_organization_id
       and a.id = v_purchase.payable_account_id
-      and a.is_active and a.is_postable and a.account_type = 'liability'
+      and a.is_active and a.is_postable and a.is_control_account
+      and a.account_type = 'liability'
   ) then
     raise exception using errcode = '23503', message = 'Payable account must be an active, postable liability account.';
   end if;
