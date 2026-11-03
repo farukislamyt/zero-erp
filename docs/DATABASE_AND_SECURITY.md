@@ -1,549 +1,155 @@
-# Zero ERP — Database Blueprint
-
-> **Purpose:** This is the canonical logical database blueprint for Zero ERP. It defines the target relational model, table responsibilities, relationships, tenant boundaries, integrity rules, transaction boundaries, access-control model, and database verification requirements. Database migrations and deployed PostgreSQL objects must implement this contract.
-
-## Blueprint at a glance
-
-- **Platform:** PostgreSQL through Supabase.
-- **Tenant model:** One organization owns each business record; users access organizations through membership.
-- **Core business model:** 26 physical tables total—23 business tables plus three RBAC tables—across organization setup, accounting, master data, inventory, purchasing, sales, expenses, and payments.
-- **Access-control model:** Three RBAC tables—`roles`, `permissions`, and `role_permissions`—plus `organization_users.role_id`.
-- **Ledger model:** Journal headers and debit/credit lines are separate; posted financial activity is corrected through controlled reversals.
-- **Inventory model:** Immutable movement history is the audit trail; `inventory_balances` is the current stock/valuation snapshot.
-- **Security model:** Deny-by-default authorization, organization-scoped foreign-key integrity, explicit RPC grants, and Row-Level Security (RLS).
-
-This document is the design contract for database implementation and review. It does not claim that every constraint, function, index, or RLS policy described here is already deployed.
-
-## 1. Logical entity-relationship diagram
-
-The diagram shows the primary relationships between core entities. Relationship labels represent logical cardinality; the detailed relationship tables below define the required tenant-scoped constraints.
-
-```mermaid
-erDiagram
-  ORGANIZATIONS ||--o{ ORGANIZATION_USERS : has
-  ORGANIZATIONS ||--o{ ROLES : defines
-  ROLES ||--o{ ORGANIZATION_USERS : assigned_to
-  ROLES ||--o{ ROLE_PERMISSIONS : grants
-  PERMISSIONS ||--o{ ROLE_PERMISSIONS : included_in
-  ORGANIZATIONS ||--o{ ACCOUNTS : owns
-  ACCOUNTS o|--o{ ACCOUNTS : parent_of
-  JOURNAL_ENTRIES ||--|{ ACCOUNT_TRANSACTIONS : has_lines
-  ACCOUNTS ||--o{ ACCOUNT_TRANSACTIONS : posted_to
-  ORGANIZATIONS ||--o{ CONTACTS : owns
-  ORGANIZATIONS ||--o{ PRODUCTS : owns
-  UNITS_OF_MEASURE ||--o{ PRODUCTS : measures
-  ORGANIZATIONS ||--o{ UNITS_OF_MEASURE : defines
-  ORGANIZATIONS ||--o{ INVENTORY_BALANCES : snapshots
-  PRODUCTS ||--o{ INVENTORY_BALANCES : has_balance
-  PRODUCTS ||--o{ INVENTORY_TRANSACTIONS : moves
-  ORGANIZATIONS ||--o{ PURCHASE : owns
-  PURCHASE ||--|{ PURCHASE_ITEMS : contains
-  PURCHASE ||--o{ PURCHASE_RETURNS : may_have_returns
-  PURCHASE_RETURNS ||--|{ PURCHASE_RETURN_ITEMS : contains
-  ORGANIZATIONS ||--o{ SALES : owns
-  SALES ||--|{ SALES_ITEMS : contains
-  SALES ||--o{ SALES_RETURNS : may_have_returns
-  SALES_RETURNS ||--|{ SALES_RETURN_ITEMS : contains
-  ORGANIZATIONS ||--o{ EXPENSES : owns
-  EXPENSE_CATEGORIES ||--o{ EXPENSES : classifies
-  ORGANIZATIONS ||--o{ PAYMENTS : owns
-  PAYMENTS ||--o{ PAYMENT_ALLOCATIONS : allocates
-  ORGANIZATIONS ||--o{ NUMBER_SEQUENCES : numbers
-```
-
-The diagram is a logical overview, not executable DDL. Use the relationship matrix and schema inventory in this document when defining exact foreign keys, composite tenant keys, optionality, and uniqueness.
-
-## 2. Database design standards
-
-### 2.1 Primary keys and tenant ownership
-
-1. Every table has a stable primary key named `id`; use the existing project convention for its SQL type consistently.
-2. Every organization-owned table carries `organization_id`, directly or through a parent relation where explicitly justified. Direct ownership columns are preferred for tenant-scoped query performance and policy clarity.
-3. Use composite uniqueness such as `UNIQUE (organization_id, id)` on tenant-owned parent records where needed to support composite foreign keys.
-4. For every reference between organization-owned records, enforce both record identity and organization equality at the database layer. An FK to `id` alone does not prevent cross-organization references.
-5. Use `NOT NULL` for required business attributes and foreign keys; use nullable columns only where the workflow explicitly permits absence.
-6. Store timestamps consistently as timezone-aware timestamps, monetary values as fixed-precision `numeric` rather than floating-point, and calendar-only business dates as `date`.
-7. Define explicit `CHECK` constraints for non-negative amounts, valid quantity/sign conventions, allowed numeric ranges, and valid date ranges where applicable.
-8. Use unique constraints for organization-scoped business identifiers and document numbers. Do not rely on a pre-insert application query to prevent duplicates.
-
-### 2.2 Naming and lifecycle conventions
-
-- Use lowercase `snake_case` for schemas, tables, columns, indexes, constraints, and functions.
-- Name foreign-key constraints with a predictable pattern such as `<table>_<column>_fkey`; name indexes to reflect table and indexed columns.
-- Keep created/updated timestamps consistent. Update `updated_at` through a trusted database trigger or a single consistent server-side write path.
-- Keep posted accounting and inventory movement history auditable. Do not hard-delete posted financial records or movement history.
-- Use explicit status values and documented state transitions. Reject unknown states at the database boundary.
-- Store document numbers as business identifiers, not as primary keys.
-- Treat polymorphic references as a deliberate exception; validate target type, existence, and tenant ownership in a trusted database workflow.
-
-### 2.3 Data ownership classes
-
-| Class | Tables | Required boundary |
-| --- | --- | --- |
-| Tenant roots and membership | `organizations`, `organization_users` | Membership is organization-specific; organization creation and initial administrator assignment are atomic |
-| Tenant configuration | `accounts`, `number_sequences`, `units_of_measure`, `expense_categories` | Every record belongs to one organization |
-| Global access catalog | `permissions` | System-managed catalog; no tenant client writes |
-| Tenant access configuration | `roles`, `role_permissions` | Role and membership must belong to the same organization |
-| Master data | `contacts`, `products` | All linked records must share organization ownership |
-| Financial ledger | `journal_entries`, `account_transactions` | Balanced, date-based, immutable after posting except controlled reversal |
-| Inventory | `inventory_transactions`, `inventory_balances` | Movement history and balance snapshot updated atomically |
-| Commercial documents | `purchase`, `purchase_items`, `purchase_returns`, `purchase_return_items`, `sales`, `sales_items`, `sales_returns`, `sales_return_items` | Header, lines, counterparties, products, accounts, and posting entries must share the same organization |
-| Cash and expenses | `expenses`, `payments`, `payment_allocations` | Expense and contact-level payment posting are implemented; invoice-wise payment allocations remain disabled until an invoice-level subledger exists |
-
-## 3. Schema dependency and implementation order
-
-Create or migrate database objects in dependency order so foreign keys and policy helpers can be established without circular deployment failures.
-
-1. **Platform prerequisites:** confirm the Supabase Auth user relation and the project's UUID/key conventions.
-2. **Tenant foundation:** `organizations`, then `organization_users`.
-3. **RBAC catalog:** `permissions`, `roles`, `role_permissions`; add and validate `organization_users.role_id`.
-4. **Organization setup:** `accounts`, `units_of_measure`, `number_sequences`.
-5. **Master data:** `contacts`, `products`, `expense_categories`.
-6. **Ledger foundation:** `journal_entries`, `account_transactions`; then add valid document-to-journal references.
-7. **Inventory:** `inventory_transactions`, `inventory_balances`.
-8. **Purchasing:** `purchase`, `purchase_items`, `purchase_returns`, `purchase_return_items`.
-9. **Sales:** `sales`, `sales_items`, `sales_returns`, `sales_return_items`.
-10. **Expenses and payments:** `expenses`, `payments`, `payment_allocations`.
-11. **Integrity and performance:** composite tenant foreign keys, unique/check constraints, indexes, triggers, and validation queries.
-12. **Authorization:** helper functions, RLS policies, explicit function grants, and cross-tenant regression tests.
-13. **Transactional operations:** posting, reversal, allocation, and number allocation RPCs.
-14. **Release validation:** apply to a clean test database, migrate representative existing data, run integrity/security tests, and verify rollback procedures before production deployment.
-
-Where references form a dependency cycle—for example, business documents pointing to journal entries while journal entries reference source documents—create the base tables first and add the later foreign keys in a subsequent migration.
-
-## 4. Canonical table inventory
-
-The data model contains 23 business tables plus three RBAC tables (26 tables total). The complete column reference later in this document is the canonical inventory of documented fields. Use the bootstrap SQL to confirm SQL types, defaults, nullability, and constraints.
-
-| Domain | Tables | Main responsibility |
-| --- | --- | --- |
-| Organization | `organizations`, `organization_users` | Tenant identity and user membership |
-| RBAC | `roles`, `permissions`, `role_permissions` | Role definitions and granular permission assignment |
-| Accounting configuration | `accounts`, `number_sequences` | Chart of accounts and document numbering |
-| Master data | `contacts`, `products`, `units_of_measure`, `expense_categories` | Shared business entities and classification |
-| General ledger | `journal_entries`, `account_transactions` | Journal headers and debit/credit lines |
-| Inventory | `inventory_transactions`, `inventory_balances` | Auditable stock movements and current balance |
-| Purchasing | `purchase`, `purchase_items`, `purchase_returns`, `purchase_return_items` | Supplier invoices and purchase returns |
-| Sales | `sales`, `sales_items`, `sales_returns`, `sales_return_items` | Customer invoices and sales returns |
-| Expense and payment | `expenses`, `payments`, `payment_allocations` | Expenses, settlements, and document allocations |
-
-
-## 5. System model
-
-Zero ERP is a multi-organization ERP. An authenticated person may retain historical membership records in multiple organizations, but can have at most one active company membership at a time. Every business operation must be scoped to the active organization, and every referenced business record must belong to that same organization.
-
-Core domains:
-
-1. **Tenant and membership:** `organizations`, `organization_users`
-2. **Access control:** `roles`, `permissions`, `role_permissions`
-3. **Accounting configuration:** `accounts`, `number_sequences`.
-4. **Master data:** `contacts`, `products`, `units_of_measure`, `expense_categories`
-5. **Accounting ledger:** `journal_entries`, `account_transactions`
-6. **Inventory:** `inventory_transactions`, `inventory_balances`
-7. **Purchasing:** `purchase`, `purchase_items`, `purchase_returns`, `purchase_return_items`
-8. **Sales:** `sales`, `sales_items`, `sales_returns`, `sales_return_items`
-9. **Expenses and cash/bank activity:** `expenses`, `payments`, `payment_allocations`
-
-The core business schema contains 23 business tables. The complete Zero ERP data model consists of those tables plus the three RBAC tables `roles`, `permissions`, and `role_permissions` (26 tables total), with `organization_users.role_id` linking each membership to its role.
-
-## 6. Relationship map
-
-The following relationship map is the canonical relational contract. Foreign keys and tenant boundaries must be enforced in PostgreSQL, not only in application code.
-
-### Tenant and access control
-
-| Parent | Child / linking column | Cardinality | Notes |
-| --- | --- | --- | --- |
-| `organizations.id` | `organization_users.organization_id` | 1:N | Organization membership records |
-| Auth user ID | `organization_users.user_id` | User-to-membership 1:N | The exact auth schema/provider FK must be verified |
-| `organizations.id` | `roles.organization_id` | 1:N | Each organization's roles are isolated |
-| `roles.id` | `organization_users.role_id` | 1:N | One role per membership in this design |
-| `roles.id` | `role_permissions.role_id` | 1:N | Role-to-permission join rows |
-| `permissions.id` | `role_permissions.permission_id` | 1:N | Global system permission catalog |
-| `roles` ↔ `permissions` | `role_permissions` | M:N | Unique pair `(role_id, permission_id)` |
-
-### Accounting configuration and ledger
-
-| Parent | Child / linking column | Cardinality | Notes |
-| --- | --- | --- | --- |
-| `organizations.id` | `accounts.organization_id` | 1:N | Chart of accounts per organization |
-| `accounts.id` | `accounts.parent_account_id` | Self-referencing 1:N | Account hierarchy; parent and child must share organization |
-| `journal_entries.id` | `account_transactions.journal_entry_id` | 1:N | Journal header and its debit/credit lines |
-| `accounts.id` | `account_transactions.account_id` | 1:N | Each line posts to an account |
-| `contacts.id` | `account_transactions.contact_id` | 1:N, optional | Contact dimension on a ledger line |
-| `journal_entries.id` | `journal_entries.reversal_of_id` | Self-reference, optional | Reversal entry points to original entry |
-| `journal_entries.id` | Business documents' `posted_journal_entry_id` | 1:0..N references | Purchases, sales, returns, expenses, and payments can reference posting entries; decide if one-to-one uniqueness is required |
-| `organizations.id` | `number_sequences.organization_id` | 1:N | Sequence per organization and document type |
-
-### Master data and inventory
-
-| Parent | Child / linking column | Cardinality | Notes |
-| --- | --- | --- | --- |
-| `organizations.id` | `units_of_measure.organization_id` | 1:N | Organization-specific units |
-| `organizations.id` | `products.organization_id` | 1:N | Product catalog |
-| `units_of_measure.id` | `products.unit_id` | 1:N | Product base unit |
-| `accounts.id` | `products.inventory_account_id`, `sales_account_id`, `cogs_account_id` | 1:N per role | Ledger mapping; all accounts must belong to the product's organization |
-| `organizations.id` | `contacts.organization_id` | 1:N | Customers, suppliers, and counterparties |
-| `organizations.id` | `inventory_balances.organization_id` | 1:N | Organization-scoped stock snapshot |
-| `products.id` | `inventory_balances.product_id` | 1:N logically; usually one current balance per product | Enforce unique `(organization_id, product_id)` so each organization has one current balance row per product |
-| `products.id` | `inventory_transactions.product_id` | 1:N | Inventory movement history |
-| `contacts.id` | Purchase/sales/return/payment/expense counterparty columns | 1:N | Supplier/customer/contact references; validate exact FK columns |
-| `expense_categories.id` | `expenses.expense_category_id` | 1:N | Expense classification |
-| `accounts.id` | `expense_categories.expense_account_id` | 1:N | Expense category ledger mapping |
-
-### Purchases and purchase returns
-
-| Parent | Child / linking column | Cardinality | Notes |
-| --- | --- | --- | --- |
-| `purchase.id` | `purchase_items.purchase_id` | 1:N | Invoice header and lines |
-| `purchase.id` | `purchase_returns.purchase_id` | 1:N | Returns against a purchase invoice |
-| `purchase_returns.id` | `purchase_return_items.purchase_return_id` | 1:N | Return header and lines |
-| `purchase_items.id` | `purchase_return_items.purchase_item_id` | 1:N | Links a return line to its original purchase line |
-| `products.id` | `purchase_items.product_id`, `purchase_return_items.product_id` | 1:N | Purchased/returned product |
-| `contacts.id` | `purchase.supplier_id`, `purchase_returns.supplier_id` | 1:N | Must resolve to a supplier/contact in the same organization |
-| `accounts.id` | `purchase.payable_account_id`, `purchase_returns.payable_account_id`, `purchase_returns.purchase_return_variance_account_id` | 1:N | Accounts payable and purchase-return price-variance mappings |
-| `journal_entries.id` | `purchase.posted_journal_entry_id`, `purchase_returns.posted_journal_entry_id`, `purchase_returns.reversal_journal_entry_id` | 1:0..1 | Posting and reversal references |
-
-### Sales and sales returns
-
-| Parent | Child / linking column | Cardinality | Notes |
-| --- | --- | --- | --- |
-| `sales.id` | `sales_items.sales_id` | 1:N | Sales invoice header and lines |
-| `sales.id` | `sales_returns.sales_id` | 1:N | Returns against a sales invoice |
-| `sales_returns.id` | `sales_return_items.sales_return_id` | 1:N | Return header and lines |
-| `sales_items.id` | `sales_return_items.sales_item_id` | 1:N | Links a return line to its original sales line |
-| `products.id` | `sales_items.product_id`, `sales_return_items.product_id` | 1:N | Sold/returned product |
-| `contacts.id` | `sales.customer_id`, `sales_returns.customer_id` | 1:N | Must resolve to a customer/contact in the same organization |
-| `accounts.id` | `sales.receivable_account_id`, `sales_returns.receivable_account_id` | 1:N | Accounts receivable mapping |
-| `journal_entries.id` | `sales.posted_journal_entry_id`, `sales_returns.posted_journal_entry_id`, `sales_returns.reversal_journal_entry_id` | 1:0..1 | Posting and reversal references |
-
-### Expenses and payments
-
-| Parent | Child / linking column | Cardinality | Notes |
-| --- | --- | --- | --- |
-| `expense_categories.id` | `expenses.expense_category_id` | 1:N | Category for each expense |
-| `contacts.id` | `expenses.contact_id`, `payments.contact_id` | 1:N, optional | Counterparty/contact |
-| `accounts.id` | `expenses.payable_account_id` | 1:N, optional | Payable/settlement account mapping |
-| `accounts.id` | `payments.account_id`, `payments.settlement_account_id` | 1:N | Payment source and settlement accounts |
-| `payments.id` | `payment_allocations.payment_id` | 1:N | One payment can be split across documents |
-| `journal_entries.id` | `expenses.posted_journal_entry_id`, `payments.posted_journal_entry_id` | 1:0..1 required | Ledger posting reference |
-
-**Polymorphic references:** `payment_allocations.document_type/document_id`, `journal_entries.reference_type/reference_id`, and `inventory_transactions.reference_type/reference_id` are polymorphic patterns. A normal SQL foreign key cannot validate `document_id` against several possible tables. Validate document type, record existence, and matching organization in a trusted database function/trigger or application service, or replace the polymorphic reference with explicit nullable FKs where appropriate.
-
-## 7. Production data-integrity constraints
-
-The database must enforce the following integrity rules using foreign keys, unique constraints, check constraints, indexes, triggers, and transactional functions where appropriate.
-
-### Tenant integrity
-- All organization-owned records must have a valid `organization_id`.
-- Every FK from one organization-owned record to another must remain within the same organization. A plain FK on `id` alone does not prove tenant equality. Use composite unique keys such as `UNIQUE (organization_id, id)` and composite foreign keys for tenant-scoped references.
-- Enforce organization-scoped uniqueness for business identifiers, e.g. account code, product code, contact number, document number, and sequence type.
-- Add appropriate indexes for `organization_id`, FK columns, date filters, status filters, and frequent lookup paths.
-
-### Ledger integrity
-- `debit >= 0` and `credit >= 0`; a line must not have both debit and credit positive.
-- A posted journal entry must balance: sum(debit) = sum(credit), within the chosen currency precision.
-- Use a controlled posting function/transaction to prevent a header becoming posted before its lines and related document/inventory effects are committed.
-- Prevent duplicate posting, and use a reversal entry rather than editing posted ledger lines.
-- Use the source document's transaction date and retain posted entries as immutable history except controlled reversal/adjustment.
-
-### Inventory integrity
-- Use positive quantities for movement magnitude and store direction separately, or define and enforce one consistent sign convention.
-- The `inventory_balances` table now rejects negative quantity and inventory value at the database constraint layer. Posting RPCs also consume the exact remaining inventory value when a movement exhausts the balance, preventing a rounding residue from remaining against zero quantity.
-- Opening inventory must be initialized before operational ledger or inventory posting; subsequent corrections must use controlled adjustments (an adjustment RPC remains planned).
-- Prevent accidental duplicate inventory movements for the same source document/line.
-- Reconcile inventory movement history with `inventory_balances`; update both atomically.
-- Decide and document costing method, rounding, negative-stock policy, return costing, and treatment of non-inventory products.
-
-### Documents and allocations
-- Validate line quantities, prices, totals, discounts, and amounts on the server/database—not only in the UI.
-- Ensure return quantities do not exceed eligible original quantities, accounting for previous returns.
-- Ensure payment allocations are non-negative and their sum does not exceed the available/unallocated payment amount, unless over-allocation is an explicit feature.
-- Define allowed status transitions and make posting/reversal idempotent.
-
-## 8. Required RPC contracts
-
-Status note: this table distinguishes functions implemented in the current canonical bootstrap from planned contracts. Only rows marked **Implemented** are callable today; planned rows must not be wired into the application until their SQL implementation, grants, and tests are added. Call implemented functions through `supabase.rpc(...)` using their actual signatures.
-
-| Status | RPC contract | Purpose | Required guarantees |
-| --- | --- | --- | --- |
-| Implemented | `create_organization_with_admin(p_name, ...)` | Create organization, protected Administrator role, role-permission links, and creator membership | Single transaction; derive creator from `auth.uid()`; never accept arbitrary creator user ID from an untrusted client |
-| Implemented | `add_organization_user_by_email(p_organization_id, p_email, p_role_id)` | Add an existing email-verified Auth user | Administrator-only; no invitation or account creation; enforce one active company membership |
-| Implemented | `set_organization_user_active(p_organization_id, p_membership_id, p_is_active)` | Deactivate/reactivate a membership | Administrator-only; retain history; partial unique index prevents multiple active company memberships |
-| Removed | `transfer_organization_administrator(...)` | No Administrator transfer is supported | The RPC is dropped; only the original creator membership can hold the system Administrator role for the organization's lifetime |
-| Implemented | `update_organization_user_role(p_organization_id, p_membership_id, p_role_id)` | Assign a role to an organization membership | Active system Administrator only; target must be an active member and role must be an active custom role |
-| Implemented | `create_custom_role(p_organization_id, p_name, p_permission_keys)` | Create organization-scoped custom role | Active system Administrator only; custom roles cannot receive `users.manage` or `roles.manage` |
-| Implemented | `replace_custom_role_permissions(p_organization_id, p_role_id, p_permission_keys)` | Replace/update permissions on a custom role | Active system Administrator only; system roles and control-plane permissions are protected |
-| Implemented | `save_draft_transaction_document(p_organization_id, p_document_type, p_header, p_items, p_document_id)` | Create or update Draft purchase, sales, expense, payment, return, or manual journal documents | Whitelisted fields and child rows only; organization membership and create/manage permission required; only Draft records can be edited; omitting `p_items` preserves existing lines |
-| Implemented | `confirm_transaction_document(p_organization_id, p_document_type, p_document_id)` | Confirm a supported draft transaction document | Enforce per-type permission, tenant scope, draft-only transition, document totals, return source/quantity limits, expense mappings, and payment account configuration; no ledger or inventory impact |
-| Implemented | `revert_transaction_document_to_draft(p_organization_id, p_document_type, p_document_id)` | Unlock a confirmed document for correction | Confirmed-only transition; retain the last confirmation timestamp/actor for audit; no ledger or inventory impact |
-| Implemented | `void_transaction_document(p_organization_id, p_document_type, p_document_id, p_reason)` | Cancel an unposted document | Draft/confirmed only; require a reason; retain audit metadata; never void posted documents |
-| Implemented | `delete_draft_transaction_document(p_organization_id, p_document_type, p_document_id)` | Hard-delete a draft and its draft-only child rows | Draft-only; permission checked; posted/confirmed/void records cannot be deleted |
-| Implemented | `post_confirmed_journal_entry(p_organization_id, p_journal_entry_id)` | Post a confirmed manual journal entry | Confirmed-only; validates date, active/postable accounts and contacts, balanced lines, and posting permission; marks posted atomically |
-| Implemented | `reverse_journal_entry(p_organization_id, p_journal_entry_id, p_reversal_date, p_reason)` | Reverse a posted manual journal, expense, payment, or posted return | Creates a balanced reversal journal, retains both entries, records reversal audit metadata, and reverses return inventory movements atomically; sales-return reversal is blocked if returned stock has already been consumed |
-| Implemented | `post_opening_balances(p_organization_id, p_entry_date, p_account_lines, p_party_balances, p_inventory_lines, p_description)` | One-time organization opening balance initialization using existing tables only | Derive customer receivables and supplier payables from contact-tagged control-account lines; derive inventory value from product opening quantities/costs; balance the journal; lock the organization; initialize stock; reject duplicate opening posts; commit all effects atomically |
-| Implemented | `post_contact_payment(p_organization_id, p_payment_id)` | Post customer receipts, supplier payments, bank transfers, and customer/supplier refunds | Validates active cash/bank and control accounts, contact balances for receipts/payments/refunds, transaction date and permissions; posts balanced journal lines atomically. The current ledger is contact-wise, not invoice-wise; invoice allocations are deliberately rejected until an invoice-level subledger is implemented |
-| Implemented | `post_sales(p_organization_id, p_sales_id)` | Post a confirmed sales invoice to customer receivables, revenue, COGS and inventory | Confirmed-only; debit the receivable asset control account with the customer contact; credit product revenue accounts; calculate COGS from locked weighted-average stock cost; reduce inventory and write stock movements atomically |
-| Implemented | `post_purchase(p_organization_id, p_purchase_id)` | Post a confirmed purchase and associated inventory/accounting effects | Confirmed-only; validate supplier, lines, accounts and transaction date; atomically create weighted-average stock and ledger effects |
-| Implemented | `post_expense(p_organization_id, p_expense_id)` | Post a confirmed expense | Debit the active expense-category account and credit the configured liability/payable account; validate optional contact, transaction date and posting permission |
-| Implemented | `post_purchase_return(p_organization_id, p_purchase_return_id)` | Post a confirmed purchase return | Validate original purchase and unreturned item quantities; reduce stock at current weighted-average carrying value; debit supplier payable; post the price difference to a configured revenue/expense variance account; update source purchase return status atomically |
-| Implemented | `post_sales_return(p_organization_id, p_sales_return_id)` | Post a confirmed sales return | Validate original sale and unreturned item quantities; debit sales revenue and inventory, credit customer receivable and COGS; restore stock at original sale COGS atomically |
-| Implemented (not yet wired into document save/posting flows) | `next_document_number(p_organization_id, p_document_type)` | Allocate the next document number | Use row locking or an atomic sequence operation to avoid duplicates under concurrency |
-
-### RPC security rules
-1. For user-facing operations, derive the actor from `auth.uid()` and resolve active membership server-side; do not trust a client-provided user ID.
-2. Validate the caller's permission and active organization inside the function. Do not rely on a UI check.
-3. Use `SECURITY INVOKER` by default. If `SECURITY DEFINER` is necessary, set a safe `search_path`, fully qualify object names, revoke default execution from `PUBLIC`, and grant execute only to intended roles.
-4. Grant `EXECUTE` explicitly to intended Supabase roles (commonly `authenticated` for user operations). Do not expose privileged maintenance functions to `anon`.
-5. Make financial posting functions transactional and idempotent; use row locks or unique idempotency keys where concurrent requests could duplicate effects.
-6. Avoid accepting arbitrary `organization_id` as authority. If it is an input, prove the caller is an active member with the required permission in that organization.
-7. Test unauthorized callers, cross-tenant IDs, duplicate calls, concurrent calls, and rollback behavior.
-
-## 9. Row-Level Security (RLS) policy contract and current implementation
-
-The policies below define the required access-control behavior for Supabase-exposed tables. Enable RLS on every tenant-owned table and verify the resulting policies in PostgreSQL as part of deployment and regression testing.
-
-### Baseline approach
-
-- Enable RLS on every organization-owned table exposed through the Supabase Data API.
-- For ordinary business tables, require both active membership and the table/module's corresponding `.read` permission. The bootstrap policies now enforce this for organization, users, roles, accounts, contacts, products/units, purchases, sales, expenses, payments, journals, and inventory.
-- A member can read their own `organization_users` membership row; reading other memberships requires `users.read`. Reading roles and role-permission links requires `roles.read`.
-- For writes, also validate the requested action's permission and ensure referenced rows belong to the same organization.
-- Use both `USING` and `WITH CHECK` where appropriate. `USING` controls which existing rows can be read/updated/deleted; `WITH CHECK` validates inserted or updated row values.
-- Deny by default. Do not add broad `TO authenticated USING (true)` policies to tenant data.
-- RLS does not replace constraints or business validation. The Supabase service role bypasses RLS, so its key must never reach browser/client code.
-- Avoid policy recursion: if membership/permission checks query RLS-protected membership tables, use a carefully secured helper function or a narrowly scoped design that does not recursively invoke the same policies.
-
-### Policy matrix
-
-| Table/group | SELECT | INSERT | UPDATE | DELETE |
-| --- | --- | --- | --- | --- |
-| `organizations` | Active member of that organization | Through trusted organization-creation RPC | Active system Administrator only | Normally blocked; use controlled archival/deactivation |
-| `organization_users` | Self membership and/or authorized organization Administrator | Existing verified account only; Administrator-only RPC | Only the original creator Administrator may add members, change ordinary member roles, and activate/deactivate ordinary memberships; the creator membership is wholly immutable and cannot be transferred | Preserve the permanent creator record; retain inactive membership history |
-| `roles` | Active organization member with role-read permission | Active system Administrator only; no client-created system role | Active system Administrator only; protect system roles | Block system role deletion; custom role only if safe and unassigned |
-| `permissions` | Authenticated users only if the global catalog is intended to be visible | No client writes; system migration/maintainer only | No client writes; system migration/maintainer only | No client writes |
-| `role_permissions` | Active organization member with role-read permission, scoped through role's organization | Active system Administrator only; validate role organization | Active system Administrator only via controlled RPC | System Administrator permissions are immutable; reserved control-plane keys are blocked on custom roles |
-| All accounting/master/transaction tables | Active membership in row's organization plus read permission | Create permission and same-tenant checks | Update permission; posted financial records require controlled workflow | Deny for posted/financial history; use void/reversal/archival workflows |
-| `payment_allocations` | Membership in allocation's organization | Authorized payment workflow; validate payment and target document tenant | Controlled payment workflow | Controlled unallocation only if accounting rules allow |
-| Polymorphic references | Read through parent row's organization | Validate `document_type`, target existence, and organization in trusted code/RPC | Controlled workflow | Controlled workflow |
-
-Implementation note: the canonical bootstrap now implements the read-permission predicates described above. Browser-role writes remain revoked and must go through the existing permission-checked RPCs. The matrix's INSERT/UPDATE/DELETE entries are policy requirements for any future direct-write design, not grants currently exposed to browser roles. Keep parent/child policy predicates consistent and add regression tests for each permission key.
-
-### Membership predicate pattern
-
-Membership authorization must verify that `auth.uid()` has an active membership in the row's organization. Use the actual membership status column and protect helper functions with explicit grants.
-
-```sql
-exists (
-  select 1
-  from public.organization_users ou
-  where ou.organization_id = <row>.organization_id
-    and ou.user_id = auth.uid()
-    and ou.is_active = true
-)
-```
-
-Replace `<row>` with the relevant policy table alias when creating a table-specific policy. Validate recursion, grants, and query plans.
-
-### Required RLS verification
-
-Run these checks in a trusted SQL console against the target database before declaring RLS complete:
-
-```sql
--- Tables and whether RLS is enabled/forced
-select n.nspname as schema_name,
-       c.relname as table_name,
-       c.relrowsecurity as rls_enabled,
-       c.relforcerowsecurity as rls_forced
-from pg_class c
-join pg_namespace n on n.oid = c.relnamespace
-where c.relkind = 'r'
-  and n.nspname = 'public'
-order by c.relname;
-
--- Actual policies
-select schemaname, tablename, policyname, permissive,
-       roles, cmd, qual, with_check
-from pg_policies
-where schemaname = 'public'
-order by tablename, policyname;
-
--- User-defined functions potentially exposed as RPCs
-select n.nspname as schema_name,
-       p.proname as function_name,
-       pg_get_function_identity_arguments(p.oid) as arguments,
-       p.prosecdef as security_definer,
-       p.proconfig as function_settings
-from pg_proc p
-join pg_namespace n on n.oid = p.pronamespace
-where n.nspname = 'public'
-  and p.prokind = 'f'
-order by p.proname;
-```
-
-Also inspect function execute grants and table grants; a function's existence alone does not mean it is safely exposed or callable from Supabase RPC.
-
-## 10. RBAC workflow
-
-### Organization creation
-1. Authenticated creator requests organization creation.
-2. Trusted server/RPC derives the creator using `auth.uid()`.
-3. In one transaction, create the organization.
-4. Create the organization's protected system role named `Administrator` (`is_system_role = true`; status active).
-5. Link the system-defined permission set to that role.
-6. Insert the creator's active `organization_users` membership with that role's `role_id`.
-7. Commit only if all steps succeed; otherwise roll back the entire operation.
-
-### Role and permission management
-- Permission definitions are maintained by system migrations/developers, not created by ordinary organization Administrators.
-- An Administrator creates custom organization-scoped roles and selects permissions from the global catalog.
-- Protect the system Administrator role from deletion/deactivation and ensure a tenant cannot be left with no active Administrator.
-- Check that a role and membership share the same organization on every assignment.
-- This contract assigns one role per organization membership. A future multi-role model must use a dedicated membership-role junction table and a coordinated migration.
-
-## 11. Financial and inventory transaction lifecycle
-
-Lifecycle contract implemented in the bootstrap schema:
-
-1. **Draft:** created/edited through `save_draft_transaction_document`; no accounting or inventory impact. Only Draft records can be edited. Draft records may be hard-deleted through `delete_draft_transaction_document`.
-2. **Confirmed:** validation passed and the document is locked. Confirmation records `confirmed_at` and `confirmed_by`; it creates no ledger or inventory effects. A Confirmed document can be reverted to Draft through `revert_transaction_document_to_draft`. The last confirmation timestamp/actor are retained for audit; a full multi-event history log is not part of the current schema.
-3. **Posted:** only Confirmed documents can be posted by the relevant RPC. Posting records `posted_by` and a journal reference. Ledger and inventory writes occur atomically; duplicate posting is blocked.
-4. **Void:** Draft or Confirmed documents can be cancelled with a required reason. `voided_at`, `voided_by`, and `void_reason` preserve the audit trail. Void documents cannot be edited, posted, or hard-deleted.
-5. **Reversed:** supported posted documents are corrected by a new reversal journal. Original documents and journals remain; reversal timestamp, actor, reason, and reversal journal reference are stored. Purchase and sales invoices are corrected through return documents rather than the generic reversal RPC.
-6. **Generated journals:** journals created inside purchase, sales, expense, payment, return, or opening-balance posting RPCs are posted atomically with their source document; they do not need a separate user confirmation step.
-
-The transaction workflow is enforced through `save_draft_transaction_document`, `confirm_transaction_document`, `revert_transaction_document_to_draft`, `void_transaction_document`, `delete_draft_transaction_document`, the document posting RPCs, and `reverse_journal_entry`. Browser roles have no direct write grants on the financial transaction tables.
-
-**Posting rules and accounting assumptions:**
-- Expense posting debits the active expense account configured on the expense category and credits a required liability account. A contact-linked expense must use a payable control account; a non-contact expense must use a non-control liability account.
-- Purchase returns reduce inventory at the current weighted-average carrying value. The supplier credit-note amount may differ from that carrying value; when it does, the return must specify `purchase_return_variance_account_id` mapped to a revenue account (supplier credit exceeds carrying value) or expense account (supplier credit is lower).
-- Sales returns reverse the original sale's revenue and COGS using the source sales item's recorded COGS unit cost, and restore inventory at that cost.
-- `post_contact_payment` supports receipts, supplier payments, bank transfers, and customer/supplier refunds. The ledger remains contact-wise, not invoice-wise. `payment_allocations` is retained as a future schema surface but is not accepted by the current payment posting flow.
-- `reverse_journal_entry` supports manual journals, expenses, payments, and posted return documents. A sales-return reversal is blocked if the returned stock has already been consumed. Purchase/sales invoice corrections use return documents; opening-balance corrections use controlled adjustment entries.
-- The legacy one-step `post_manual_journal_entry` RPC is no longer executable by browser roles. Manual journals must be saved as Draft, Confirmed, then posted with `post_confirmed_journal_entry`.
-
-All transaction posting RPCs are defined in the bootstrap schema. They still require PostgreSQL execution and integration tests against a disposable database before production use.
-
-### Opening balance initialization (existing tables only)
-
-The opening balance workflow intentionally introduces no staging or sub-ledger tables. The application submits three JSON arrays to `post_opening_balances`: ordinary GL account lines, customer/supplier summary balances (one amount per contact, not invoice-wise), and product opening stock lines. The RPC validates and posts directly into `journal_entries`, `account_transactions`, `inventory_transactions`, and `inventory_balances`. Customer and supplier balances are distinguished by the supplied party type because `contacts` does not currently store a customer/supplier discriminator. Corrections after the one-time post must use controlled adjustment entries; the generic reversal RPC does not reverse opening-balance journals. The opening entry itself is never edited. Sales invoices use `post_sales`; the invoice's `receivable_account_id` must be the same active, postable Receivable asset control account used by opening customer balances and subsequent receipts. The RPC tags the receivable debit with the invoice's `customer_id`, so the contact-wise outstanding query includes both opening balances and posted sales. It also credits product revenue accounts, calculates COGS from the locked weighted-average stock cost, reduces inventory, and writes inventory movement history atomically. Subsequent receipts and supplier payments use `post_contact_payment`; the payment's `account_id` is the cash/bank account and `settlement_account_id` is the relevant receivable/payable control account. Purchase posting must use an active, postable payable **control** liability account (not an arbitrary liability account), so supplier invoices and later payments share the same contact-wise control-account ledger. The RPC uses the same `contact_id` and control account to calculate and reduce outstanding balances, without invoice-wise allocation. It rejects receipts/payments/refunds greater than the current contact-level balance. Transfers move balances between two cash/bank asset accounts; customer and supplier refunds require the corresponding credit/debit balance. Invoice-wise allocation is not enabled.
-
-`account_transactions.contact_id` is the party ledger dimension. Customer opening receivables debit the receivable asset control account; supplier opening payables credit the payable liability control account. Later receipts/payments must post against the same contact and control account to maintain the outstanding balance. Invoice-wise opening allocation and aging are deliberately out of scope.
-
-## 12. Test plan
-
-### Tenant isolation
-- User in organization A cannot read, update, delete, or infer rows in organization B.
-- User cannot assign an organization B role to an organization A membership.
-- Referenced account/product/contact/document IDs from another organization are rejected.
-- Inactive membership loses access immediately.
-
-### RBAC
-- Organization creator receives Administrator automatically.
-- Only the active system Administrator can add/deactivate/reactivate members, assign roles, create/update custom roles, change custom-role permissions, or transfer Administrator authority.
-- An ordinary custom-role member cannot perform administrative operations even if legacy permission rows previously contained `users.manage` or `roles.manage`; the migration removes those legacy grants.
-- A custom role cannot receive `users.manage` or `roles.manage`.
-- The system Administrator role cannot be deleted, deactivated, reassigned through ordinary member-role RPCs, or stripped of its permissions.
-- Exactly one active Administrator remains after every committed membership/role operation.
-
-### Company ownership and membership invariants
-- Two concurrent `create_organization_with_admin` calls for the same Auth user cannot create two companies; after one succeeds, every later attempt remains rejected for the lifetime of the creator account.
-- The creator membership is identified by its initial timestamp matching `organizations.created_at`; attempts to delete it, change its organization/user/creation timestamp/role, or rewrite the organization's creation timestamp are rejected.
-- A later membership insert cannot reuse the company's creation timestamp to forge or duplicate the creator marker; outside the company-creation RPC, the trigger moves a colliding transaction-stable `now()` value off the reserved timestamp.
-- A second membership cannot retain or be rewritten to the creator timestamp; every company must have exactly one creator anchor.
-- No membership row can be reassigned to a different Auth user/company or have its `created_at` rewritten; historical membership identity is immutable.
-- The original creator membership remains active and retains the Administrator role for the organization's lifetime. Every UPDATE or DELETE against that membership is rejected, including active-state, role, timestamp, identity, and metadata changes.
-- Two concurrent attempts to activate memberships in different companies for the same user cannot both commit. After deactivation, another company may add the user while the old inactive history remains.
-- Reactivation is rejected while the user is active in another company; the permanent creator record is never reactivated as an ordinary membership.
-- The creator cannot deactivate or leave the original company through membership changes, and cannot create another company because the original creator anchor remains permanently present.
-- An unverified or unknown email cannot be added, and no invitation/account-creation side effect occurs.
-- No second user can receive the Administrator role through INSERT or UPDATE. Administrator-role membership INSERTs are accepted only for the authenticated creator during the atomic organization-creation workflow; all later attempts fail.
-
-### Accounting
-- Unbalanced journals cannot post.
-- Opening balances reject unbalanced totals, duplicate organization-level opening posts, cross-tenant contacts/products/accounts, invalid party control account types, and non-zero pre-existing stock for products being initialized.
-- Opening customer/supplier balances appear in contact-wise ledger queries through `account_transactions.contact_id`; receipts/payments reduce the same party balance when posted to the same control account. Posted sales invoices debit the same customer receivable control account with `contact_id = sales.customer_id`, and the customer receipt RPC reduces that balance.
-- Opening inventory movements reconcile to `inventory_balances` and the inventory asset control-account debit.
-- There is no closed-period state; posting is not restricted by period status.
-- Concurrent/double posting does not duplicate ledger or inventory effects.
-- Posted entries are corrected through reversals, not silent mutation.
-- Return quantities and payment allocations cannot exceed valid source balances.
-
-### RLS and RPC
-- Test as `anon`, authenticated users with different memberships, and trusted server/service role separately.
-- Verify RLS on every exposed table, including child tables and join tables.
-- Verify RPC grants, `SECURITY DEFINER` settings if used, cross-tenant rejection, idempotency, and rollback on failure.
-- Run the RLS/RPC inventory queries in Section 5 and record results in a verified implementation checklist.
-
-## 13. Production release acceptance checklist
-
-- [ ] Actual migrations and DDL match the documented columns and constraints.
-- [ ] Every intended FK, unique constraint, check constraint, and index exists.
-- [ ] All public/API-exposed tenant tables have RLS enabled and tested.
-- [ ] The real policy inventory is recorded; policy matrix above has been implemented or differences documented.
-- [ ] The real RPC/function inventory, signatures, execute grants, and security modes are recorded.
-- [ ] Organization creation and Administrator assignment are atomic.
-- [ ] Journal posting, reversal, inventory updates, returns, and payment allocation are transactional and tested.
-- [ ] Cross-organization negative tests pass.
-- [ ] No service-role secret is exposed to client-side code.
-
-## 14. Production governance
-
-Treat `supabase/migrations/20261103000000_initial_database_schema.sql`, the incremental membership-security migration, and this architecture contract as a single versioned unit. The initial migration is the canonical bootstrap for a new, empty Supabase PostgreSQL database; apply migrations in timestamp order after Supabase Auth is available. It is not an incremental upgrade script and must not be run against a database that already contains these objects. Future schema changes must update this canonical file, then be validated from a clean database and regression-tested before release. The live PostgreSQL catalog remains the operational source of truth; deployment checks must detect drift from this contract.
-
-## Final database review and implementation boundaries
-
-- Membership and Administrator changes are serialized per organization. Exactly one active Administrator is enforced; each Auth user may have at most one active company membership globally.
-- `add_organization_user_by_email` adds an existing, email-verified Supabase Auth user to an organization using an active organization role.
-- `update_organization_user_role` changes a membership's role.
-- `set_organization_user_active` deactivates or reactivates a membership. Reactivation requires an active assigned role.
-
-### Authentication and members
-
-`auth.users` remains the identity source. No separate `profiles` table is created. `organization_users.user_id` references `auth.users.id`; organization-specific roles and membership status remain in `organization_users`. The add-member RPC accepts only an existing Auth account with a confirmed email. If no verified account exists, the user must sign up and verify their email before the Administrator can add them. No invitation email is sent and no account is created on behalf of a company.
-
-All membership and role-administration RPCs require the caller to be the active system Administrator of that company. Possessing `users.manage` or `roles.manage` in a custom role does not grant administrative authority. Custom roles cannot be assigned those two control-plane permissions. Direct browser-role writes to membership and RBAC tables remain revoked.
-
-### Deferred scope
-
-- `organization_settings`, `profiles`, `audit_logs`, and warehouse management remain excluded by current project decisions.
-- `payment_allocations` remains a future extension point. Invoice-level payment allocation is not implemented; current payment posting is contact-level.
-- The invitation Edge Function and invitation documentation were removed. The frontend must call the authenticated membership RPCs directly and display the returned sign-up/email-verification, active-membership, and role-validation errors.
-
-### Company ownership and membership policy (current)
-
-- One account may create one company for its lifetime. The initial `organization_users` row is the permanent creator record: its `created_at` equals the company's immutable `organizations.created_at`. The record cannot be deleted, moved to another user/company, or have its identity timestamp rewritten.
-- The original creator membership remains active, immutable, and bound to the Administrator role for the organization's entire lifetime. No user—including the current Administrator—can transfer, replace, deactivate, demote, delete, or otherwise update it.
-- A company has exactly one active system Administrator: the original creator. Only `create_organization_with_admin` can establish this membership. The transfer RPC has been dropped, and database triggers reject any later attempt to assign or alter Administrator authority.
-- A user may have only one active `organization_users` row across all companies. Deactivation preserves the historical row and permits joining another company. Reactivation is rejected if another active company membership exists.
-- The creator's Auth account cannot be hard-deleted while the organization exists because the `auth.users` cascade would attempt to delete the protected creator membership; disable/ban the account instead.
-- The Administrator alone can add existing verified users, change member roles, activate/deactivate members, and create/update custom roles or their permissions. Ordinary custom-role permissions never override these database checks.
-- No schema columns or tables were added. The policy uses existing `organizations`, `organization_users`, and `roles` data, plus indexes, triggers, and RPCs.
-- Deleting the original creator's `auth.users` row is intentionally blocked because its FK cascade would erase the permanent creator membership; disable/ban the account instead of hard-deleting it.
-
-### Verification boundary
-
-The initial SQL file remains a one-time bootstrap for a new, empty Supabase database. Apply `20261103010000_organization_membership_security.sql` followed by `20261103020000_permanent_organization_administrator.sql` to an existing database. The latter fails closed unless every organization's original creator is already its active sole Administrator; it will not guess or silently reverse a previous handover. It drops the transfer RPC, hardens membership and system-role triggers, and redefines the creation RPC without a transfer bypass. This review was static; PostgreSQL execution, Supabase deployment, concurrency testing, and end-to-end application testing have not been performed.
-
-## 10. Current audit fixes and remaining scope
-
-### Implemented in the canonical bootstrap
-
-- RLS SELECT policies now require the relevant module `.read` permission in addition to tenant membership (self-membership remains readable); child rows inherit the parent module's read permission.
-- Payment/refund balance calculations include only posted or reversed journal entries, excluding draft and confirmed manual journal lines.
-- Opening balances are rejected after operational ledger or inventory activity and cannot use receivable/payable control accounts as ordinary untagged GL lines.
-- Payment posting locks the contact before calculating and applying its contact balance.
-- Sales stock depletion and purchase-return depletion consume the exact remaining inventory value when the movement takes the product quantity to zero; inventory balance constraints prohibit negative quantity/value.
-- Account hierarchy cycle checks and explicit revokes for trigger-only SECURITY DEFINER functions are installed.
-- Sales-return confirmation/posting caps each return at the proportional original net value of returned lines after allocating the source invoice-wide discount; return-specific discounts may reduce, but cannot increase, that cap.
-- `next_document_number` allocates a number atomically under the organization's sequence row and checks the relevant document-create/manage permission. It is not yet integrated into existing draft-save/posting RPCs; current callers must not assume automatic numbering.
-
-### Explicitly deferred (not implemented)
-
-- Invoice-level payment allocations and invoice-wise outstanding balances.
-- Master-data create/update RPCs for accounts, contacts, products, units of measure, and expense categories. Browser-role table writes remain revoked, so these CRUD workflows must use new permission-checked RPCs before the application exposes them.
-- Inventory-adjustment posting RPC.
-- Automatic number allocation inside document creation flows.
-- Opening customer-credit and supplier-debit balances in the contact subledger; the current opening-balance contract represents customer receivables and supplier payables only.
-
-The canonical bootstrap is `supabase/migrations/20261103000000_initial_database_schema.sql`, for a new/empty Supabase database only. `supabase/migrations/20261103010000_organization_membership_security.sql` is the incremental upgrade for a database that has already applied the bootstrap. Do not run the bootstrap as an upgrade on a populated installation. No live Supabase project has been changed by this repository edit. The accounting-period subsystem has been removed: no period relation, column, permission, period-specific function argument or logic, period lock, or period-closing workflow exists. Financial reports use explicit date ranges; historical posting restrictions must not silently recreate period entities.
+# Zero ERP — Database Architecture and Security
+
+> This document describes the database that is actually defined by the repository's migration chain. It is not a product roadmap, target schema, or statement that an application screen exists.
+
+**Canonical detailed reference:** [Complete Database Reference](DATABASE_REFERENCE.md)  
+**Static findings and limitations:** [Database Audit](DATABASE_AUDIT.md)
+
+## 1. Canonical database source
+
+The effective database is the result of applying all three migrations in timestamp order:
+
+1. `supabase/migrations/20261103000000_initial_database_schema.sql` — bootstrap schema for a new/empty database.
+2. `supabase/migrations/20261103010000_organization_membership_security.sql` — membership, creator-anchor, RBAC and profile security updates.
+3. `supabase/migrations/20261103020000_permanent_organization_administrator.sql` — permanent original-Creator Administrator invariant; drops Administrator transfer.
+
+Do not apply the initial bootstrap to an already populated database as an upgrade. Use the incremental migrations in order. The final migration includes a preflight that intentionally stops if existing organization creator/Admin data cannot be verified.
+
+A later `CREATE OR REPLACE FUNCTION` is authoritative for that function. The historical `transfer_organization_administrator(uuid, uuid)` RPC is dropped by migration 0200 and is absent from the final schema.
+
+## 2. Effective schema inventory
+
+| Object | Effective state |
+|---|---:|
+| Public tables | 26 |
+| Columns across those tables | 349 |
+| Declared table constraints (inline and later ALTER constraints) | 129 |
+| Explicit indexes | 30 |
+| RLS-enabled tables | 26 |
+| RLS policies | 26 |
+| Triggers | 37 |
+| Effective public functions | 53 |
+| Seeded permission keys | 43 |
+| Views / materialized views | 0 |
+| User-defined sequences | 0 |
+| Custom enum/type/domain definitions | 0 |
+
+Every table, column, constraint, index, trigger, policy, function signature, permission key and privilege statement is catalogued in the [Complete Database Reference](DATABASE_REFERENCE.md).
+
+## 3. Relational model
+
+### Tenant and RBAC
+
+- `organizations` is the tenant root.
+- `organization_users` maps Supabase Auth identities (`auth.users`) to organizations. A membership has one `role_id`, not a collection of roles.
+- `roles` are organization-scoped. `permissions` is a global catalog seeded by the bootstrap. `role_permissions` maps roles to permission rows.
+- A partial unique index on `organization_users(user_id)` where `is_active = true` permits at most one active company membership per Auth user.
+- Role assignment and permission checks are implemented in database functions, including `is_active_org_member`, `has_org_permission`, `validate_role_assignment`, `create_custom_role`, `replace_custom_role_permissions`, and `update_custom_role`.
+
+### Accounting and inventory
+
+- `accounts` stores the organization chart of accounts and its hierarchy.
+- `journal_entries` stores journal headers and lifecycle/reversal metadata.
+- `account_transactions` stores debit/credit lines. Each line must be one-sided (debit or credit), positive on the populated side, and associated with same-organization journal/account/contact records.
+- `inventory_transactions` stores stock movement and cost history; `inventory_balances` stores current per-product quantity/value/cost.
+- `products` links units and optional inventory, sales and COGS accounts.
+- The default chart of accounts, General Expenses category and document-number sequences are seeded by `seed_default_chart_of_accounts`, which the final organization-creation RPC calls.
+
+### Commercial documents
+
+- Purchases: `purchase`, `purchase_items`, `purchase_returns`, `purchase_return_items`.
+- Sales: `sales`, `sales_items`, `sales_returns`, `sales_return_items`.
+- Expenses and settlements: `expense_categories`, `expenses`, `payments`, `payment_allocations`.
+- Master data: `contacts`, `products`, `units_of_measure`, `accounts`, `expense_categories`, and `number_sequences`.
+
+Tenant-scoped composite foreign keys are used for cross-table references so a row cannot reference a parent belonging to another organization. The full FK and CHECK definitions are listed table-by-table in the reference.
+
+## 4. Permanent organization creator and Administrator
+
+The final schema establishes the original creator as the sole Administrator for the lifetime of the organization.
+
+1. `create_organization_with_admin` requires an authenticated Supabase user and serializes creation against that user's Auth row.
+2. It creates the organization, system Administrator role, role-permission rows, and original creator membership with the same creation timestamp.
+3. The creator membership is identified by `organization_users.created_at = organizations.created_at`.
+4. The final creator-membership trigger rejects every UPDATE and DELETE to that row. This includes role, active-state, identity, organization, timestamp, and metadata changes.
+5. The Administrator-membership trigger rejects later Administrator assignment or mutation. The system Administrator role is protected against later modification/deletion.
+6. `transfer_organization_administrator` is dropped. No replacement/transfer RPC is installed.
+7. The creator anchor remains present, so the same Auth user cannot create a second organization.
+
+Because `organization_users.user_id` references `auth.users(id) ON DELETE CASCADE`, deleting the original Creator's Auth account would attempt to delete the protected membership and fail. Account disable/ban is distinct from hard deletion.
+
+Database owner/superuser credentials remain outside the protection boundary: a sufficiently privileged operator can alter schema objects or disable triggers. Production database-owner credentials must therefore be restricted.
+
+## 5. RLS and database access boundary
+
+- RLS is enabled on all 26 public tables; the migrations do not use `FORCE ROW LEVEL SECURITY`.
+- The 26 installed policies are SELECT policies. Their predicates use membership/permission helpers for tenant data; the global permission catalog has its own authenticated read policy.
+- Direct browser-role table mutations are revoked by the SQL privilege statements. Mutations are exposed through explicitly granted RPCs and trigger-controlled paths.
+- SECURITY DEFINER functions pin `search_path = ''`; the reference lists each function's security mode and explicit EXECUTE grants/revokes.
+- RLS is not a substitute for RPC authorization. RPCs separately validate `auth.uid()`, organization membership, active organization, permission keys, referenced-row tenant ownership, and transaction state as appropriate.
+
+## 6. RPC and trigger workflows
+
+The full function catalog in [DATABASE_REFERENCE.md](DATABASE_REFERENCE.md#function-and-rpc-reference) records every effective signature, return type, SECURITY DEFINER status, execution exposure, migration source and purpose.
+
+### Organization, membership and roles
+
+- `create_organization_with_admin` creates the organization and permanent Creator Administrator.
+- `add_organization_user_by_email` adds an existing email-verified Auth user; the database does not create an invitation or send an invitation email.
+- `update_organization_user_role` and `set_organization_user_active` manage ordinary memberships; Creator membership changes are rejected by triggers.
+- `create_custom_role`, `replace_custom_role_permissions`, `validate_role_assignment`, and `update_custom_role` implement organization role management.
+- No Administrator transfer API exists in the final schema.
+
+### Master data and organization profile
+
+- `save_master_data` accepts the entity types `account`, `unit`, `contact`, `product`, and `expense_category`, and validates editable fields and permission keys.
+- `update_organization_profile` updates the supported organization profile fields with permission and currency/timezone validation.
+
+### Document lifecycle
+
+- `save_draft_transaction_document` creates/updates supported draft documents.
+- `confirm_transaction_document` validates and confirms eligible drafts.
+- `revert_transaction_document_to_draft` reopens eligible confirmed documents.
+- `void_transaction_document` voids eligible draft/confirmed documents with a reason.
+- `delete_draft_transaction_document` deletes eligible drafts.
+- Confirmation does not itself perform the final ledger/inventory posting; the dedicated posting functions do that.
+- The exact supported document types, fields and state checks are in the SQL function bodies and the RPC catalog. Do not infer unsupported document types.
+
+### Posting and reversals
+
+The final schema defines dedicated posting functions for purchases, sales, purchase returns, sales returns, expenses, contact payments, inventory adjustments, opening balances and confirmed manual journals. `reverse_journal_entry` provides controlled journal reversal. These routines use organization-scoped locks and row locks where implemented in their bodies; see the SQL source for exact lock ordering and validation.
+
+The legacy `post_manual_journal_entry` function remains defined but client EXECUTE is revoked. The supported manual journal path is draft save → confirm → `post_confirmed_journal_entry`.
+
+### Number allocation
+
+- `number_sequences` stores organization/document-type prefixes, next values, padding and active state.
+- `next_document_number` allocates a number under the sequence row and checks the corresponding permission.
+- `assign_document_number` is attached to purchase, sales, expense, payment, purchase-return, sales-return and journal-entry inserts. It assigns numbers to eligible draft inserts and preserves the existing number on UPDATE.
+- Inventory adjustment posting calls `next_document_number` directly.
+
+### Payments and allocations
+
+- `payment_allocations` supports `purchase`, `purchase_return`, `sales`, `sales_return`, and `expense` document types.
+- `set_payment_allocations` replaces draft allocation rows and invokes `validate_payment_allocations`.
+- The validator checks allocation total, supported target document, target status, contact match, outstanding balance and payment type.
+- Bank transfers cannot have document allocations. Allocation target IDs are polymorphic and therefore do not have a single conventional foreign key to all target tables.
+
+### Reports
+
+Reporting RPCs exist for trial balance, general ledger, profit and loss, balance sheet, inventory valuation, contact balances, receivables aging, payables aging and unapplied payments. Their exact arguments and return columns are listed in the function catalog.
+
+## 7. Important model boundaries
+
+These are explicit properties of the current schema:
+
+- `contacts` does not distinguish customer from supplier with a dedicated type column.
+- `organization_users` stores one role per membership.
+- `payment_allocations.document_id`, `journal_entries.reference_id`, and `inventory_transactions.reference_id` are polymorphic UUID references, not ordinary foreign keys to every possible target table.
+- There are no views or materialized views in the migrations.
+- There is no accounting-period table, accounting-period column, period permission, period-close RPC, or period-lock workflow.
+- The SQL migrations do not create application screens, API routes outside PostgreSQL RPCs, Auth email delivery, or deployment infrastructure.
+
+## 8. Source of detail
+
+Use [Complete Database Reference](DATABASE_REFERENCE.md) for exact definitions. Use the migration files as the executable authority if any prose ever differs. Documentation changes must be made from the migration source; never modify the schema merely to make it match stale documentation.
