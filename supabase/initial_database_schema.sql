@@ -425,7 +425,7 @@ create policy role_permissions_select_member
       select 1
       from public.roles r
       where r.id = role_permissions.role_id
-        and public.is_active_org_member(r.organization_id)
+        and public.has_org_permission(r.organization_id, 'roles.read')
     )
   );
 
