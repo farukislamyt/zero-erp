@@ -90,7 +90,11 @@ When a manual journal draft supplies a non-empty `reference_id`, `save_draft_tra
 
 ### Maintainability — Repeated historical function definitions
 
-The bootstrap contains multiple `CREATE OR REPLACE FUNCTION` definitions for several names. The last effective definition in execution order is authoritative. Update and inspect that final definition when changing behavior.
+The bootstrap contains multiple `CREATE OR REPLACE FUNCTION` definitions for several names. The last effective definition in execution order is authoritative. Update and inspect that final definition when changing behavior. Consolidating these definitions was deliberately deferred: removing an earlier definition without tracing intervening dependencies, trigger bindings, and privilege statements could change effective behavior. Do this only with regression coverage.
+
+### Performance tuning — Evidence required before index changes
+
+No speculative indexes or query rewrites were added. The repository has no representative production dataset or recorded `EXPLAIN (ANALYZE, BUFFERS)` baselines, so index changes cannot yet be shown to improve reads without imposing additional write/storage costs. Capture query plans on representative data before making performance-only schema changes.
 
 ## 5. Important boundaries and remaining operational caveats — do not document as implemented features
 
