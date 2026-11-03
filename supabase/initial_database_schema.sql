@@ -3031,7 +3031,7 @@ begin
     raise exception using errcode = '23514', message = 'Only confirmed documents can be reverted to draft.';
   end if;
   execute pg_catalog.format(
-    'update public.%I set status = ''draft'', confirmed_at = null, confirmed_by = null, updated_at = pg_catalog.now() where organization_id = $1 and id = $2',
+    'update public.%I set status = ''draft'', updated_at = pg_catalog.now() where organization_id = $1 and id = $2',
     v_table
   ) using p_organization_id, p_document_id;
 end;
