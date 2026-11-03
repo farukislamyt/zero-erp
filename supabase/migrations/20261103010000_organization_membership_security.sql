@@ -246,15 +246,17 @@ begin
 
   perform 1 from public.organizations o where o.id = v_org_id for update;
 
-  if tg_op <> 'DELETE' and new.is_active and v_new_is_admin then
-    if tg_op = 'INSERT' then
-      v_needs_admin_claim := true;
-    else
-      v_needs_admin_claim :=
-        not old.is_active
-        or not v_old_is_admin
-        or old.organization_id is distinct from new.organization_id
-        or old.role_id is distinct from new.role_id;
+  if tg_op <> 'DELETE' then
+    if new.is_active and v_new_is_admin then
+      if tg_op = 'INSERT' then
+        v_needs_admin_claim := true;
+      else
+        v_needs_admin_claim :=
+          not old.is_active
+          or not v_old_is_admin
+          or old.organization_id is distinct from new.organization_id
+          or old.role_id is distinct from new.role_id;
+      end if;
     end if;
   end if;
 
