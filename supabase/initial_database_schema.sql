@@ -666,6 +666,7 @@ create table public.purchase_return_items (
   updated_at timestamptz not null default pg_catalog.now(),
   constraint purchase_return_items_org_id_id_uq unique (organization_id, id),
   constraint purchase_return_items_line_uq unique (organization_id, purchase_return_id, line_number),
+  constraint purchase_return_items_source_item_uq unique (organization_id, purchase_return_id, purchase_item_id),
   constraint purchase_return_items_return_same_org_fk
     foreign key (organization_id, purchase_return_id)
     references public.purchase_returns (organization_id, id)
@@ -811,6 +812,7 @@ create table public.sales_return_items (
   updated_at timestamptz not null default pg_catalog.now(),
   constraint sales_return_items_org_id_id_uq unique (organization_id, id),
   constraint sales_return_items_line_uq unique (organization_id, sales_return_id, line_number),
+  constraint sales_return_items_source_item_uq unique (organization_id, sales_return_id, sales_item_id),
   constraint sales_return_items_return_same_org_fk
     foreign key (organization_id, sales_return_id)
     references public.sales_returns (organization_id, id)
@@ -3584,6 +3586,8 @@ declare
   v_allocated_revenue numeric(20,4) := 0;
   v_line_revenue numeric(20,4);
   v_line_cost numeric(20,4);
+  v_previously_returned_quantity numeric(20,6);
+  v_previously_returned_cogs numeric(20,4);
   v_balance_quantity numeric(20,6);
   v_balance_value numeric(20,4);
   v_average_cost numeric(20,6);
@@ -3731,7 +3735,8 @@ begin
 
   for v_line in
     select ri.id, ri.product_id, ri.quantity, ri.line_total, ri.line_number,
-           si.cogs_unit_cost, pr.sales_account_id, pr.inventory_account_id, pr.cogs_account_id
+           si.cogs_unit_cost, si.quantity as sold_quantity, si.cogs_total as sold_cogs_total,
+           pr.sales_account_id, pr.inventory_account_id, pr.cogs_account_id
     from public.sales_return_items ri
     join public.sales_items si on si.organization_id = ri.organization_id and si.id = ri.sales_item_id
     join public.products pr on pr.organization_id = ri.organization_id and pr.id = ri.product_id
@@ -3744,7 +3749,19 @@ begin
       v_line_revenue := round(v_line.line_total * v_return.total_amount / v_subtotal,4);
       v_allocated_revenue := v_allocated_revenue + v_line_revenue;
     end if;
-    v_line_cost := round(v_line.quantity * v_line.cogs_unit_cost,4);
+    select coalesce(sum(sri.quantity),0), coalesce(sum(sri.cogs_total),0)
+      into v_previously_returned_quantity, v_previously_returned_cogs
+    from public.sales_return_items sri
+    join public.sales_returns sr on sr.organization_id = sri.organization_id and sr.id = sri.sales_return_id
+    where sri.organization_id = p_organization_id
+      and sri.sales_item_id = v_line.id
+      and sr.status = 'posted';
+
+    if v_line.quantity + v_previously_returned_quantity = v_line.sold_quantity then
+      v_line_cost := v_line.sold_cogs_total - v_previously_returned_cogs;
+    else
+      v_line_cost := round(v_line.quantity * v_line.cogs_unit_cost,4);
+    end if;
 
     select b.quantity, b.inventory_value, b.average_cost
       into v_balance_quantity, v_balance_value, v_average_cost
