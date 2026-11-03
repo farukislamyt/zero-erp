@@ -475,3 +475,28 @@ The opening balance workflow intentionally introduces no staging or sub-ledger t
 ## 14. Production governance
 
 Treat `supabase/initial_database_schema.sql` and this architecture contract as a single versioned unit. The SQL file is the canonical bootstrap for a new, empty Supabase PostgreSQL database; run it once through the Supabase SQL Editor after Supabase Auth is available. It is not an incremental upgrade script and must not be run against a database that already contains these objects. Future schema changes must update this canonical file, then be validated from a clean database and regression-tested before release. The live PostgreSQL catalog remains the operational source of truth; deployment checks must detect drift from this contract.
+
+## Final database review and implementation boundaries
+
+- Accounting periods are prevented from overlapping within an organization. The trigger serializes concurrent period changes by locking the organization row.
+- Closed periods require `closed_at`; open periods must not contain close metadata.
+- Membership changes are serialized per organization to protect the invariant that at least one active Administrator remains.
+- `add_organization_user_by_email` adds an existing, email-verified Supabase Auth user to an organization using an active organization role.
+- `update_organization_user_role` changes a membership's role.
+- `set_organization_user_active` deactivates or reactivates a membership. Reactivation requires an active assigned role.
+
+### Authentication and members
+
+`auth.users` remains the identity source. No separate `profiles` table is created. `organization_users.user_id` references `auth.users.id`; organization-specific roles and membership status remain in `organization_users`. The SQL add-member RPC only supports a verified Auth account that already exists. It does not create Auth users or send invitations. Inviting an unregistered email requires a trusted server or Edge Function using Supabase Auth Admin functionality. The service-role credential must remain server-side.
+
+All three membership RPCs require active organization membership and `users.manage`. Direct browser-role writes to membership and RBAC tables remain revoked.
+
+### Deferred scope
+
+- `organization_settings`, `profiles`, `audit_logs`, and warehouse management remain excluded by current project decisions.
+- `payment_allocations` remains a future extension point. Invoice-level payment allocation is not implemented; current payment posting is contact-level.
+- No frontend, API route, or Edge Function was changed. The application must integrate the membership RPCs and trusted invitation workflow.
+
+### Verification boundary
+
+The SQL file remains a one-time bootstrap for a new, empty Supabase database. Do not execute it against a populated project. This review was static; PostgreSQL execution, Supabase deployment, concurrency testing, and end-to-end application testing have not been performed.
