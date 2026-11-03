@@ -154,7 +154,7 @@ select set_config('test.oversell_id',public.save_draft_transaction_document(
 select lives_ok(format('select public.confirm_transaction_document(%L::uuid,%L,%L::uuid)',current_setting('test.org_id'),'sales',current_setting('test.oversell_id')),
   'sales draft can be confirmed before stock posting validation');
 select throws_ok(format('select public.post_sales(%L::uuid,%L::uuid)',current_setting('test.org_id'),current_setting('test.oversell_id')),
-  '23514','sales posting rejects insufficient inventory');
+  '23514','Insufficient stock to post this sales invoice.','sales posting rejects insufficient inventory');
 select is((select quantity from public.inventory_balances where organization_id=current_setting('test.org_id')::uuid and product_id=current_setting('test.product_id')::uuid),10::numeric,
   'failed oversell leaves inventory unchanged');
 
