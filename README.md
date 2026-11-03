@@ -12,7 +12,7 @@ Zero ERP is a multi-organization ERP system designed to support accounting, purc
 
 ## Overview
 
-The database schema contains 27 tables total: 24 business tables plus three RBAC tables. The production data model uses role-based access control (RBAC) with `roles`, `permissions`, and `role_permissions`, plus `organization_users.role_id`. Each organization has a protected Administrator role automatically assigned to its creator. Administrators manage organization-specific custom roles and assign permissions from the system-managed catalog. Tenant isolation is enforced through organization-scoped relationships, database constraints, RPC authorization, and Row-Level Security (RLS).
+The database schema contains 26 tables total: 23 business tables plus three RBAC tables. The production data model uses role-based access control (RBAC) with `roles`, `permissions`, and `role_permissions`, plus `organization_users.role_id`. Each organization has a protected Administrator role automatically assigned to its creator. Administrators manage organization-specific custom roles and assign permissions from the system-managed catalog. Tenant isolation is enforced through organization-scoped relationships, database constraints, RPC authorization, and Row-Level Security (RLS).
 
 This README and the database blueprint define the target relational model, tenant isolation, authorization, integrity rules, and transactional workflows.
 
@@ -121,7 +121,7 @@ The permission catalog is global and roles are organization-specific. Each organ
 
 ### Complete Column Reference
 
-The complete data model documents 24 business tables plus three RBAC tables (27 total), including the membership role reference.
+The complete data model documents 23 business tables plus three RBAC tables (26 total), including the membership role reference.
 
 <details>
 <summary>organizations (14 columns)</summary>
