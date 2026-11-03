@@ -2297,6 +2297,14 @@ declare
   v_outstanding numeric(20,4);
   v_journal_entry_id uuid;
   v_entry_number text;
+  v_allocation_count integer;
+  v_allocation_total numeric(20,4);
+  v_allocation record;
+  v_doc_contact_id uuid;
+  v_doc_account_id uuid;
+  v_doc_total numeric(20,4);
+  v_doc_status text;
+  v_document_outstanding numeric(20,4);
 begin
   if v_user_id is null or not public.is_active_org_member(p_organization_id)
      or not public.has_org_permission(p_organization_id, 'payments.post') then
@@ -2484,6 +2492,140 @@ begin
     end if;
   else
     raise exception using errcode = '22023', message = 'Unsupported payment type.';
+  end if;
+
+
+  select count(*)::integer, coalesce(sum(pa.allocated_amount),0)
+    into v_allocation_count, v_allocation_total
+  from public.payment_allocations pa
+  where pa.organization_id = p_organization_id and pa.payment_id = p_payment_id;
+
+  if v_allocation_count > 0 then
+    if v_payment.payment_type = 'transfer' or v_allocation_total <> v_payment.amount then
+      raise exception using errcode = '23514', message = 'When invoice allocations are supplied, their total must equal the payment amount; transfers cannot have document allocations.';
+    end if;
+
+    for v_allocation in
+      select pa.document_type, pa.document_id, pa.allocated_amount
+      from public.payment_allocations pa
+      where pa.organization_id = p_organization_id and pa.payment_id = p_payment_id
+      order by pa.document_type, pa.document_id
+      for update
+    loop
+      v_doc_contact_id := null;
+      v_doc_account_id := null;
+      v_doc_total := null;
+      v_doc_status := null;
+      v_document_outstanding := 0;
+
+      case v_allocation.document_type
+        when 'sales' then
+          if v_payment.payment_type <> 'receipt' then
+            raise exception using errcode = '23514', message = 'Sales invoices can only be allocated to customer receipts.';
+          end if;
+          select s.customer_id, s.receivable_account_id, s.total_amount, s.status
+            into v_doc_contact_id, v_doc_account_id, v_doc_total, v_doc_status
+          from public.sales s
+          where s.organization_id = p_organization_id and s.id = v_allocation.document_id;
+          if not found or v_doc_status not in ('posted','partially_returned','returned')
+             or v_doc_contact_id <> v_payment.contact_id or v_doc_account_id <> v_payment.settlement_account_id then
+            raise exception using errcode = '23514', message = 'Sales allocation must target a posted invoice for this customer and receivable account.';
+          end if;
+          select v_doc_total
+            - coalesce((select sum(sr.total_amount) from public.sales_returns sr
+              where sr.organization_id = p_organization_id and sr.sales_id = v_allocation.document_id and sr.status = 'posted'),0)
+            - coalesce((select sum(pa.allocated_amount) from public.payment_allocations pa
+              join public.payments p on p.organization_id = pa.organization_id and p.id = pa.payment_id
+              where pa.organization_id = p_organization_id and pa.document_type = 'sales'
+                and pa.document_id = v_allocation.document_id and p.status = 'posted'),0)
+          into v_document_outstanding;
+
+        when 'purchase' then
+          if v_payment.payment_type <> 'payment' then
+            raise exception using errcode = '23514', message = 'Purchase invoices can only be allocated to supplier payments.';
+          end if;
+          select p.supplier_id, p.payable_account_id, p.total_amount, p.status
+            into v_doc_contact_id, v_doc_account_id, v_doc_total, v_doc_status
+          from public.purchase p
+          where p.organization_id = p_organization_id and p.id = v_allocation.document_id;
+          if not found or v_doc_status not in ('posted','partially_returned','returned')
+             or v_doc_contact_id <> v_payment.contact_id or v_doc_account_id <> v_payment.settlement_account_id then
+            raise exception using errcode = '23514', message = 'Purchase allocation must target a posted invoice for this supplier and payable account.';
+          end if;
+          select v_doc_total
+            - coalesce((select sum(pr.total_amount) from public.purchase_returns pr
+              where pr.organization_id = p_organization_id and pr.purchase_id = v_allocation.document_id and pr.status = 'posted'),0)
+            - coalesce((select sum(pa.allocated_amount) from public.payment_allocations pa
+              join public.payments p on p.organization_id = pa.organization_id and p.id = pa.payment_id
+              where pa.organization_id = p_organization_id and pa.document_type = 'purchase'
+                and pa.document_id = v_allocation.document_id and p.status = 'posted'),0)
+          into v_document_outstanding;
+
+        when 'expense' then
+          if v_payment.payment_type <> 'payment' then
+            raise exception using errcode = '23514', message = 'Expenses can only be allocated to supplier payments.';
+          end if;
+          select e.contact_id, e.payable_account_id, e.amount, e.status
+            into v_doc_contact_id, v_doc_account_id, v_doc_total, v_doc_status
+          from public.expenses e
+          where e.organization_id = p_organization_id and e.id = v_allocation.document_id;
+          if not found or v_doc_status <> 'posted'
+             or v_doc_contact_id is null or v_doc_contact_id <> v_payment.contact_id
+             or v_doc_account_id <> v_payment.settlement_account_id then
+            raise exception using errcode = '23514', message = 'Expense allocation must target a posted contact-linked expense for this supplier and payable account.';
+          end if;
+          select v_doc_total
+            - coalesce((select sum(pa.allocated_amount) from public.payment_allocations pa
+              join public.payments p on p.organization_id = pa.organization_id and p.id = pa.payment_id
+              where pa.organization_id = p_organization_id and pa.document_type = 'expense'
+                and pa.document_id = v_allocation.document_id and p.status = 'posted'),0)
+          into v_document_outstanding;
+
+        when 'sales_return' then
+          if v_payment.payment_type <> 'refund' or v_settlement_account.account_type <> 'asset' then
+            raise exception using errcode = '23514', message = 'Sales returns can only be allocated to customer refunds.';
+          end if;
+          select sr.customer_id, sr.receivable_account_id, sr.total_amount, sr.status
+            into v_doc_contact_id, v_doc_account_id, v_doc_total, v_doc_status
+          from public.sales_returns sr
+          where sr.organization_id = p_organization_id and sr.id = v_allocation.document_id;
+          if not found or v_doc_status <> 'posted'
+             or v_doc_contact_id <> v_payment.contact_id or v_doc_account_id <> v_payment.settlement_account_id then
+            raise exception using errcode = '23514', message = 'Sales-return allocation must target a posted return for this customer and receivable account.';
+          end if;
+          select v_doc_total
+            - coalesce((select sum(pa.allocated_amount) from public.payment_allocations pa
+              join public.payments p on p.organization_id = pa.organization_id and p.id = pa.payment_id
+              where pa.organization_id = p_organization_id and pa.document_type = 'sales_return'
+                and pa.document_id = v_allocation.document_id and p.status = 'posted'),0)
+          into v_document_outstanding;
+
+        when 'purchase_return' then
+          if v_payment.payment_type <> 'refund' or v_settlement_account.account_type <> 'liability' then
+            raise exception using errcode = '23514', message = 'Purchase returns can only be allocated to supplier refunds.';
+          end if;
+          select pr.supplier_id, pr.payable_account_id, pr.total_amount, pr.status
+            into v_doc_contact_id, v_doc_account_id, v_doc_total, v_doc_status
+          from public.purchase_returns pr
+          where pr.organization_id = p_organization_id and pr.id = v_allocation.document_id;
+          if not found or v_doc_status <> 'posted'
+             or v_doc_contact_id <> v_payment.contact_id or v_doc_account_id <> v_payment.settlement_account_id then
+            raise exception using errcode = '23514', message = 'Purchase-return allocation must target a posted return for this supplier and payable account.';
+          end if;
+          select v_doc_total
+            - coalesce((select sum(pa.allocated_amount) from public.payment_allocations pa
+              join public.payments p on p.organization_id = pa.organization_id and p.id = pa.payment_id
+              where pa.organization_id = p_organization_id and pa.document_type = 'purchase_return'
+                and pa.document_id = v_allocation.document_id and p.status = 'posted'),0)
+          into v_document_outstanding;
+      end case;
+
+      if v_document_outstanding < v_allocation.allocated_amount then
+        raise exception using errcode = '23514',
+          message = pg_catalog.format('Allocation %s exceeds document outstanding %s for %s.',
+            v_allocation.allocated_amount, v_document_outstanding, v_allocation.document_id);
+      end if;
+    end loop;
   end if;
 
   update public.payments
