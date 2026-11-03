@@ -4286,6 +4286,182 @@ begin
 end;
 $function$;
 
+
+create or replace function public.revert_transaction_document_to_draft(
+  p_organization_id uuid,
+  p_document_type text,
+  p_document_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_table text;
+  v_permission text;
+  v_status text;
+begin
+  if v_user_id is null or not public.is_active_org_member(p_organization_id) then
+    raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
+  end if;
+  case p_document_type
+    when 'purchase' then v_table := 'purchase'; v_permission := 'purchases.confirm';
+    when 'sales' then v_table := 'sales'; v_permission := 'sales.confirm';
+    when 'expense' then v_table := 'expenses'; v_permission := 'expenses.confirm';
+    when 'payment' then v_table := 'payments'; v_permission := 'payments.confirm';
+    when 'purchase_return' then v_table := 'purchase_returns'; v_permission := 'purchases.returns.confirm';
+    when 'sales_return' then v_table := 'sales_returns'; v_permission := 'sales.returns.confirm';
+    when 'journal_entry' then v_table := 'journal_entries'; v_permission := 'journal_entries.confirm';
+    else raise exception using errcode = '22023', message = 'Unsupported transaction document type.';
+  end case;
+  if not public.has_org_permission(p_organization_id, v_permission) then
+    raise exception using errcode = '42501', message = 'You do not have permission to revert this document.';
+  end if;
+  execute pg_catalog.format(
+    'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
+  ) into v_status using p_organization_id, p_document_id;
+  if v_status is null then
+    raise exception using errcode = '23503', message = 'Document was not found in this organization.';
+  end if;
+  if v_status <> 'confirmed' then
+    raise exception using errcode = '23514', message = 'Only confirmed documents can be reverted to draft.';
+  end if;
+  execute pg_catalog.format(
+    'update public.%I set status = ''draft'', updated_at = pg_catalog.now() where organization_id = $1 and id = $2',
+    v_table
+  ) using p_organization_id, p_document_id;
+end;
+$function$;
+
+create or replace function public.void_transaction_document(
+  p_organization_id uuid,
+  p_document_type text,
+  p_document_id uuid,
+  p_reason text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_table text;
+  v_permission text;
+  v_status text;
+begin
+  if v_user_id is null or not public.is_active_org_member(p_organization_id) then
+    raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
+  end if;
+  if p_reason is null or pg_catalog.length(pg_catalog.btrim(p_reason)) < 3 then
+    raise exception using errcode = '22023', message = 'A cancellation reason of at least three characters is required.';
+  end if;
+  case p_document_type
+    when 'purchase' then v_table := 'purchase'; v_permission := 'purchases.confirm';
+    when 'sales' then v_table := 'sales'; v_permission := 'sales.confirm';
+    when 'expense' then v_table := 'expenses'; v_permission := 'expenses.confirm';
+    when 'payment' then v_table := 'payments'; v_permission := 'payments.confirm';
+    when 'purchase_return' then v_table := 'purchase_returns'; v_permission := 'purchases.returns.confirm';
+    when 'sales_return' then v_table := 'sales_returns'; v_permission := 'sales.returns.confirm';
+    when 'journal_entry' then v_table := 'journal_entries'; v_permission := 'journal_entries.confirm';
+    else raise exception using errcode = '22023', message = 'Unsupported transaction document type.';
+  end case;
+  if not public.has_org_permission(p_organization_id, v_permission) then
+    raise exception using errcode = '42501', message = 'You do not have permission to cancel this document.';
+  end if;
+  execute pg_catalog.format(
+    'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
+  ) into v_status using p_organization_id, p_document_id;
+  if v_status is null then
+    raise exception using errcode = '23503', message = 'Document was not found in this organization.';
+  end if;
+  if v_status not in ('draft', 'confirmed') then
+    raise exception using errcode = '23514', message = 'Only draft or confirmed documents can be cancelled; posted documents require a reversal or return.';
+  end if;
+  execute pg_catalog.format(
+    'update public.%I set status = ''void'', voided_at = pg_catalog.now(), voided_by = $3, void_reason = pg_catalog.btrim($4), updated_at = pg_catalog.now() where organization_id = $1 and id = $2',
+    v_table
+  ) using p_organization_id, p_document_id, v_user_id, p_reason;
+end;
+$function$;
+
+create or replace function public.delete_draft_transaction_document(
+  p_organization_id uuid,
+  p_document_type text,
+  p_document_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_table text;
+  v_permission text;
+  v_status text;
+begin
+  if v_user_id is null or not public.is_active_org_member(p_organization_id) then
+    raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
+  end if;
+  case p_document_type
+    when 'purchase' then v_table := 'purchase'; v_permission := 'purchases.create';
+    when 'sales' then v_table := 'sales'; v_permission := 'sales.create';
+    when 'expense' then v_table := 'expenses'; v_permission := 'expenses.manage';
+    when 'payment' then v_table := 'payments'; v_permission := 'payments.manage';
+    when 'purchase_return' then v_table := 'purchase_returns'; v_permission := 'purchases.returns.create';
+    when 'sales_return' then v_table := 'sales_returns'; v_permission := 'sales.returns.create';
+    when 'journal_entry' then v_table := 'journal_entries'; v_permission := 'journal_entries.create';
+    else raise exception using errcode = '22023', message = 'Unsupported transaction document type.';
+  end case;
+  if not public.has_org_permission(p_organization_id, v_permission) then
+    raise exception using errcode = '42501', message = 'You do not have permission to delete this draft document.';
+  end if;
+  execute pg_catalog.format(
+    'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
+  ) into v_status using p_organization_id, p_document_id;
+  if v_status is null then
+    raise exception using errcode = '23503', message = 'Document was not found in this organization.';
+  end if;
+  if v_status <> 'draft' then
+    raise exception using errcode = '23514', message = 'Only draft documents can be deleted; confirmed documents must first be reverted to draft.';
+  end if;
+
+  if p_document_type in ('purchase', 'purchase_return', 'sales', 'sales_return', 'expense')
+     and exists (
+       select 1 from public.payment_allocations pa
+       where pa.organization_id = p_organization_id
+         and pa.document_type = p_document_type
+         and pa.document_id = p_document_id
+     ) then
+    raise exception using errcode = '23514',
+      message = 'This draft document has payment allocations; remove or reassign those allocations before deleting it.';
+  end if;
+
+  case p_document_type
+    when 'purchase' then
+      delete from public.purchase_items where organization_id = p_organization_id and purchase_id = p_document_id;
+    when 'sales' then
+      delete from public.sales_items where organization_id = p_organization_id and sales_id = p_document_id;
+    when 'purchase_return' then
+      delete from public.purchase_return_items where organization_id = p_organization_id and purchase_return_id = p_document_id;
+    when 'sales_return' then
+      delete from public.sales_return_items where organization_id = p_organization_id and sales_return_id = p_document_id;
+    when 'payment' then
+      delete from public.payment_allocations where organization_id = p_organization_id and payment_id = p_document_id;
+    when 'journal_entry' then
+      delete from public.account_transactions where organization_id = p_organization_id and journal_entry_id = p_document_id;
+    else null;
+  end case;
+
+  execute pg_catalog.format(
+    'delete from public.%I where organization_id = $1 and id = $2', v_table
+  ) using p_organization_id, p_document_id;
+end;
+$function$;
+
 revoke all on function public.confirm_transaction_document(uuid, text, uuid) from public, anon;
 revoke all on function public.revert_transaction_document_to_draft(uuid, text, uuid) from public, anon;
 revoke all on function public.void_transaction_document(uuid, text, uuid, text) from public, anon;
