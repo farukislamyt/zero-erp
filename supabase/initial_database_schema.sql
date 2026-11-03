@@ -110,9 +110,44 @@ create table public.accounting_periods (
   constraint accounting_periods_org_id_id_uq unique (organization_id, id),
   constraint accounting_periods_org_name_uq unique (organization_id, name),
   constraint accounting_periods_closed_state_chk
-    check ((status = 'open' and closed_at is null) or status = 'closed')
+    check ((status = 'open' and closed_at is null and closed_by is null)
+      or (status = 'closed' and closed_at is not null))
 );
 
+-- Prevent overlapping accounting periods within an organization. Locking the
+-- organization row serializes concurrent inserts/updates for the same tenant.
+create or replace function public.prevent_overlapping_accounting_periods()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  perform 1
+  from public.organizations o
+  where o.id = new.organization_id
+  for update;
+
+  if exists (
+    select 1 from public.accounting_periods ap
+    where ap.organization_id = new.organization_id
+      and ap.id is distinct from new.id
+      and new.start_date <= ap.end_date
+      and new.end_date >= ap.start_date
+  ) then
+    raise exception using
+      errcode = '23514',
+      message = 'Accounting periods in the same organization cannot overlap.';
+  end if;
+
+  return new;
+end;
+$function$;
+
+create trigger accounting_periods_prevent_overlap
+before insert or update of organization_id, start_date, end_date
+on public.accounting_periods
+for each row execute function public.prevent_overlapping_accounting_periods();
 create table public.accounts (
   id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete restrict,
@@ -1247,6 +1282,10 @@ declare
   v_is_active_admin boolean := false;
   v_remaining_admins integer;
 begin
+  -- Serialize membership removals/role changes per organization so concurrent
+  -- requests cannot both remove the final active Administrator.
+  perform 1 from public.organizations o where o.id = old.organization_id for update;
+
   select exists (
     select 1
     from public.roles r
@@ -1340,6 +1379,142 @@ revoke all on function public.guard_system_role_mutation() from public, anon, au
 revoke all on function public.guard_administrator_membership() from public, anon, authenticated;
 revoke all on function public.guard_system_role_permissions() from public, anon, authenticated;
 
+
+-- Organization membership administration. This RPC manages users who already
+-- have a verified Supabase Auth account. Unregistered addresses must be invited
+-- through a trusted server/Edge Function using the Supabase Auth Admin API.
+create or replace function public.add_organization_user_by_email(
+  p_organization_id uuid,
+  p_email text,
+  p_role_id uuid
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_user_id uuid;
+  v_membership_id uuid;
+begin
+  if (select auth.uid()) is null
+     or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, 'users.manage') then
+    raise exception using errcode = '42501',
+      message = 'You are not authorized to manage members in this organization.';
+  end if;
+
+  if p_email is null
+     or pg_catalog.length(pg_catalog.btrim(p_email)) not between 3 and 254
+     or pg_catalog.strpos(pg_catalog.btrim(p_email), '@') < 2 then
+    raise exception using errcode = '22023', message = 'A valid user email address is required.';
+  end if;
+
+  perform 1 from public.organizations o
+  where o.id = p_organization_id and o.is_active
+  for update;
+  if not found then raise exception using errcode = '23503', message = 'Active organization was not found.'; end if;
+
+  if not exists (select 1 from public.roles r
+    where r.organization_id = p_organization_id and r.id = p_role_id and r.status = 'active') then
+    raise exception using errcode = '23503',
+      message = 'The selected role must be active and belong to this organization.';
+  end if;
+
+  select u.id into v_user_id from auth.users u
+  where pg_catalog.lower(u.email) = pg_catalog.lower(pg_catalog.btrim(p_email))
+    and u.email_confirmed_at is not null
+  order by u.created_at limit 1;
+
+  if v_user_id is null then
+    raise exception using errcode = 'P0002',
+      message = 'No verified Supabase Auth user exists for this email. Invite the user through the trusted Auth Admin workflow first.';
+  end if;
+
+  insert into public.organization_users (organization_id, user_id, role_id, is_active)
+  values (p_organization_id, v_user_id, p_role_id, true)
+  returning id into v_membership_id;
+  return v_membership_id;
+exception
+  when unique_violation then
+    raise exception using errcode = '23505', message = 'This user is already a member of the organization.';
+end;
+$function$;
+
+create or replace function public.update_organization_user_role(
+  p_organization_id uuid, p_membership_id uuid, p_role_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if (select auth.uid()) is null
+     or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, 'users.manage') then
+    raise exception using errcode = '42501',
+      message = 'You are not authorized to manage members in this organization.';
+  end if;
+
+  perform 1 from public.organizations o where o.id = p_organization_id and o.is_active for update;
+  if not found then raise exception using errcode = '23503', message = 'Active organization was not found.'; end if;
+
+  if not exists (select 1 from public.roles r
+    where r.organization_id = p_organization_id and r.id = p_role_id and r.status = 'active') then
+    raise exception using errcode = '23503',
+      message = 'The selected role must be active and belong to this organization.';
+  end if;
+
+  update public.organization_users set role_id = p_role_id, updated_at = pg_catalog.now()
+  where organization_id = p_organization_id and id = p_membership_id;
+  if not found then raise exception using errcode = '23503', message = 'Organization membership was not found.'; end if;
+end;
+$function$;
+
+create or replace function public.set_organization_user_active(
+  p_organization_id uuid, p_membership_id uuid, p_is_active boolean
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_role_id uuid;
+begin
+  if (select auth.uid()) is null
+     or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, 'users.manage') then
+    raise exception using errcode = '42501',
+      message = 'You are not authorized to manage members in this organization.';
+  end if;
+  if p_is_active is null then raise exception using errcode = '22023', message = 'Member active state is required.'; end if;
+
+  perform 1 from public.organizations o where o.id = p_organization_id and o.is_active for update;
+  if not found then raise exception using errcode = '23503', message = 'Active organization was not found.'; end if;
+
+  select ou.role_id into v_role_id from public.organization_users ou
+  where ou.organization_id = p_organization_id and ou.id = p_membership_id for update;
+  if not found then raise exception using errcode = '23503', message = 'Organization membership was not found.'; end if;
+
+  if p_is_active and not exists (select 1 from public.roles r
+    where r.organization_id = p_organization_id and r.id = v_role_id and r.status = 'active') then
+    raise exception using errcode = '23514',
+      message = 'A member cannot be reactivated while their assigned role is inactive.';
+  end if;
+
+  update public.organization_users set is_active = p_is_active, updated_at = pg_catalog.now()
+  where organization_id = p_organization_id and id = p_membership_id;
+end;
+$function$;
+
+revoke all on function public.add_organization_user_by_email(uuid, text, uuid) from public, anon;
+revoke all on function public.update_organization_user_role(uuid, uuid, uuid) from public, anon;
+revoke all on function public.set_organization_user_active(uuid, uuid, boolean) from public, anon;
+grant execute on function public.add_organization_user_by_email(uuid, text, uuid) to authenticated;
+grant execute on function public.update_organization_user_role(uuid, uuid, uuid) to authenticated;
+grant execute on function public.set_organization_user_active(uuid, uuid, boolean) to authenticated;
 
 -- ============================================================================
 -- MANUAL JOURNAL POSTING RPC
