@@ -3588,6 +3588,8 @@ declare
   v_line_cost numeric(20,4);
   v_previously_returned_quantity numeric(20,6);
   v_previously_returned_cogs numeric(20,4);
+  v_remaining_quantity numeric(20,6);
+  v_remaining_cogs numeric(20,4);
   v_balance_quantity numeric(20,6);
   v_balance_value numeric(20,4);
   v_average_cost numeric(20,6);
@@ -3757,10 +3759,15 @@ begin
       and sri.sales_item_id = v_line.sales_item_id
       and sr.status = 'posted';
 
-    if v_line.quantity + v_previously_returned_quantity = v_line.sold_quantity then
-      v_line_cost := v_line.sold_cogs_total - v_previously_returned_cogs;
+    v_remaining_quantity := v_line.sold_quantity - v_previously_returned_quantity;
+    v_remaining_cogs := v_line.sold_cogs_total - v_previously_returned_cogs;
+    if v_line.quantity = v_remaining_quantity then
+      v_line_cost := v_remaining_cogs;
     else
-      v_line_cost := round(v_line.quantity * v_line.cogs_unit_cost,4);
+      v_line_cost := least(
+        round(v_line.quantity * v_remaining_cogs / v_remaining_quantity,4),
+        v_remaining_cogs
+      );
     end if;
 
     select b.quantity, b.inventory_value, b.average_cost
