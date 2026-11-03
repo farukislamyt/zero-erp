@@ -203,9 +203,9 @@ The complete data model documents 24 business tables plus three RBAC tables (27 
 </details>
 
 <details>
-<summary>journal_entries (21 columns)</summary>
+<summary>journal_entries (25 columns)</summary>
 
-`id`, `organization_id`, `entry_number`, `accounting_period_id`, `entry_date`, `entry_type`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `reference_type`, `reference_id`, `description`, `posted_at`, `reversal_of_id`, `created_by`, `created_at`, `updated_at`
+`id`, `organization_id`, `entry_number`, `accounting_period_id`, `entry_date`, `entry_type`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `reference_type`, `reference_id`, `description`, `posted_at`, `reversal_of_id`, `reversal_journal_entry_id`, `reversed_at`, `reversed_by`, `reversal_reason`, `created_by`, `created_at`, `updated_at`
 
 </details>
 
@@ -266,16 +266,16 @@ The complete data model documents 24 business tables plus three RBAC tables (27 
 </details>
 
 <details>
-<summary>expenses (20 columns)</summary>
+<summary>expenses (24 columns)</summary>
 
-`id`, `organization_id`, `expense_number`, `expense_category_id`, `contact_id`, `payable_account_id`, `expense_date`, `amount`, `description`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
+`id`, `organization_id`, `expense_number`, `expense_category_id`, `contact_id`, `payable_account_id`, `expense_date`, `amount`, `description`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `posted_journal_entry_id`, `reversal_journal_entry_id`, `reversed_at`, `reversed_by`, `reversal_reason`, `created_by`, `created_at`, `updated_at`
 
 </details>
 
 <details>
-<summary>payments (21 columns)</summary>
+<summary>payments (25 columns)</summary>
 
-`id`, `organization_id`, `payment_number`, `payment_type`, `contact_id`, `payment_date`, `amount`, `account_id`, `settlement_account_id`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `posted_journal_entry_id`, `description`, `created_by`, `created_at`, `updated_at`
+`id`, `organization_id`, `payment_number`, `payment_type`, `contact_id`, `payment_date`, `amount`, `account_id`, `settlement_account_id`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `posted_journal_entry_id`, `reversal_journal_entry_id`, `reversed_at`, `reversed_by`, `reversal_reason`, `description`, `created_by`, `created_at`, `updated_at`
 
 </details>
 
@@ -287,9 +287,9 @@ The complete data model documents 24 business tables plus three RBAC tables (27 
 </details>
 
 <details>
-<summary>purchase_returns (21 columns)</summary>
+<summary>purchase_returns (26 columns)</summary>
 
-`id`, `organization_id`, `return_number`, `purchase_id`, `supplier_id`, `return_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `payable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
+`id`, `organization_id`, `return_number`, `purchase_id`, `supplier_id`, `return_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `payable_account_id`, `purchase_return_variance_account_id`, `posted_journal_entry_id`, `reversal_journal_entry_id`, `reversed_at`, `reversed_by`, `reversal_reason`, `created_by`, `created_at`, `updated_at`
 
 </details>
 
@@ -301,9 +301,9 @@ The complete data model documents 24 business tables plus three RBAC tables (27 
 </details>
 
 <details>
-<summary>sales_returns (21 columns)</summary>
+<summary>sales_returns (25 columns)</summary>
 
-`id`, `organization_id`, `return_number`, `sales_id`, `customer_id`, `return_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `receivable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
+`id`, `organization_id`, `return_number`, `sales_id`, `customer_id`, `return_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `receivable_account_id`, `posted_journal_entry_id`, `reversal_journal_entry_id`, `reversed_at`, `reversed_by`, `reversal_reason`, `created_by`, `created_at`, `updated_at`
 
 </details>
 
@@ -314,7 +314,7 @@ The complete data model documents 24 business tables plus three RBAC tables (27 
 
 </details>
 
-**Schema note:** This reference summarizes the tables and columns supplied for documentation. It does not define SQL types or prove that foreign keys, unique constraints, indexes, check constraints, triggers, or row-level security (RLS) policies exist. Confirm those details in the actual migrations or database DDL.
+**Schema note:** `supabase/initial_database_schema.sql` is the canonical bootstrap DDL for a new/empty database. This README is a navigation and column reference; use the SQL file as the source of truth for types, defaults, constraints, indexes, triggers, grants, and RLS policies.
 
 ## Accounting and Posting
 
@@ -329,7 +329,7 @@ Required accounting controls:
 5. Prevent duplicate posting and use controlled reversal entries to correct posted activity.
 6. Validate that accounts, contacts, products, periods, and source documents belong to the same organization.
 
-Transaction documents follow Draft → Confirmed → Posted. Drafts may be edited/deleted; Confirmed documents are locked but may be reverted to Draft; Draft/Confirmed documents may be voided with a reason; Posted records cannot be edited or hard-deleted and require a controlled reversal/return. Confirmation itself has no ledger or inventory impact; posting is the only source-document step that applies those effects. See [Database Blueprint](docs/DATABASE_AND_SECURITY.md#financial-and-inventory-transaction-lifecycle) for enforced RPCs and known posting-coverage limitations.
+Transaction documents follow Draft → Confirmed → Posted. Drafts may be edited/deleted; Confirmed documents are locked but may be reverted to Draft; Draft/Confirmed documents may be voided with a reason; Posted records cannot be edited or hard-deleted. Supported expense/payment/return journals can be reversed with audit history; purchase/sales invoices are corrected through return documents. Confirmation has no ledger or inventory impact; posting is the only source-document step that applies those effects. See [Database Blueprint](docs/DATABASE_AND_SECURITY.md#financial-and-inventory-transaction-lifecycle) for RPC contracts, variance-account requirements, and remaining accounting boundaries.
 
 ## Inventory
 
