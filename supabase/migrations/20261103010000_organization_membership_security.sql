@@ -203,7 +203,7 @@ create or replace function public.guard_organization_created_at()
 returns trigger
 language plpgsql
 set search_path = ''
-as $
+as $$
 begin
   if new.created_at is distinct from old.created_at then
     raise exception using errcode = '42501',
@@ -211,7 +211,7 @@ begin
   end if;
   return new;
 end;
-$;
+$$;
 
 drop trigger if exists organizations_guard_created_at on public.organizations;
 create trigger organizations_guard_created_at
@@ -441,7 +441,7 @@ begin
 
   return v_organization_id;
 end;
-$;
+$$;
 revoke all on function public.create_organization_with_admin(text,text,text) from public, anon;
 grant execute on function public.create_organization_with_admin(text,text,text) to authenticated;
 
