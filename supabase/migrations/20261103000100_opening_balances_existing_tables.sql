@@ -142,6 +142,8 @@ begin
        or x.credit is null
        or x.debit < 0
        or x.credit < 0
+       or x.debit <> round(x.debit, 4)
+       or x.credit <> round(x.credit, 4)
        or not ((x.debit > 0 and x.credit = 0) or (x.credit > 0 and x.debit = 0))
   ) then
     raise exception using errcode = '22023',
@@ -174,10 +176,12 @@ begin
       contact_id uuid, party_type text, account_id uuid, amount numeric, description text
     )
     where x.contact_id is null
+       or x.party_type is null
        or x.party_type not in ('customer', 'supplier')
        or x.account_id is null
        or x.amount is null
        or x.amount <= 0
+       or x.amount <> round(x.amount, 4)
   ) then
     raise exception using errcode = '22023',
       message = 'Each party balance must include a contact, customer/supplier type, control account, and positive amount.';
@@ -213,7 +217,9 @@ begin
     )
     where x.product_id is null
        or x.quantity is null or x.quantity <= 0
+       or x.quantity <> round(x.quantity, 6)
        or x.unit_cost is null or x.unit_cost < 0
+       or x.unit_cost <> round(x.unit_cost, 6)
   ) then
     raise exception using errcode = '22023',
       message = 'Each inventory line must include a product, positive quantity, and non-negative unit cost.';
@@ -248,6 +254,25 @@ begin
   ) then
     raise exception using errcode = '23503',
       message = 'Every opening inventory product must be active and mapped to an active, postable inventory asset account in this organization.';
+  end if;
+
+  -- A single account cannot serve both the party control and inventory control
+  -- subledgers in the same opening post.
+  if exists (
+    select 1
+    from pg_catalog.jsonb_to_recordset(p_party_balances) as party(
+      contact_id uuid, party_type text, account_id uuid, amount numeric, description text
+    )
+    join pg_catalog.jsonb_to_recordset(p_inventory_lines) as inv(
+      product_id uuid, quantity numeric, unit_cost numeric
+    ) on true
+    join public.products pr
+      on pr.organization_id = p_organization_id
+     and pr.id = inv.product_id
+    where party.account_id = pr.inventory_account_id
+  ) then
+    raise exception using errcode = '23514',
+      message = 'A party control account cannot also be used as an inventory control account.';
   end if;
 
   -- Prevent a GL line from duplicating a party control or product inventory account.
