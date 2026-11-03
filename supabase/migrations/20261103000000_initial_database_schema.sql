@@ -6419,7 +6419,7 @@ language sql
 stable
 security definer
 set search_path = ''
-as $
+as $$
   select exists (
     select 1
     from public.organizations o
@@ -6429,7 +6429,7 @@ as $
     where o.id = p_organization_id
       and ou.user_id = p_user_id
   );
-$;
+$$;
 
 create or replace function public.is_org_administrator(p_organization_id uuid)
 returns boolean
@@ -6437,7 +6437,7 @@ language sql
 stable
 security definer
 set search_path = ''
-as $
+as $$
   select exists (
     select 1
     from public.organization_users ou
@@ -6454,7 +6454,7 @@ as $
       and r.name = 'Administrator'
       and r.status = 'active'
   );
-$;
+$$;
 
 revoke all on function public.is_organization_creator(uuid,uuid) from public, anon, authenticated;
 revoke all on function public.is_org_administrator(uuid) from public, anon;
@@ -6468,7 +6468,7 @@ returns trigger
 language plpgsql
 security definer
 set search_path = ''
-as $
+as $$
 declare
   v_org_created_at timestamptz;
   v_is_creator_record boolean := false;
@@ -6517,7 +6517,7 @@ begin
 
   return new;
 end;
-$;
+$$;
 
 drop trigger if exists organization_users_guard_creator_record on public.organization_users;
 create trigger organization_users_guard_creator_record
@@ -6530,7 +6530,7 @@ create or replace function public.guard_organization_created_at()
 returns trigger
 language plpgsql
 set search_path = ''
-as $
+as $$
 begin
   if new.created_at is distinct from old.created_at then
     raise exception using errcode = '42501',
@@ -6538,7 +6538,7 @@ begin
   end if;
   return new;
 end;
-$;
+$$;
 
 drop trigger if exists organizations_guard_created_at on public.organizations;
 create trigger organizations_guard_created_at
@@ -6554,7 +6554,7 @@ returns trigger
 language plpgsql
 security definer
 set search_path = ''
-as $
+as $$
 declare
   v_new_is_admin boolean := false;
   v_old_is_admin boolean := false;
@@ -6676,7 +6676,7 @@ begin
 
   return new;
 end;
-$;
+$$;
 revoke all on function public.guard_organization_creator_membership() from public, anon, authenticated;
 revoke all on function public.guard_administrator_membership() from public, anon, authenticated;
 
@@ -6692,7 +6692,7 @@ returns uuid
 language plpgsql
 security definer
 set search_path = ''
-as $
+as $$
 declare
   v_user_id uuid;
   v_organization_id uuid;
@@ -6733,7 +6733,7 @@ begin
     raise exception using errcode = '22023',
       message = 'Organization name must contain between 1 and 160 characters.';
   end if;
-  if p_currency is null or p_currency !~ '^[A-Z]{3} then
+  if p_currency is null or p_currency !~ '^[A-Z]{3}$' then
     raise exception using errcode = '22023',
       message = 'Currency must be a three-letter uppercase ISO currency code.';
   end if;
@@ -6768,7 +6768,7 @@ begin
 
   return v_organization_id;
 end;
-$;
+$$;
 revoke all on function public.create_organization_with_admin(text,text,text) from public, anon;
 grant execute on function public.create_organization_with_admin(text,text,text) to authenticated;
 
@@ -7370,7 +7370,7 @@ begin
   if p_name is null
      or pg_catalog.length(pg_catalog.btrim(p_name)) not between 1 and 160
      or p_currency is null
-     or p_currency !~ '^[A-Z]{3}
+     or p_currency !~ '^[A-Z]{3}$'
      or p_timezone is null
      or not exists (
        select 1
