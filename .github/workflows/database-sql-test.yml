@@ -86,18 +86,11 @@ jobs:
           GRANT EXECUTE ON FUNCTION auth.uid() TO anon, authenticated;
           SQL
 
-      - name: Apply canonical database bootstrap
+      - name: Apply the single canonical initial database schema
         run: |
           # The bootstrap file manages its own BEGIN/COMMIT transaction.
-          psql -X -v ON_ERROR_STOP=1 -f supabase/initial_database_schema.sql
-
-      - name: Apply incremental database migrations
-        run: |
-          for migration in supabase/migrations/*.sql; do
-            [ -f "$migration" ] || continue
-            echo "Applying $migration"
-            psql -X -v ON_ERROR_STOP=1 --file "$migration"
-          done
+          psql -X -v ON_ERROR_STOP=1 \
+            --file supabase/migrations/20261103000000_initial_database_schema.sql
 
       - name: Run database schema smoke tests
         run: |
