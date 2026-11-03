@@ -6057,8 +6057,7 @@ begin
     group by a.id,a.account_code,a.account_name,a.account_type
     having sum(atx.debit-atx.credit)<>0
   ), current_earnings as (
-    select coalesce(sum(case when a.account_type='revenue' then atx.credit-atx.debit
-      else atx.debit-atx.credit end),0)::numeric as amount
+    select coalesce(sum(atx.credit-atx.debit),0)::numeric as amount
     from public.accounts a
     join public.account_transactions atx on atx.organization_id=a.organization_id and atx.account_id=a.id
     join public.journal_entries je on je.organization_id=atx.organization_id and je.id=atx.journal_entry_id
