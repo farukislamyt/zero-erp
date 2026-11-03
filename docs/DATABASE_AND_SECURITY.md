@@ -450,6 +450,7 @@ The opening balance workflow intentionally introduces no staging or sub-ledger t
 - Two concurrent attempts to activate memberships in different companies for the same user cannot both commit. After deactivation, another company may add the user while the old inactive history remains.
 - Reactivation is rejected while the user is active in another company; the permanent creator record is never reactivated as an ordinary membership.
 - An unverified or unknown email cannot be added, and no invitation/account-creation side effect occurs.
+- If an Administrator handover races with a member/role/profile RPC, a request from the former Administrator must fail after it obtains the organization lock.
 
 ### Accounting
 - Unbalanced journals cannot post.
