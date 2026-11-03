@@ -285,12 +285,21 @@ as $$
 declare
   v_company_creation_allowed boolean :=
     coalesce(pg_catalog.current_setting('app.allow_company_creation', true), '') = 'on';
+  v_org_created_at timestamptz;
 begin
   if tg_op = 'INSERT' then
-    if new.is_system_role and new.name = 'Administrator'
-       and (not v_company_creation_allowed or (select auth.uid()) is null) then
-      raise exception using errcode = '42501',
-        message = 'The system Administrator role can only be created by the authenticated organization-creation workflow.';
+    if new.is_system_role and new.name = 'Administrator' then
+      select o.created_at
+        into v_org_created_at
+      from public.organizations o
+      where o.id = new.organization_id;
+
+      if not v_company_creation_allowed
+         or (select auth.uid()) is null
+         or new.created_at is distinct from v_org_created_at then
+        raise exception using errcode = '42501',
+          message = 'The system Administrator role can only be created by the authenticated organization-creation workflow and must share the organization creation timestamp.';
+      end if;
     end if;
     return new;
   end if;
@@ -417,8 +426,20 @@ begin
 
   perform pg_catalog.set_config('app.allow_company_creation', 'on', true);
 
-  insert into public.roles (organization_id, name, status, is_system_role)
-  values (v_organization_id, 'Administrator', 'active', true)
+  insert into public.roles (
+    organization_id,
+    name,
+    status,
+    is_system_role,
+    created_at
+  )
+  values (
+    v_organization_id,
+    'Administrator',
+    'active',
+    true,
+    v_created_at
+  )
   returning id into v_role_id;
 
   insert into public.role_permissions (role_id, permission_id)
