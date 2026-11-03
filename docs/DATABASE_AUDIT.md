@@ -2,7 +2,7 @@
 
 **Audit date:** 2026-11-03  
 **Branch:** `feat/database-migrations`  
-**Scope:** Static, line-by-line review of `supabase/migrations/20261103000000_initial_database_schema.sql` (4,751 lines at the current revision), the database smoke test, workflow, README, and database blueprint.  
+**Scope:** Static, line-by-line review of `supabase/migrations/20261103000000_initial_database_schema.sql` (7,566 lines at the current revision), the database smoke test, workflow, README, and database blueprint.  
 **Verification boundary:** This is a source audit. It is not a live Supabase audit and does not establish that the SQL has executed successfully on a real Supabase project. PostgreSQL runtime, Auth API, concurrency, and full-year transaction and reconciliation tests remain required. The original creator's Auth account is intentionally non-deletable while its permanent membership anchor exists; use account disable/ban rather than hard deletion.
 
 ## Executive summary
@@ -15,9 +15,9 @@ The schema is a substantial tenant-scoped PostgreSQL foundation, but it is **not
 |---|---:|---|
 | Public tables | 26 | Present |
 | Public RLS policies | 26 | One SELECT policy per table; write policies intentionally absent |
-| Public functions | 27 | Includes helpers, trigger functions, and business RPCs |
-| Triggers | 26 | Includes timestamp, role/admin protection, and hierarchy guards |
-| Explicit indexes | 28 | 24 non-unique and 4 unique indexes; review query plans at scale |
+| Public functions | 53 unique signatures | Includes helpers, trigger functions, and business RPCs |
+| Triggers | 36 | Includes timestamp, creator/admin protection, and hierarchy guards |
+| Explicit indexes | 29 | 24 non-unique and 5 unique indexes, including the one-active-company-per-user constraint; review query plans at scale |
 | Permission keys | 43 | Seeded global permission catalog; no period permissions |
 | Browser write access | 0 direct table writes intended | Mutations must use RPCs |
 
