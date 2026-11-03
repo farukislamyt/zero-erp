@@ -980,6 +980,7 @@ values
   ('roles.manage', 'Manage roles', 'Create and update organization-specific custom roles.', 'roles'),
   ('accounting_periods.read', 'View accounting periods', 'View accounting periods.', 'accounting'),
   ('accounting_periods.manage', 'Manage accounting periods', 'Create and close accounting periods.', 'accounting'),
+  ('opening_balances.post', 'Post opening balances', 'Post an organization''s one-time general ledger, party, and inventory opening balances.', 'accounting'),
   ('accounts.read', 'View chart of accounts', 'View accounts and account hierarchy.', 'accounting'),
   ('accounts.manage', 'Manage chart of accounts', 'Create and update chart of accounts.', 'accounting'),
   ('journal_entries.read', 'View journal entries', 'View journal entries and lines.', 'accounting'),
@@ -1011,15 +1012,6 @@ on conflict (permission_key) do update
 set name = excluded.name,
     description = excluded.description,
     module = excluded.module;
-
--- New permissions are assigned to existing system Administrator roles as part of
--- the same migration, so deployments do not leave a protected admin role incomplete.
-insert into public.role_permissions (role_id, permission_id)
-select r.id, p.id
-from public.roles r
-cross join public.permissions p
-where r.is_system_role and r.name = 'Administrator'
-on conflict (role_id, permission_id) do nothing;
 
 create or replace function public.create_organization_with_admin(
   p_name text,
@@ -1710,28 +1702,6 @@ create unique index journal_entries_one_org_opening_balance_uq
   on public.journal_entries (organization_id)
   where entry_type = 'opening_balance'
     and reference_type = 'organization_opening_balance';
-
--- Add a dedicated permission and grant it to existing Administrator system roles.
-insert into public.permissions (permission_key, name, description, module)
-values (
-  'opening_balances.post',
-  'Post opening balances',
-  'Post an organization''s one-time general ledger, party, and inventory opening balances.',
-  'accounting'
-)
-on conflict (permission_key) do update
-set name = excluded.name,
-    description = excluded.description,
-    module = excluded.module;
-
-insert into public.role_permissions (role_id, permission_id)
-select r.id, p.id
-from public.roles r
-cross join public.permissions p
-where r.is_system_role
-  and r.name = 'Administrator'
-  and p.permission_key = 'opening_balances.post'
-on conflict (role_id, permission_id) do nothing;
 
 create or replace function public.post_opening_balances(
   p_organization_id uuid,
