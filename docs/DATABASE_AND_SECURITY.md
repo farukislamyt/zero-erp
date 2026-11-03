@@ -270,9 +270,9 @@ The database must enforce the following integrity rules using foreign keys, uniq
 Status note: this table distinguishes functions implemented in the current canonical bootstrap from planned contracts. Only rows marked **Implemented** are callable today; planned rows must not be wired into the application until their SQL implementation, grants, and tests are added. Call implemented functions through `supabase.rpc(...)` using their actual signatures.
 
 | Status | RPC contract | Purpose | Required guarantees |
-| --- | --- | --- |
+| --- | --- | --- | --- |
 | Implemented | `create_organization_with_admin(p_name, ...)` | Create organization, protected Administrator role, role-permission links, and creator membership | Single transaction; derive creator from `auth.uid()`; never accept arbitrary creator user ID from an untrusted client |
-| Planned | `assign_member_role(p_membership_id, p_role_id)` | Assign a role to an organization membership | Caller must be authorized Administrator; role and membership must belong to the same organization |
+| Implemented | `update_organization_user_role(p_organization_id, p_membership_id, p_role_id)` | Assign a role to an organization membership | Caller must have member-management permission; role and membership must belong to the same organization |
 | Planned | `create_custom_role(p_organization_id, p_name, p_status)` | Create organization-scoped custom role | Verify caller membership and role-management permission; enforce unique organization/name |
 | Planned | `set_role_permissions(p_role_id, p_permission_ids)` | Replace/update permissions on a custom role | Validate each permission against global catalog; block unsafe modification of protected Administrator role |
 | Implemented | `save_draft_transaction_document(p_organization_id, p_document_type, p_header, p_items, p_document_id)` | Create or update Draft purchase, sales, expense, payment, return, or manual journal documents | Whitelisted fields and child rows only; organization membership and create/manage permission required; only Draft records can be edited; omitting `p_items` preserves existing lines |
