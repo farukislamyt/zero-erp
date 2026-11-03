@@ -2785,6 +2785,84 @@ grant execute on function public.post_sales(uuid, uuid) to authenticated;
 -- TRANSACTION DOCUMENT LIFECYCLE RPCS
 -- ============================================================================
 
+
+create or replace function public.post_confirmed_journal_entry(
+  p_organization_id uuid,
+  p_journal_entry_id uuid
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $
+declare
+  v_user_id uuid := (select auth.uid());
+  v_entry public.journal_entries%rowtype;
+  v_period_status text;
+  v_period_start date;
+  v_period_end date;
+  v_line_count integer;
+  v_debit numeric(20,4);
+  v_credit numeric(20,4);
+begin
+  if v_user_id is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, 'journal_entries.post') then
+    raise exception using errcode = '42501', message = 'You are not authorized to post journal entries for this organization.';
+  end if;
+
+  select * into v_entry
+  from public.journal_entries
+  where organization_id = p_organization_id and id = p_journal_entry_id
+  for update;
+  if not found then
+    raise exception using errcode = '23503', message = 'Journal entry was not found in this organization.';
+  end if;
+  if v_entry.entry_type <> 'manual' or v_entry.status <> 'confirmed' or v_entry.posted_at is not null then
+    raise exception using errcode = '23514', message = 'Only a confirmed, unposted manual journal entry can be posted by this function.';
+  end if;
+
+  select ap.status, ap.start_date, ap.end_date
+    into v_period_status, v_period_start, v_period_end
+  from public.accounting_periods ap
+  where ap.organization_id = p_organization_id and ap.id = v_entry.accounting_period_id
+  for update;
+  if not found then
+    raise exception using errcode = '23503', message = 'Accounting period does not exist in this organization.';
+  end if;
+  if v_period_status <> 'open' or v_entry.entry_date < v_period_start or v_entry.entry_date > v_period_end then
+    raise exception using errcode = '23514', message = 'Journal entry date must fall within an open accounting period.';
+  end if;
+
+  select count(*)::integer, coalesce(sum(atx.debit), 0), coalesce(sum(atx.credit), 0)
+    into v_line_count, v_debit, v_credit
+  from public.account_transactions atx
+  where atx.organization_id = p_organization_id and atx.journal_entry_id = p_journal_entry_id;
+  if v_line_count < 2 or v_debit <= 0 or v_debit <> v_credit then
+    raise exception using errcode = '23514', message = 'Journal entry must have at least two lines and balanced debits and credits.';
+  end if;
+
+  if exists (
+    select 1
+    from public.account_transactions atx
+    join public.accounts a on a.organization_id = atx.organization_id and a.id = atx.account_id
+    where atx.organization_id = p_organization_id
+      and atx.journal_entry_id = p_journal_entry_id
+      and (not a.is_active or not a.is_postable)
+  ) then
+    raise exception using errcode = '23514', message = 'All journal accounts must be active and postable before posting.';
+  end if;
+
+  update public.journal_entries
+  set status = 'posted', posted_at = pg_catalog.now(), posted_by = v_user_id, updated_at = pg_catalog.now()
+  where organization_id = p_organization_id and id = p_journal_entry_id;
+
+  return p_journal_entry_id;
+end;
+$;
+
+revoke all on function public.post_confirmed_journal_entry(uuid, uuid) from public, anon;
+grant execute on function public.post_confirmed_journal_entry(uuid, uuid) to authenticated;
+
 create or replace function public.confirm_transaction_document(
   p_organization_id uuid,
   p_document_type text,
