@@ -1524,6 +1524,87 @@ The list below is the effective final function set after migration overrides and
 | `public.guard_custom_role_control_plane_permissions` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103010000_organization_membership_security.sql` | Prevents custom roles from being assigned protected RBAC/control-plane permissions. |
 | `public.guard_system_administrator_role` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103020000_permanent_organization_administrator.sql` | Prevents system Administrator role creation outside bootstrap and prevents its later update/delete. |
 
+### Function authorization and relation-touch map
+
+This supplementary map is extracted from the effective function bodies. It records literal permission keys and direct `public` table references found in each body. Dynamic SQL and helper-to-helper calls mean that this map is a navigation aid; the function body remains authoritative.
+
+| Function | Direct permission key(s) | Auth identity access | Direct public tables referenced |
+|---|---|---|---|
+| `public.set_updated_at` | No literal permission key found in function body | No direct auth.uid() reference | No direct public-table reference detected |
+| `public.prevent_account_hierarchy_cycle` | No literal permission key found in function body | No direct auth.uid() reference | accounts |
+| `public.is_active_org_member` | No literal permission key found in function body | Reads auth.uid() | organization_users, organizations |
+| `public.has_org_permission` | No literal permission key found in function body | Reads auth.uid() | organization_users, organizations, permissions, role_permissions, roles |
+| `public.next_document_number` | Dynamic permission key (computed in function body) | Reads auth.uid() | number_sequences |
+| `public.create_organization_with_admin` | No literal permission key found in function body | Reads auth.uid() | organization_users, organizations, permissions, role_permissions, roles |
+| `public.guard_system_role_mutation` | No literal permission key found in function body | No direct auth.uid() reference | No direct public-table reference detected |
+| `public.guard_administrator_membership` | No literal permission key found in function body | Reads auth.uid() | organization_users, organizations, roles |
+| `public.guard_system_role_permissions` | No literal permission key found in function body | No direct auth.uid() reference | roles |
+| `public.add_organization_user_by_email` | No literal permission key found in function body | Reads auth.uid() | organization_users, organizations, roles |
+| `public.update_organization_user_role` | No literal permission key found in function body | Reads auth.uid() | organization_users, organizations, roles |
+| `public.set_organization_user_active` | No literal permission key found in function body | Reads auth.uid() | organization_users, organizations, roles |
+| `public.post_manual_journal_entry` | `journal_entries.create`, `journal_entries.post` | Reads auth.uid() | account_transactions, accounts, contacts, journal_entries |
+| `public.post_purchase` | `purchases.post` | Reads auth.uid() | account_transactions, accounts, contacts, inventory_balances, inventory_transactions, journal_entries, organizations, products, purchase, purchase_items |
+| `public.post_opening_balances` | `opening_balances.post` | Reads auth.uid() | account_transactions, accounts, contacts, inventory_balances, inventory_transactions, journal_entries, organizations, products |
+| `public.post_contact_payment` | `payments.post` | Reads auth.uid() | account_transactions, accounts, contacts, journal_entries, organizations, payments |
+| `public.post_sales` | `sales.post` | Reads auth.uid() | account_transactions, accounts, contacts, inventory_balances, inventory_transactions, journal_entries, organizations, products, sales, sales_items |
+| `public.reverse_journal_entry` | `journal_entries.reverse` | Reads auth.uid() | account_transactions, contacts, expenses, inventory_balances, inventory_transactions, journal_entries, organizations, payments, purchase, purchase_items, purchase_return_items, purchase_returns, sales, sales_items, sales_return_items, sales_returns |
+| `public.post_expense` | `expenses.post` | Reads auth.uid() | account_transactions, accounts, contacts, expense_categories, expenses, journal_entries, organizations |
+| `public.post_purchase_return` | `purchases.returns.post` | Reads auth.uid() | account_transactions, accounts, contacts, inventory_balances, inventory_transactions, journal_entries, organizations, products, purchase, purchase_items, purchase_return_items, purchase_returns |
+| `public.post_sales_return` | `sales.returns.post` | Reads auth.uid() | account_transactions, accounts, contacts, inventory_balances, inventory_transactions, journal_entries, organizations, products, sales, sales_items, sales_return_items, sales_returns |
+| `public.post_confirmed_journal_entry` | `journal_entries.post` | Reads auth.uid() | account_transactions, accounts, contacts, journal_entries, organizations |
+| `public.save_draft_transaction_document` | Dynamic permission key (computed in function body) | Reads auth.uid() | No direct public-table reference detected |
+| `public.confirm_transaction_document` | Dynamic permission key (computed in function body) | Reads auth.uid() | account_transactions, accounts, contacts, expense_categories, expenses, payments, purchase, purchase_items, purchase_return_items, purchase_returns, sales, sales_items, sales_return_items, sales_returns |
+| `public.revert_transaction_document_to_draft` | Dynamic permission key (computed in function body) | Reads auth.uid() | No direct public-table reference detected |
+| `public.void_transaction_document` | Dynamic permission key (computed in function body) | Reads auth.uid() | No direct public-table reference detected |
+| `public.delete_draft_transaction_document` | Dynamic permission key (computed in function body) | Reads auth.uid() | account_transactions, payment_allocations, purchase_items, purchase_return_items, sales_items, sales_return_items |
+| `public.seed_default_chart_of_accounts` | No literal permission key found in function body | No direct auth.uid() reference | accounts, expense_categories, number_sequences, organizations |
+| `public.assign_document_number` | No literal permission key found in function body | No direct auth.uid() reference | No direct public-table reference detected |
+| `public.update_organization_profile` | No literal permission key found in function body | Reads auth.uid() | organizations |
+| `public.save_master_data` | Dynamic permission key (computed in function body) | Reads auth.uid() | account_transactions, accounts, contacts, expense_categories, inventory_balances, inventory_transactions, journal_entries, organizations, products, units_of_measure |
+| `public.create_custom_role` | No literal permission key found in function body | Reads auth.uid() | organizations, permissions, role_permissions, roles |
+| `public.replace_custom_role_permissions` | No literal permission key found in function body | Reads auth.uid() | organizations, permissions, role_permissions, roles |
+| `public.validate_payment_allocations` | No literal permission key found in function body | No direct auth.uid() reference | accounts, expenses, payment_allocations, payments, purchase, purchase_returns, sales, sales_returns |
+| `public.set_payment_allocations` | `payments.manage` | Reads auth.uid() | payment_allocations, payments |
+| `public.post_inventory_adjustment` | `inventory.adjust` | Reads auth.uid() | account_transactions, accounts, inventory_balances, inventory_transactions, journal_entries, organizations, products |
+| `public.report_trial_balance` | `reports.read` | Reads auth.uid() | account_transactions, accounts, journal_entries |
+| `public.report_general_ledger` | `reports.read` | Reads auth.uid() | account_transactions, accounts, journal_entries |
+| `public.report_profit_and_loss` | `reports.read` | Reads auth.uid() | account_transactions, accounts, journal_entries |
+| `public.report_balance_sheet` | `reports.read` | Reads auth.uid() | account_transactions, accounts, journal_entries |
+| `public.report_inventory_valuation` | `inventory.read` | Reads auth.uid() | inventory_transactions, products |
+| `public.report_contact_balances` | `reports.read` | Reads auth.uid() | account_transactions, accounts, contacts, journal_entries |
+| `public.report_receivables_aging` | `reports.read` | Reads auth.uid() | contacts, payment_allocations, payments, sales, sales_returns |
+| `public.report_payables_aging` | `reports.read` | Reads auth.uid() | contacts, expenses, payment_allocations, payments, purchase, purchase_returns |
+| `public.report_unapplied_payments` | `reports.read` | Reads auth.uid() | contacts, payment_allocations, payments |
+| `public.validate_role_assignment` | No literal permission key found in function body | Reads auth.uid() | organizations, roles |
+| `public.update_custom_role` | No literal permission key found in function body | Reads auth.uid() | organization_users, organizations, roles |
+| `public.is_organization_creator` | No literal permission key found in function body | No direct auth.uid() reference | organization_users, organizations |
+| `public.is_org_administrator` | No literal permission key found in function body | Reads auth.uid() | organization_users, organizations, roles |
+| `public.guard_organization_creator_membership` | No literal permission key found in function body | Reads auth.uid() | organization_users, organizations, roles |
+| `public.guard_organization_created_at` | No literal permission key found in function body | No direct auth.uid() reference | No direct public-table reference detected |
+| `public.guard_custom_role_control_plane_permissions` | No literal permission key found in function body | No direct auth.uid() reference | permissions, roles |
+| `public.guard_system_administrator_role` | No literal permission key found in function body | Reads auth.uid() | organizations |
+
+## Migration preflight invariants
+
+### Migration 0100 — organization membership security
+
+Before applying the membership-security migration, its preflight checks that:
+- no Auth user has active memberships in more than one organization;
+- each organization has exactly one membership row anchored by the same `created_at` timestamp as the organization; and
+- every organization has an active Administrator.
+
+It then creates the partial unique index that enforces one active organization membership per Auth user.
+
+### Migration 0200 — permanent Administrator
+
+Before applying the permanent-Administrator migration, its preflight checks that:
+- every organization has exactly one original creator membership timestamp anchor;
+- the original creator membership is active and holds the active system Administrator role;
+- each organization has exactly one active Administrator; and
+- any Administrator membership is the original creator anchor and has a non-null Auth user.
+
+The migration fails closed if these conditions are not already true. It does not guess the original creator or automatically undo an earlier Administrator transfer.
+
 ### Historical / removed function
 
 - `public.transfer_organization_administrator(uuid, uuid)`: introduced by migration 0100 and granted to `authenticated` in that historical migration; dropped by migration 0200. It is **not callable and does not exist** after the full migration chain.
