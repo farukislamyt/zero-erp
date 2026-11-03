@@ -1677,7 +1677,7 @@ begin
   values (
     p_organization_id,
     pg_catalog.btrim(p_entry_number),
-    p_p_entry_date,
+    p_entry_date,
     'manual',
     'posted',
     nullif(pg_catalog.btrim(coalesce(p_description, '')), ''),
@@ -2315,7 +2315,7 @@ begin
     posted_at, posted_by, created_by
   )
   values (
-    p_organization_id, v_entry_number, p_p_entry_date,
+    p_organization_id, v_entry_number, p_entry_date,
     'opening_balance', 'posted', 'organization_opening_balance',
     p_organization_id, nullif(pg_catalog.btrim(coalesce(p_description, '')), ''),
     pg_catalog.now(), v_user_id, v_user_id
@@ -2462,7 +2462,7 @@ create unique index journal_entries_payment_reference_uq
 
 create or replace function public.post_contact_payment(
   p_organization_id uuid,
-  p_payment_id uuid,
+  p_payment_id uuid
 )
 returns uuid
 language plpgsql
@@ -2532,7 +2532,7 @@ begin
       posted_at, posted_by, created_by
     )
     values (
-      p_organization_id, v_entry_number, p_v_payment.payment_date,
+      p_organization_id, v_entry_number, v_payment.payment_date,
       'payment', 'posted', 'payment', v_payment.id,
       coalesce(nullif(pg_catalog.btrim(v_payment.description), ''), 'Bank transfer ' || v_payment.payment_number),
       pg_catalog.now(), v_user_id, v_user_id
@@ -2619,7 +2619,7 @@ begin
       posted_at, posted_by, created_by
     )
     values (
-      p_organization_id, v_entry_number, p_v_payment.payment_date,
+      p_organization_id, v_entry_number, v_payment.payment_date,
       'payment', 'posted', 'payment', v_payment.id,
       coalesce(nullif(pg_catalog.btrim(v_payment.description), ''),
         case v_payment.payment_type
