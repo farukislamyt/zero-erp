@@ -49,6 +49,8 @@ DECLARE
   v_third_user_id uuid := '00000000-0000-0000-0000-000000000003';
   v_manager_role_id uuid;
   v_third_membership_id uuid;
+  v_creator_membership_id uuid;
+  v_unverified_user_id uuid := '00000000-0000-0000-0000-000000000005';
   v_fourth_membership_first_org uuid;
   v_fourth_membership_second_org uuid;
   v_second_member_role_id uuid;
@@ -607,6 +609,20 @@ BEGIN
   IF (SELECT count(*) FROM public.role_permissions WHERE role_id=v_role_id) <> 1 THEN
     RAISE EXCEPTION 'Custom role permission replacement failed';
   END IF;
+  BEGIN
+    INSERT INTO public.role_permissions(role_id,permission_id)
+    SELECT v_role_id,p.id FROM public.permissions p
+    WHERE p.permission_key='users.manage';
+    RAISE EXCEPTION 'Direct SQL inserted users.manage into a custom role';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO public.role_permissions(role_id,permission_id)
+    SELECT v_role_id,p.id FROM public.permissions p
+    WHERE p.permission_key='roles.manage';
+    RAISE EXCEPTION 'Direct SQL inserted roles.manage into a custom role';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
 
   PERFORM public.update_custom_role(
     v_test_organization_id,v_role_id,'Smoke Sales Clerk Renamed','inactive'
@@ -628,6 +644,10 @@ BEGIN
     v_test_organization_id,'Smoke Member Manager',ARRAY['users.read']
   );
   INSERT INTO auth.users(id) VALUES(v_third_user_id) ON CONFLICT(id) DO NOTHING;
+  INSERT INTO auth.users(id,email,email_confirmed_at)
+  VALUES(v_unverified_user_id,'unverified.member@example.invalid',NULL)
+  ON CONFLICT(id) DO UPDATE
+    SET email=excluded.email,email_confirmed_at=NULL;
   INSERT INTO public.organization_users(organization_id,user_id,role_id,is_active)
   VALUES(v_test_organization_id,v_third_user_id,v_manager_role_id,true)
   RETURNING id INTO v_third_membership_id;
@@ -641,14 +661,89 @@ BEGIN
     RAISE EXCEPTION 'A delegated member manager promoted themselves to Administrator';
   EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
   END;
+  BEGIN
+    PERFORM public.create_custom_role(
+      v_test_organization_id,'Forbidden Non-Admin Role',ARRAY['contacts.read']
+    );
+    RAISE EXCEPTION 'A non-Administrator created a custom role';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+  BEGIN
+    PERFORM public.replace_custom_role_permissions(
+      v_test_organization_id,v_role_id,ARRAY['sales.read']
+    );
+    RAISE EXCEPTION 'A non-Administrator changed custom-role permissions';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true
   );
+  SELECT ou.id INTO v_creator_membership_id
+  FROM public.organization_users ou
+  JOIN public.organizations o
+    ON o.id=ou.organization_id AND ou.created_at=o.created_at
+  WHERE ou.organization_id=v_test_organization_id
+    AND ou.user_id='00000000-0000-0000-0000-000000000001';
+  IF v_creator_membership_id IS NULL
+     OR NOT public.is_organization_creator(v_test_organization_id,'00000000-0000-0000-0000-000000000001') THEN
+    RAISE EXCEPTION 'The permanent company-creator membership anchor was not established';
+  END IF;
+
+  BEGIN
+    UPDATE public.organization_users SET role_id=v_manager_role_id
+    WHERE id=v_creator_membership_id;
+    RAISE EXCEPTION 'The original creator Administrator role was changed';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+  BEGIN
+    DELETE FROM public.organization_users WHERE id=v_creator_membership_id;
+    RAISE EXCEPTION 'The permanent creator membership was deleted';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+  BEGIN
+    UPDATE public.organization_users
+    SET created_at=pg_catalog.clock_timestamp()
+    WHERE id=v_creator_membership_id;
+    RAISE EXCEPTION 'The permanent creator timestamp was changed';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+  BEGIN
+    UPDATE public.organizations
+    SET created_at=pg_catalog.clock_timestamp()
+    WHERE id=v_test_organization_id;
+    RAISE EXCEPTION 'The organization creation timestamp was changed';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+  BEGIN
+    UPDATE public.organization_users
+    SET created_at=(SELECT created_at FROM public.organizations WHERE id=v_test_organization_id)
+    WHERE id=v_third_membership_id;
+    RAISE EXCEPTION 'An ordinary membership forged the creator timestamp';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO public.organization_users(
+      organization_id,user_id,role_id,is_active,created_at
+    )
+    SELECT v_test_organization_id,v_unverified_user_id,v_manager_role_id,false,o.created_at
+    FROM public.organizations o WHERE o.id=v_test_organization_id;
+    RAISE EXCEPTION 'A second creator timestamp anchor was inserted';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+
   -- Add a pre-existing, email-verified account. No invitation is sent.
   INSERT INTO auth.users(id,email,email_confirmed_at)
   VALUES(v_fourth_user_id,'verified.member@example.invalid',pg_catalog.now())
   ON CONFLICT(id) DO UPDATE
     SET email=excluded.email,email_confirmed_at=excluded.email_confirmed_at;
+
+  BEGIN
+    PERFORM public.add_organization_user_by_email(
+      v_test_organization_id,'unverified.member@example.invalid',v_manager_role_id
+    );
+    RAISE EXCEPTION 'An unverified Auth account was added to a company';
+  EXCEPTION WHEN SQLSTATE 'P0002' THEN NULL;
+  END;
 
   v_added_membership_id := public.add_organization_user_by_email(
     v_test_organization_id,'verified.member@example.invalid',v_manager_role_id
@@ -1011,6 +1106,48 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'One-active-company-per-user unique index is missing';
   END IF;
+
+  -- Transfer Administrator away from the creator. The original row remains
+  -- permanently present and inactive, even after the handover.
+  PERFORM public.transfer_organization_administrator(
+    v_test_organization_id,v_third_membership_id
+  );
+
+  IF (SELECT is_active FROM public.organization_users WHERE id=v_creator_membership_id) IS DISTINCT FROM false
+     OR NOT public.is_organization_creator(v_test_organization_id,'00000000-0000-0000-0000-000000000001')
+     OR (SELECT count(*) FROM public.organization_users ou
+         JOIN public.roles r ON r.id=ou.role_id AND r.organization_id=ou.organization_id
+         WHERE ou.organization_id=v_test_organization_id AND ou.is_active
+           AND r.is_system_role AND r.name='Administrator') <> 1 THEN
+    RAISE EXCEPTION 'Administrator handover did not preserve the creator anchor and exactly one active Administrator';
+  END IF;
+
+  BEGIN
+    PERFORM public.create_organization_with_admin(
+      'Forbidden second company','BDT','Asia/Dhaka'
+    );
+    RAISE EXCEPTION 'The original creator created a second company after handover';
+  EXCEPTION WHEN SQLSTATE '23505' THEN
+    IF SQLERRM NOT LIKE '%already created a company%' THEN RAISE; END IF;
+  END;
+
+  BEGIN
+    UPDATE public.organization_users SET is_active=true
+    WHERE id=v_creator_membership_id;
+    RAISE EXCEPTION 'The permanent creator record was reactivated';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+
+  IF public.is_org_administrator(v_test_organization_id) THEN
+    RAISE EXCEPTION 'The outgoing Administrator retained administrative authority after handover';
+  END IF;
+  PERFORM pg_catalog.set_config('request.jwt.claim.sub',v_third_user_id::text,true);
+  IF NOT public.is_org_administrator(v_test_organization_id) THEN
+    RAISE EXCEPTION 'The incoming Administrator did not receive administrative authority';
+  END IF;
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true
+  );
 
   RAISE NOTICE
     'PASS: % tables, % RLS policies, RPC grants, no direct table writes, organization setup, sequence controls, SECURITY DEFINER search_path, and integrity triggers verified',
