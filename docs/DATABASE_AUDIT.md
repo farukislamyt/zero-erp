@@ -31,7 +31,7 @@ The schema is a substantial tenant-scoped PostgreSQL foundation, but it is **not
 6. **Write boundary:** direct table writes are revoked from `anon` and `authenticated`; exposed business writes are intended to go through permission-checked RPCs.
 7. **Document lifecycle:** draft save, confirmation, revert-to-draft, void, and draft deletion RPCs exist for supported document types.
 8. **Posting paths:** purchase, sales, purchase return, sales return, expense, contact payment, opening balances, manual journal confirmation/posting, and supported journal reversals have dedicated database routines.
-9. **Accounting/inventory controls:** period overlap and account hierarchy cycle guards exist; posting routines validate period dates and open status; inventory balances reject negative quantity/value; posting routines update ledger and stock within the same transaction.
+9. **Accounting/inventory controls:** account hierarchy cycle guards exist; posting routines validate transaction data and update ledger and stock within the same transaction; inventory balances reject negative quantity/value.
 10. **Security-definer hygiene:** security-definer functions pin an empty search path; trigger-only functions are explicitly revoked from client roles.
 11. **Administrator protection:** system Administrator role protection and last-active-Administrator protection are implemented.
 12. **Sales return cap:** confirmation/posting constrains returned net value to the proportional original net value of the returned source lines.
@@ -65,7 +65,7 @@ These are genuine blockers for a complete end-to-end ERP workflow. They are not 
 | P0 | Accounting period creation | `accounting_periods.manage` exists, but there is no create-period RPC and direct writes are revoked. A company cannot create its first period through the client. | Create-period RPC with permission, date validation, overlap serialization, and lifecycle rules. |
 | P0 | Financial-year closing | Period status supports `closed`, but there is no close RPC, P&L close journal, retained-earnings transfer, close validation, or close idempotency. | Full close workflow: pre-close checks, P&L calculation, balanced closing journal, period lock, and next-year carry-forward. |
 | P0 | Master-data CRUD | No permission-checked create/update RPCs for accounts, contacts, products, units, or expense categories. Direct client writes are revoked. | Add validated create/update/activation RPCs for each master-data domain. |
-| P0 | Chart-of-accounts initialization | Organization creation creates only the tenant and Administrator. It does not seed a usable chart of accounts, accounting period, cash/bank, AR/AP control, revenue, COGS, inventory, or expense accounts. | Define a reviewed default COA template and an idempotent organization setup routine; allow controlled customization. |
+| P0 | Chart-of-accounts initialization | Organization creation creates only the tenant and Administrator. It does not seed a usable chart of accounts, cash/bank, AR/AP control, revenue, COGS, inventory, or expense accounts. | Define a reviewed default COA template and an idempotent organization setup routine; allow controlled customization. |
 | P0 | Full Auth lifecycle tests | Current CI uses plain PostgreSQL and a minimal `auth.uid()` shim. It does not test real Supabase signup, email verification, login, JWT claims, refresh, or logout. | Run Supabase local stack and test Auth HTTP endpoints with real local JWTs. |
 | P1 | Custom roles | `roles.manage` exists, but there is no custom-role creation or permission-editing RPC. Administrators cannot configure custom roles safely. | Add create/update role and replace-permissions RPCs; protect Administrator and prevent privilege escalation. |
 | P1 | Inventory adjustments | `inventory.adjust` exists, but there is no adjustment document or posting RPC. Stock corrections cannot be performed through the supported client boundary. | Add adjustment header/lines or a controlled adjustment RPC that posts inventory and GL effects atomically. |
@@ -83,7 +83,7 @@ These are genuine blockers for a complete end-to-end ERP workflow. They are not 
 - The one-step `post_manual_journal_entry` function is intentionally not executable by browser roles. Manual journals should use Draft → Confirmed → `post_confirmed_journal_entry`; do not re-enable the legacy shortcut.
 - `post_contact_payment` is a contact-level settlement model. It correctly refuses invoice-allocation rows rather than silently ignoring them.
 - `payment_allocations` should be treated as dormant schema until its validation and posting semantics are implemented.
-- `create_organization_with_admin` does not create the initial accounting period or chart of accounts. The product onboarding workflow must not present a newly created organization as ready to transact until setup is completed.
+- `create_organization_with_admin` does not create the initial chart of accounts. The product onboarding workflow must not present a newly created organization as ready to transact until setup is completed.
 - The current schema assigns one role per membership. Multiple roles per user per organization would require a deliberate data-model migration.
 - Contact records do not currently carry a customer/supplier discriminator. Workflows must validate party role from transaction context or introduce a controlled classification model.
 - The bootstrap is a one-time empty-database script, not a production migration. Never apply it to a populated database.
@@ -112,4 +112,10 @@ These are genuine blockers for a complete end-to-end ERP workflow. They are not 
 6. Add Supabase local-stack Auth and multi-tenant integration tests.
 7. Add a deterministic full-year scenario and reconcile subledgers, inventory valuation, trial balance, P&L, balance sheet, and next-year opening balances.
 
-**Release assessment:** do not treat the database as production-ready for full-company operations or year-end closing until the P0 gaps and the real Supabase integration tests are completed and passing.
+## Architecture decision: accounting periods removed (2026-11-03)
+
+The product owner explicitly confirmed that the accounting-period subsystem is to be removed entirely. The canonical bootstrap no longer defines `accounting_periods`, its RLS policy/trigger/index, `journal_entries.accounting_period_id`, period permissions, period lookup/locking checks, or period arguments in posting RPCs. Journal entries and operational documents use their own transaction dates. There is no period close or period lock. Financial reporting should use explicit date ranges; any future financial-year closing feature must be designed as a separate date-range-based workflow and must not reintroduce accounting periods without a new product decision.
+
+This removal intentionally removes the ability to block backdated postings by closing a period. Posted entries remain subject to existing reversal/adjustment lifecycle controls. No live database migration has been run; the bootstrap is still for new/empty databases only.
+
+**Release assessment:** do not treat the database as production-ready for full-company operations until the remaining P0 gaps and real Supabase integration tests are completed and passing.
