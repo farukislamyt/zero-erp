@@ -13,14 +13,8 @@ begin;
 
 -- ============================================================================
 -- CORE FOUNDATION
--- Source: 20261102000100_core_foundation.sql
 -- ============================================================================
 
--- Zero ERP: tenant, RBAC, accounting setup, and master-data foundation
--- Migration: 20261102000100_core_foundation.sql
--- Apply through Supabase CLI after reviewing against the target project's existing schema.
--- This migration creates the foundational objects only; transaction tables and their RPCs
--- are introduced in subsequent migrations.
 
 -- Shared timestamp trigger function.
 create or replace function public.set_updated_at()
@@ -409,10 +403,8 @@ grant select on public.organizations, public.organization_users, public.roles,
 to authenticated;
 
 
-
 -- ============================================================================
 -- TRANSACTION SCHEMA
--- Source: 20261102000200_transaction_schema.sql
 -- ============================================================================
 
 -- Zero ERP: ledger, inventory, purchasing, sales, expenses, and payments
@@ -868,6 +860,9 @@ create index journal_entries_period_idx on public.journal_entries (organization_
 create unique index journal_entries_one_reversal_per_entry_uq
   on public.journal_entries (organization_id, reversal_of_id) where reversal_of_id is not null;
 create index account_transactions_account_idx on public.account_transactions (organization_id, account_id);
+create index account_transactions_org_account_contact_idx
+  on public.account_transactions (organization_id, account_id, contact_id)
+  where contact_id is not null;
 create index inventory_transactions_product_date_idx
   on public.inventory_transactions (organization_id, product_id, transaction_date desc);
 create index purchase_supplier_date_idx on public.purchase (organization_id, supplier_id, invoice_date desc);
@@ -971,15 +966,10 @@ grant select on public.journal_entries, public.account_transactions,
   public.expenses, public.payments, public.payment_allocations to authenticated;
 
 
-
 -- ============================================================================
 -- RBAC BOOTSTRAP
--- Source: 20261102000300_rbac_bootstrap.sql
 -- ============================================================================
 
--- Zero ERP: permission catalog, organization bootstrap, and Administrator safeguards
--- Migration: 20261102000300_rbac_bootstrap.sql
--- Depends on 20261102000100_core_foundation.sql.
 
 insert into public.permissions (permission_key, name, description, module)
 values
@@ -1230,10 +1220,8 @@ revoke all on function public.guard_administrator_membership() from public, anon
 revoke all on function public.guard_system_role_permissions() from public, anon, authenticated;
 
 
-
 -- ============================================================================
 -- MANUAL JOURNAL POSTING RPC
--- Source: 20261102000400_manual_journal_posting_rpc.sql
 -- ============================================================================
 
 -- Zero ERP: atomic balanced manual journal posting RPC
@@ -1456,10 +1444,8 @@ grant execute on function public.post_manual_journal_entry(uuid, text, uuid, dat
   to authenticated;
 
 
-
 -- ============================================================================
 -- PURCHASE POSTING RPC
--- Source: 20261102000500_purchase_posting_rpc.sql
 -- ============================================================================
 
 -- Zero ERP: controlled purchase posting with inventory valuation and ledger effects.
@@ -1712,15 +1698,12 @@ revoke all on function public.post_purchase(uuid, uuid) from public, anon;
 grant execute on function public.post_purchase(uuid, uuid) to authenticated;
 
 
-
 -- ============================================================================
 -- OPENING BALANCES
--- Source: 20261103000100_opening_balances_existing_tables.sql
 -- ============================================================================
 
 -- Zero ERP: one-time opening balances using existing ledger and inventory tables only.
 -- No new tables are introduced.
--- Depends on migrations 001-005.
 
 -- A single organization-level opening journal is allowed. Corrections after posting
 -- must use the normal reversal/adjustment workflow, not a second opening post.
@@ -2223,10 +2206,8 @@ grant execute on function public.post_opening_balances(uuid, uuid, date, jsonb, 
   to authenticated;
 
 
-
 -- ============================================================================
 -- CONTACT PAYMENT AND RECEIPT POSTING RPC
--- Source: 20261103000200_contact_payment_receipt_posting_rpc.sql
 -- ============================================================================
 
 -- Zero ERP: contact-wise receipt/payment posting against existing party control ledgers.
@@ -2237,10 +2218,6 @@ create unique index journal_entries_payment_reference_uq
   where entry_type = 'payment'
     and reference_type = 'payment'
     and reference_id is not null;
-
-create index account_transactions_party_balance_idx
-  on public.account_transactions (organization_id, account_id, contact_id)
-  where contact_id is not null;
 
 create or replace function public.post_contact_payment(
   p_organization_id uuid,
@@ -2487,10 +2464,8 @@ grant execute on function public.post_contact_payment(uuid, uuid, uuid)
   to authenticated;
 
 
-
 -- ============================================================================
 -- SALES POSTING RPC
--- Source: 20261103000300_sales_posting_rpc.sql
 -- ============================================================================
 
 -- Zero ERP: atomic sales posting with contact-wise receivables, revenue, COGS and stock effects.
@@ -2500,10 +2475,6 @@ grant execute on function public.post_contact_payment(uuid, uuid, uuid)
 create unique index if not exists journal_entries_sales_reference_uq
   on public.journal_entries (organization_id, reference_type, reference_id)
   where entry_type = 'sale' and reference_type = 'sale' and reference_id is not null;
-
-create index if not exists account_transactions_org_account_contact_idx
-  on public.account_transactions (organization_id, account_id, contact_id)
-  where contact_id is not null;
 
 create or replace function public.post_sales(
   p_organization_id uuid,
