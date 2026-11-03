@@ -117,7 +117,7 @@ BEGIN
        FROM pg_catalog.pg_class c
        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
        WHERE n.nspname = 'public'
-         AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+         AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'i', 'S')
          AND c.relname ~* 'period'
      )
      OR EXISTS (
@@ -143,6 +143,21 @@ BEGIN
            coalesce(array_to_string(p.proargnames, ','), '') ~* 'period'
            OR p.prosrc ILIKE '%period%'
          )
+     )
+     OR EXISTS (
+       SELECT 1
+       FROM pg_catalog.pg_constraint con
+       JOIN pg_catalog.pg_class c ON c.oid = con.conrelid
+       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public'
+         AND con.conname ~* 'period'
+     )
+     OR EXISTS (
+       SELECT 1
+       FROM pg_catalog.pg_type ty
+       JOIN pg_catalog.pg_namespace n ON n.oid = ty.typnamespace
+       WHERE n.nspname = 'public'
+         AND ty.typname ~* 'period'
      )
      OR EXISTS (
        SELECT 1
