@@ -274,6 +274,7 @@ These RPC contracts define the database operations exposed to the application. E
 | `create_custom_role(p_organization_id, p_name, p_status)` | Create organization-scoped custom role | Verify caller membership and role-management permission; enforce unique organization/name |
 | `set_role_permissions(p_role_id, p_permission_ids)` | Replace/update permissions on a custom role | Validate each permission against global catalog; block unsafe modification of protected Administrator role |
 | `post_journal_entry(p_entry_id)` | Validate and post a journal entry | Balance debits/credits; check period, organization, permissions, idempotency; commit status and posting atomically |
+| `post_opening_balances(p_organization_id, p_accounting_period_id, p_entry_date, p_account_lines, p_party_balances, p_inventory_lines, p_description)` | One-time organization opening balance initialization using existing tables only | Derive customer receivables and supplier payables from contact-tagged control-account lines; derive inventory value from product opening quantities/costs; balance the journal; lock the organization/period; initialize stock; reject duplicate opening posts; commit all effects atomically |
 | `reverse_journal_entry(p_entry_id, p_date, p_reason)` | Create controlled reversal | Require authorization; preserve original entry; validate target period; prevent repeated reversal |
 | `post_purchase(p_purchase_id)` | Post purchase and associated inventory/accounting effects | Validate supplier, lines, accounts, period, and tenant; atomically create ledger/inventory effects |
 | `post_sales(p_sales_id)` | Post sale and associated inventory/accounting effects | Validate customer, stock policy, lines, accounts, and tenant; atomically create ledger/inventory effects |
@@ -405,6 +406,12 @@ Required lifecycle:
 
 Enforce this lifecycle in database transactions and the application service layer; UI validation alone is insufficient.
 
+### Opening balance initialization (existing tables only)
+
+The opening balance workflow intentionally introduces no staging or sub-ledger tables. The application submits three JSON arrays to `post_opening_balances`: ordinary GL account lines, customer/supplier summary balances (one amount per contact, not invoice-wise), and product opening stock lines. The RPC validates and posts directly into `journal_entries`, `account_transactions`, `inventory_transactions`, and `inventory_balances`. Customer and supplier balances are distinguished by the supplied party type because `contacts` does not currently store a customer/supplier discriminator. Corrections after the one-time post must use a reversal or adjustment; the opening entry itself is not edited.
+
+`account_transactions.contact_id` is the party ledger dimension. Customer opening receivables debit the receivable asset control account; supplier opening payables credit the payable liability control account. Later receipts/payments must post against the same contact and control account to maintain the outstanding balance. Invoice-wise opening allocation and aging are deliberately out of scope.
+
 ## 12. Test plan
 
 ### Tenant isolation
@@ -422,6 +429,9 @@ Enforce this lifecycle in database transactions and the application service laye
 
 ### Accounting
 - Unbalanced journals cannot post.
+- Opening balances reject unbalanced totals, duplicate organization-level opening posts, cross-tenant contacts/products/accounts, invalid party control account types, and non-zero pre-existing stock for products being initialized.
+- Opening customer/supplier balances appear in contact-wise ledger queries through `account_transactions.contact_id`; receipts/payments reduce the same party balance when posted to the same control account.
+- Opening inventory movements reconcile to `inventory_balances` and the inventory asset control-account debit.
 - Posting to a closed period is rejected.
 - Concurrent/double posting does not duplicate ledger or inventory effects.
 - Posted entries are corrected through reversals, not silent mutation.
