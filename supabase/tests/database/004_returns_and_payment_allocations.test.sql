@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(14);
+select plan(20);
 
 insert into auth.users(
   id,instance_id,aud,role,email,encrypted_password,email_confirmed_at,
@@ -151,6 +151,79 @@ select is((select status from public.payments where id=current_setting('test.sup
   'allocated supplier payment posts');
 select is((select count(*)::integer from public.payment_allocations where organization_id=current_setting('test.org_id')::uuid and payment_id=current_setting('test.supplier_payment_id')::uuid),1,
   'supplier payment allocation persists exactly once');
+
+
+-- Customer refund: create a legitimate customer credit balance, allocate it to
+-- the posted sales-return credit note, then post the refund.
+select set_config('test.customer_credit_journal_id',public.save_draft_transaction_document(
+  current_setting('test.org_id')::uuid,'journal_entry',
+  jsonb_build_object('entry_number','JRN-CUSTOMER-CREDIT','entry_date','2026-03-08','entry_type','manual','description','Customer credit balance'),
+  jsonb_build_array(
+    jsonb_build_object('account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='5300'),'line_number',1,'description','Customer credit adjustment','debit',50,'credit',0),
+    jsonb_build_object('account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='1120'),'line_number',2,'description','Customer credit','debit',0,'credit',50,'contact_id',current_setting('test.customer_id')::uuid)
+  )
+)::text,true);
+select public.confirm_transaction_document(current_setting('test.org_id')::uuid,'journal_entry',current_setting('test.customer_credit_journal_id')::uuid);
+select public.post_confirmed_journal_entry(current_setting('test.org_id')::uuid,current_setting('test.customer_credit_journal_id')::uuid);
+
+select set_config('test.customer_refund_id',public.save_draft_transaction_document(
+  current_setting('test.org_id')::uuid,'payment',
+  jsonb_build_object(
+    'payment_number','PAY-CUSTOMER-REFUND','payment_type','refund',
+    'contact_id',current_setting('test.customer_id')::uuid,'payment_date','2026-03-09',
+    'amount',50,'account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='1110'),
+    'settlement_account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='1120'),
+    'description','Customer refund against sales return'
+  )
+)::text,true);
+select lives_ok(format('select public.set_payment_allocations(%L::uuid,%L::uuid,%L::jsonb)',
+  current_setting('test.org_id'),current_setting('test.customer_refund_id'),
+  jsonb_build_array(jsonb_build_object('document_type','sales_return','document_id',current_setting('test.sales_return_id')::uuid,'allocated_amount',50))::text),
+  'customer refund allocation to posted sales-return credit note succeeds');
+select lives_ok(format('select public.confirm_transaction_document(%L::uuid,%L,%L::uuid)',
+  current_setting('test.org_id'),'payment',current_setting('test.customer_refund_id')),
+  'customer refund with valid AR credit balance confirms');
+select set_config('test.customer_refund_journal_id',public.post_contact_payment(
+  current_setting('test.org_id')::uuid,current_setting('test.customer_refund_id')::uuid
+)::text,true);
+select is((select status from public.payments where id=current_setting('test.customer_refund_id')::uuid),'posted',
+  'customer refund posts against AR');
+
+-- Supplier refund: a debit balance in AP is established by a manual journal;
+-- allocation must target a posted purchase-return credit note.
+select set_config('test.supplier_credit_journal_id',public.save_draft_transaction_document(
+  current_setting('test.org_id')::uuid,'journal_entry',
+  jsonb_build_object('entry_number','JRN-SUPPLIER-CREDIT','entry_date','2026-03-10','entry_type','manual','description','Supplier debit balance'),
+  jsonb_build_array(
+    jsonb_build_object('account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='2110'),'line_number',1,'description','Supplier debit','debit',40,'credit',0,'contact_id',current_setting('test.supplier_id')::uuid),
+    jsonb_build_object('account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='3300'),'line_number',2,'description','Offset','debit',0,'credit',40)
+  )
+)::text,true);
+select public.confirm_transaction_document(current_setting('test.org_id')::uuid,'journal_entry',current_setting('test.supplier_credit_journal_id')::uuid);
+select public.post_confirmed_journal_entry(current_setting('test.org_id')::uuid,current_setting('test.supplier_credit_journal_id')::uuid);
+
+select set_config('test.supplier_refund_id',public.save_draft_transaction_document(
+  current_setting('test.org_id')::uuid,'payment',
+  jsonb_build_object(
+    'payment_number','PAY-SUPPLIER-REFUND','payment_type','refund',
+    'contact_id',current_setting('test.supplier_id')::uuid,'payment_date','2026-03-11',
+    'amount',40,'account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='1110'),
+    'settlement_account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='2110'),
+    'description','Supplier refund against purchase return'
+  )
+)::text,true);
+select lives_ok(format('select public.set_payment_allocations(%L::uuid,%L::uuid,%L::jsonb)',
+  current_setting('test.org_id'),current_setting('test.supplier_refund_id'),
+  jsonb_build_array(jsonb_build_object('document_type','purchase_return','document_id',current_setting('test.purchase_return_id')::uuid,'allocated_amount',40))::text),
+  'supplier refund allocation to posted purchase-return credit note succeeds');
+select lives_ok(format('select public.confirm_transaction_document(%L::uuid,%L,%L::uuid)',
+  current_setting('test.org_id'),'payment',current_setting('test.supplier_refund_id')),
+  'supplier refund with valid AP debit balance confirms');
+select set_config('test.supplier_refund_journal_id',public.post_contact_payment(
+  current_setting('test.org_id')::uuid,current_setting('test.supplier_refund_id')::uuid
+)::text,true);
+select is((select status from public.payments where id=current_setting('test.supplier_refund_id')::uuid),'posted',
+  'supplier refund posts against AP');
 
 select * from finish();
 rollback;
