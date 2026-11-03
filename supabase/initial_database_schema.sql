@@ -3924,6 +3924,16 @@ begin
     raise exception using errcode = '23514', message = 'Sales return items, subtotal, discount, and total are inconsistent.';
   end if;
 
+  if v_return.total_amount > coalesce((
+    select round(sum(ri.line_total * v_sales.total_amount / nullif(v_sales.subtotal, 0)), 4)
+    from public.sales_return_items ri
+    where ri.organization_id = p_organization_id and ri.sales_return_id = p_sales_return_id
+      and v_sales.subtotal > 0
+  ), 0) then
+    raise exception using errcode = '23514',
+      message = 'Sales return total cannot exceed the original net value of the returned lines after allocating the invoice discount.';
+  end if;
+
   if exists (
     select 1
     from public.sales_return_items ri
@@ -4606,6 +4616,17 @@ begin
       and sr.customer_id = s.customer_id and sr.receivable_account_id = s.receivable_account_id;
     if v_source_status is null or v_source_status not in ('posted','partially_returned') then
       raise exception using errcode = '23514', message = 'Sales return must reference a posted, not-fully-returned invoice with matching customer and receivable account.';
+    end if;
+    if v_total > coalesce((
+      select round(sum(ri.line_total * s.total_amount / nullif(s.subtotal, 0)), 4)
+      from public.sales_return_items ri
+      join public.sales_returns sr on sr.organization_id = ri.organization_id and sr.id = ri.sales_return_id
+      join public.sales s on s.organization_id = sr.organization_id and s.id = sr.sales_id
+      where ri.organization_id = p_organization_id and ri.sales_return_id = p_document_id
+        and s.subtotal > 0
+    ), 0) then
+      raise exception using errcode = '23514',
+        message = 'Sales return total cannot exceed the original net value of the returned lines after allocating the invoice discount.';
     end if;
     if exists (
       select 1
