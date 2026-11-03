@@ -144,6 +144,8 @@ begin
 end;
 $function$;
 
+revoke all on function public.prevent_overlapping_accounting_periods() from public, anon, authenticated;
+
 create trigger accounting_periods_prevent_overlap
 before insert or update of organization_id, start_date, end_date
 on public.accounting_periods
@@ -171,6 +173,36 @@ create table public.accounts (
     on delete restrict,
   constraint accounts_not_own_parent_chk check (parent_account_id is distinct from id)
 );
+
+create or replace function public.prevent_account_hierarchy_cycle()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if new.parent_account_id is null then return new; end if;
+  if exists (
+    with recursive ancestors(id, parent_account_id, path, cycle) as (
+      select a.id, a.parent_account_id, array[a.id], false
+      from public.accounts a
+      where a.organization_id = new.organization_id and a.id = new.parent_account_id
+      union all
+      select p.id, p.parent_account_id, ancestors.path || p.id, p.id = any(ancestors.path)
+      from ancestors join public.accounts p
+        on p.organization_id = new.organization_id and p.id = ancestors.parent_account_id
+      where not ancestors.cycle
+    ) select 1 from ancestors where id = new.id or cycle
+  ) then
+    raise exception using errcode = '23514', message = 'Account hierarchy cannot contain a cycle.';
+  end if;
+  return new;
+end;
+$function$;
+revoke all on function public.prevent_account_hierarchy_cycle() from public, anon, authenticated;
+create trigger accounts_prevent_hierarchy_cycle
+before insert or update of organization_id, parent_account_id on public.accounts
+for each row execute function public.prevent_account_hierarchy_cycle();
 
 create table public.units_of_measure (
   id uuid primary key default pg_catalog.gen_random_uuid(),
@@ -366,19 +398,19 @@ alter table public.products enable row level security;
 alter table public.expense_categories enable row level security;
 alter table public.number_sequences enable row level security;
 
--- Read access is scoped to active membership. Mutations are introduced through
--- permission-checked RPCs in later migrations; no broad client write policies exist.
+-- Read access requires active membership plus the module's explicit read permission.
+-- Browser writes remain disabled; mutations use permission-checked RPCs.
 create policy organizations_select_member
   on public.organizations for select to authenticated
-  using (public.is_active_org_member(id));
+  using (public.has_org_permission(id, 'organization.read'));
 
 create policy organization_users_select_member_or_self
   on public.organization_users for select to authenticated
-  using (user_id = (select auth.uid()) or public.is_active_org_member(organization_id));
+  using (user_id = (select auth.uid()) or public.has_org_permission(organization_id, 'users.read'));
 
 create policy roles_select_member
   on public.roles for select to authenticated
-  using (public.is_active_org_member(organization_id));
+  using (public.has_org_permission(organization_id, 'roles.read'));
 
 create policy permissions_select_authenticated
   on public.permissions for select to authenticated
@@ -397,31 +429,31 @@ create policy role_permissions_select_member
 
 create policy accounting_periods_select_member
   on public.accounting_periods for select to authenticated
-  using (public.is_active_org_member(organization_id));
+  using (public.has_org_permission(organization_id, 'accounting_periods.read'));
 
 create policy accounts_select_member
   on public.accounts for select to authenticated
-  using (public.is_active_org_member(organization_id));
+  using (public.has_org_permission(organization_id, 'accounts.read'));
 
 create policy units_of_measure_select_member
   on public.units_of_measure for select to authenticated
-  using (public.is_active_org_member(organization_id));
+  using (public.has_org_permission(organization_id, 'products.read'));
 
 create policy contacts_select_member
   on public.contacts for select to authenticated
-  using (public.is_active_org_member(organization_id));
+  using (public.has_org_permission(organization_id, 'contacts.read'));
 
 create policy products_select_member
   on public.products for select to authenticated
-  using (public.is_active_org_member(organization_id));
+  using (public.has_org_permission(organization_id, 'products.read'));
 
 create policy expense_categories_select_member
   on public.expense_categories for select to authenticated
-  using (public.is_active_org_member(organization_id));
+  using (public.has_org_permission(organization_id, 'expenses.read'));
 
 create policy number_sequences_select_member
   on public.number_sequences for select to authenticated
-  using (public.is_active_org_member(organization_id));
+  using (public.has_org_permission(organization_id, 'organization.read'));
 
 -- Remove default privileges from anon and keep writes unavailable to browser roles
 -- until permission-checked RPC contracts are implemented.
@@ -557,9 +589,9 @@ create table public.inventory_balances (
   id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete restrict,
   product_id uuid not null,
-  quantity numeric(20, 6) not null default 0,
+  quantity numeric(20, 6) not null default 0 check (quantity >= 0),
   average_cost numeric(20, 6) not null default 0 check (average_cost >= 0),
-  inventory_value numeric(20, 4) not null default 0,
+  inventory_value numeric(20, 4) not null default 0 check (inventory_value >= 0),
   updated_at timestamptz not null default pg_catalog.now(),
   constraint inventory_balances_org_id_id_uq unique (organization_id, id),
   constraint inventory_balances_product_uq unique (organization_id, product_id),
@@ -1078,35 +1110,35 @@ alter table public.payment_allocations enable row level security;
 
 -- Read policies. No browser-role INSERT/UPDATE/DELETE policies are granted in this phase.
 create policy journal_entries_select_member on public.journal_entries
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'journal_entries.read'));
 create policy account_transactions_select_member on public.account_transactions
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'journal_entries.read'));
 create policy inventory_transactions_select_member on public.inventory_transactions
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'inventory.read'));
 create policy inventory_balances_select_member on public.inventory_balances
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'inventory.read'));
 create policy purchase_select_member on public.purchase
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'purchases.read'));
 create policy purchase_items_select_member on public.purchase_items
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'purchases.read'));
 create policy purchase_returns_select_member on public.purchase_returns
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'purchases.read'));
 create policy purchase_return_items_select_member on public.purchase_return_items
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'purchases.read'));
 create policy sales_select_member on public.sales
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'sales.read'));
 create policy sales_items_select_member on public.sales_items
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'sales.read'));
 create policy sales_returns_select_member on public.sales_returns
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'sales.read'));
 create policy sales_return_items_select_member on public.sales_return_items
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'sales.read'));
 create policy expenses_select_member on public.expenses
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'expenses.read'));
 create policy payments_select_member on public.payments
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'payments.read'));
 create policy payment_allocations_select_member on public.payment_allocations
-  for select to authenticated using (public.is_active_org_member(organization_id));
+  for select to authenticated using (public.has_org_permission(organization_id, 'payments.read'));
 
 revoke all on public.journal_entries, public.account_transactions,
   public.inventory_transactions, public.inventory_balances, public.purchase,
@@ -1177,6 +1209,41 @@ on conflict (permission_key) do update
 set name = excluded.name,
     description = excluded.description,
     module = excluded.module;
+
+
+create or replace function public.next_document_number(p_organization_id uuid, p_document_type text)
+returns text
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_permission text;
+  v_prefix text;
+  v_number bigint;
+  v_padding smallint;
+begin
+  v_permission := case p_document_type
+    when 'purchase' then 'purchases.create' when 'sale' then 'sales.create'
+    when 'expense' then 'expenses.manage' when 'payment' then 'payments.manage'
+    when 'journal_entry' then 'journal_entries.create'
+    when 'purchase_return' then 'purchases.returns.create'
+    when 'sales_return' then 'sales.returns.create' else null end;
+  if auth.uid() is null or v_permission is null
+     or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, v_permission) then
+    raise exception using errcode = '42501', message = 'Not authorized to allocate this document number.';
+  end if;
+  insert into public.number_sequences(organization_id, document_type, prefix, next_number, padding)
+  values (p_organization_id, p_document_type, upper(left(p_document_type, 3)) || '-', 2, 5)
+  on conflict (organization_id, document_type) do update
+    set next_number = public.number_sequences.next_number + 1, updated_at = pg_catalog.now()
+  returning prefix, next_number - 1, padding into v_prefix, v_number, v_padding;
+  return v_prefix || lpad(v_number::text, v_padding, '0');
+end;
+$function$;
+revoke all on function public.next_document_number(uuid, text) from public, anon;
+grant execute on function public.next_document_number(uuid, text) to authenticated;
 
 create or replace function public.create_organization_with_admin(
   p_name text,
@@ -1521,7 +1588,7 @@ grant execute on function public.set_organization_user_active(uuid, uuid, boolea
 -- ============================================================================
 
 -- Zero ERP: atomic balanced manual journal posting RPC
--- Depends on core foundation, transaction schema, and RBAC bootstrap migrations.
+-- Depends on the core foundation, transaction schema, and RBAC bootstrap above.
 -- Browser clients cannot write ledger tables directly; this function is the controlled posting boundary.
 
 create or replace function public.post_manual_journal_entry(
@@ -2076,14 +2143,27 @@ begin
   end if;
 
   if exists (
-    select 1
-    from public.journal_entries je
+    select 1 from public.journal_entries je
     where je.organization_id = p_organization_id
       and je.entry_type = 'opening_balance'
       and je.reference_type = 'organization_opening_balance'
   ) then
     raise exception using errcode = '23514',
       message = 'Opening balances have already been posted for this organization. Use a reversal or adjustment for corrections.';
+  end if;
+
+  if exists (
+    select 1 from public.journal_entries je
+    where je.organization_id = p_organization_id
+      and je.status in ('posted', 'reversed')
+      and not (je.entry_type = 'opening_balance'
+        and je.reference_type = 'organization_opening_balance')
+  ) or exists (
+    select 1 from public.inventory_transactions it
+    where it.organization_id = p_organization_id
+  ) then
+    raise exception using errcode = '23514',
+      message = 'Opening balances must be initialized before operational ledger or inventory posting. Use controlled adjustments after operations begin.';
   end if;
 
   -- Lock the accounting period so a concurrent close cannot race this posting.
@@ -2251,6 +2331,18 @@ begin
   ) then
     raise exception using errcode = '23514',
       message = 'A party control account cannot also be used as an inventory control account.';
+  end if;
+
+  -- AR/AP control balances must be represented by contact-tagged party lines.
+  if exists (
+    select 1
+    from pg_catalog.jsonb_to_recordset(p_account_lines) as gl(account_id uuid)
+    join public.accounts a
+      on a.organization_id = p_organization_id and a.id = gl.account_id
+    where a.is_control_account and a.account_type in ('asset', 'liability')
+  ) then
+    raise exception using errcode = '23514',
+      message = 'Opening GL lines cannot use receivable/payable control accounts directly. Supply contact-tagged party balances instead.';
   end if;
 
   -- Prevent a GL line from duplicating a party control or product inventory account.
@@ -2544,6 +2636,15 @@ begin
     raise exception using errcode = '23514', message = 'The payment account must be an active, postable cash/bank asset account.';
   end if;
 
+  if v_payment.contact_id is not null then
+    perform 1 from public.contacts
+    where organization_id = p_organization_id and id = v_payment.contact_id and is_active
+    for update;
+    if not found then
+      raise exception using errcode = '23503', message = 'Payment contact must be active and belong to this organization.';
+    end if;
+  end if;
+
   select ap.status, ap.start_date, ap.end_date
     into v_period_status, v_period_start, v_period_end
   from public.accounting_periods ap
@@ -2606,21 +2707,16 @@ begin
       raise exception using errcode = '23514', message = 'Settlement account must be an active, postable control account.';
     end if;
 
-    perform 1 from public.contacts
-    where organization_id = p_organization_id and id = v_payment.contact_id and is_active
-    for update;
-    if not found then
-      raise exception using errcode = '23503', message = 'Payment contact must be active and belong to this organization.';
-    end if;
-
     if v_payment.payment_type = 'receipt' then
       if v_settlement_account.account_type <> 'asset' then
         raise exception using errcode = '23514', message = 'A receipt requires an accounts receivable asset control account.';
       end if;
       select coalesce(sum(atx.debit - atx.credit),0) into v_outstanding
       from public.account_transactions atx
+      join public.journal_entries je on je.organization_id = atx.organization_id and je.id = atx.journal_entry_id
       where atx.organization_id = p_organization_id
-        and atx.account_id = v_payment.settlement_account_id and atx.contact_id = v_payment.contact_id;
+        and atx.account_id = v_payment.settlement_account_id and atx.contact_id = v_payment.contact_id
+        and je.status in ('posted', 'reversed');
       if v_outstanding < v_payment.amount then
         raise exception using errcode = '23514', message = 'Receipt amount exceeds the current customer receivable balance.';
       end if;
@@ -2630,8 +2726,10 @@ begin
       end if;
       select coalesce(sum(atx.credit - atx.debit),0) into v_outstanding
       from public.account_transactions atx
+      join public.journal_entries je on je.organization_id = atx.organization_id and je.id = atx.journal_entry_id
       where atx.organization_id = p_organization_id
-        and atx.account_id = v_payment.settlement_account_id and atx.contact_id = v_payment.contact_id;
+        and atx.account_id = v_payment.settlement_account_id and atx.contact_id = v_payment.contact_id
+        and je.status in ('posted', 'reversed');
       if v_outstanding < v_payment.amount then
         raise exception using errcode = '23514', message = 'Payment amount exceeds the current supplier payable balance.';
       end if;
@@ -2639,16 +2737,20 @@ begin
       if v_settlement_account.account_type = 'asset' then
         select coalesce(sum(atx.debit - atx.credit),0) into v_outstanding
         from public.account_transactions atx
+        join public.journal_entries je on je.organization_id = atx.organization_id and je.id = atx.journal_entry_id
         where atx.organization_id = p_organization_id
-          and atx.account_id = v_payment.settlement_account_id and atx.contact_id = v_payment.contact_id;
+          and atx.account_id = v_payment.settlement_account_id and atx.contact_id = v_payment.contact_id
+          and je.status in ('posted', 'reversed');
         if v_outstanding >= 0 or abs(v_outstanding) < v_payment.amount then
           raise exception using errcode = '23514', message = 'Customer refund requires a sufficient credit balance in accounts receivable.';
         end if;
       elsif v_settlement_account.account_type = 'liability' then
         select coalesce(sum(atx.credit - atx.debit),0) into v_outstanding
         from public.account_transactions atx
+        join public.journal_entries je on je.organization_id = atx.organization_id and je.id = atx.journal_entry_id
         where atx.organization_id = p_organization_id
-          and atx.account_id = v_payment.settlement_account_id and atx.contact_id = v_payment.contact_id;
+          and atx.account_id = v_payment.settlement_account_id and atx.contact_id = v_payment.contact_id
+          and je.status in ('posted', 'reversed');
         if v_outstanding >= 0 or abs(v_outstanding) < v_payment.amount then
           raise exception using errcode = '23514', message = 'Supplier refund requires a sufficient debit balance in accounts payable.';
         end if;
@@ -2934,7 +3036,8 @@ begin
     where b.organization_id = p_organization_id and b.product_id = v_line.product_id
     for update;
 
-    v_line_cost := round(v_line.quantity * v_average_cost, 4);
+    v_line_cost := case when v_line.quantity = v_balance_quantity
+      then v_balance_value else round(v_line.quantity * v_average_cost, 4) end;
     v_new_quantity := v_balance_quantity - v_line.quantity;
     v_new_value := v_balance_value - v_line_cost;
 
@@ -3619,7 +3722,8 @@ begin
       raise exception using errcode = '23514', message = 'Returned product has no inventory balance to reduce.';
     end if;
     v_return_quantity := v_product.quantity;
-    v_line_value := round(v_return_quantity * v_average_cost,4);
+    v_line_value := case when v_return_quantity = v_balance_quantity
+      then v_balance_value else round(v_return_quantity * v_average_cost,4) end;
     if v_balance_quantity < v_return_quantity or v_balance_value < v_line_value then
       raise exception using errcode = '23514', message = 'Insufficient on-hand quantity or inventory value for this purchase return.';
     end if;
