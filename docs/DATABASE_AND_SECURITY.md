@@ -519,6 +519,7 @@ All membership and role-administration RPCs require the caller to be the active 
 - An inactive former Administrator cannot be reactivated directly. They may be re-added with a custom role, except for the permanent creator row, which remains an immutable historical record.
 - The Administrator alone can add existing verified users, change member roles, activate/deactivate members, and create/update custom roles or their permissions. Ordinary custom-role permissions never override these database checks.
 - No schema columns or tables were added. The policy uses existing `organizations`, `organization_users`, and `roles` data, plus indexes, triggers, and RPCs.
+- Deleting the original creator's `auth.users` row is intentionally blocked because its FK cascade would erase the permanent creator membership; disable/ban the account instead of hard-deleting it.
 
 ### Verification boundary
 
