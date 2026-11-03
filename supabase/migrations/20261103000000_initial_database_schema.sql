@@ -1431,6 +1431,16 @@ begin
       message = 'The selected role must be active and belong to this organization.';
   end if;
 
+  if exists (
+    select 1 from public.role_permissions rp
+    join public.permissions p on p.id=rp.permission_id
+    where rp.role_id=p_role_id
+      and not public.has_org_permission(p_organization_id,p.permission_key)
+  ) then
+    raise exception using errcode='42501',
+      message='You cannot assign a role containing permissions you do not hold.';
+  end if;
+
   select u.id into v_user_id from auth.users u
   where pg_catalog.lower(u.email) = pg_catalog.lower(pg_catalog.btrim(p_email))
     and u.email_confirmed_at is not null
@@ -1474,6 +1484,16 @@ begin
     where r.organization_id = p_organization_id and r.id = p_role_id and r.status = 'active') then
     raise exception using errcode = '23503',
       message = 'The selected role must be active and belong to this organization.';
+  end if;
+
+  if exists (
+    select 1 from public.role_permissions rp
+    join public.permissions p on p.id=rp.permission_id
+    where rp.role_id=p_role_id
+      and not public.has_org_permission(p_organization_id,p.permission_key)
+  ) then
+    raise exception using errcode='42501',
+      message='You cannot assign a role containing permissions you do not hold.';
   end if;
 
   update public.organization_users set role_id = p_role_id, updated_at = pg_catalog.now()
@@ -4430,6 +4450,7 @@ begin
     ) then
       raise exception using errcode = '23514', message = 'Payment requires valid cash/bank, settlement account, contact, and payment-type configuration.';
     end if;
+    perform public.validate_payment_allocations(p_organization_id,p_document_id);
 
   elsif p_document_type = 'purchase_return' then
     select count(*)::integer, coalesce(sum(ri.line_total),0)
