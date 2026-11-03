@@ -432,7 +432,7 @@ The opening balance workflow intentionally introduces no staging or sub-ledger t
 ### Accounting
 - Unbalanced journals cannot post.
 - Opening balances reject unbalanced totals, duplicate organization-level opening posts, cross-tenant contacts/products/accounts, invalid party control account types, and non-zero pre-existing stock for products being initialized.
-- Opening customer/supplier balances appear in contact-wise ledger queries through `account_transactions.contact_id`; receipts/payments reduce the same party balance when posted to the same control account.
+- Opening customer/supplier balances appear in contact-wise ledger queries through `account_transactions.contact_id`; receipts/payments reduce the same party balance when posted to the same control account. Posted sales invoices debit the same customer receivable control account with `contact_id = sales.customer_id`, and the customer receipt RPC reduces that balance.
 - Opening inventory movements reconcile to `inventory_balances` and the inventory asset control-account debit.
 - Posting to a closed period is rejected.
 - Concurrent/double posting does not duplicate ledger or inventory effects.
