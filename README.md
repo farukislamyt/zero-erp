@@ -51,6 +51,9 @@ For the logical ER diagram, schema dependency order, relationship map, table inv
 
 ## Database Schema
 
+
+The executable bootstrap SQL is maintained in **[`supabase/initial_database_schema.sql`](supabase/initial_database_schema.sql)**. It consolidates the complete database schema, seed data, RLS policies, grants, and posting RPCs into one ordered script. Run it only once against a new/empty Supabase database; do not run it as an upgrade against a database that already contains these objects.
+
 ### Organization and configuration
 
 | Table | Purpose | Notable columns |

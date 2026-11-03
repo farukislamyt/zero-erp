@@ -1,0 +1,2784 @@
+-- =============================================================================
+-- ZERO ERP — INITIAL DATABASE SCHEMA
+-- =============================================================================
+-- Canonical bootstrap schema consolidated from the project's ordered SQL changes.
+-- Apply once to a NEW / EMPTY Supabase PostgreSQL project after Supabase Auth is
+-- available. This file is not an incremental migration for an existing database.
+-- It intentionally uses one transaction so a failed bootstrap rolls back fully.
+-- Project defaults: BDT currency; Asia/Dhaka timezone.
+-- =============================================================================
+
+begin;
+
+
+-- ============================================================================
+-- CORE FOUNDATION
+-- Source: 20261102000100_core_foundation.sql
+-- ============================================================================
+
+-- Zero ERP: tenant, RBAC, accounting setup, and master-data foundation
+-- Migration: 20261102000100_core_foundation.sql
+-- Apply through Supabase CLI after reviewing against the target project's existing schema.
+-- This migration creates the foundational objects only; transaction tables and their RPCs
+-- are introduced in subsequent migrations.
+
+-- Shared timestamp trigger function.
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.updated_at := pg_catalog.now();
+  return new;
+end;
+$$;
+
+-- Tenant root.
+create table public.organizations (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 160),
+  phone text,
+  email text,
+  address text,
+  city text,
+  country text,
+  currency char(3) not null default 'BDT',
+  timezone text not null default 'Asia/Dhaka',
+  tin text,
+  bin text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint organizations_currency_format_chk check (currency ~ '^[A-Z]{3}$')
+);
+
+create table public.roles (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 100),
+  status text not null default 'active' check (status in ('active', 'inactive')),
+  is_system_role boolean not null default false,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint roles_org_id_id_uq unique (organization_id, id),
+  constraint roles_org_name_uq unique (organization_id, name)
+);
+
+-- Global, system-managed permission catalog.
+create table public.permissions (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  permission_key text not null unique
+    check (permission_key ~ '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$'),
+  name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 120),
+  description text,
+  module text not null check (pg_catalog.length(pg_catalog.btrim(module)) between 1 and 80),
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now()
+);
+
+create table public.organization_users (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  role_id uuid not null,
+  is_active boolean not null default true,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint organization_users_org_id_id_uq unique (organization_id, id),
+  constraint organization_users_org_user_uq unique (organization_id, user_id),
+  constraint organization_users_role_same_org_fk
+    foreign key (organization_id, role_id)
+    references public.roles (organization_id, id)
+    on delete restrict
+);
+
+create table public.role_permissions (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  role_id uuid not null references public.roles(id) on delete cascade,
+  permission_id uuid not null references public.permissions(id) on delete restrict,
+  created_at timestamptz not null default pg_catalog.now(),
+  constraint role_permissions_role_permission_uq unique (role_id, permission_id)
+);
+
+create table public.accounting_periods (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 100),
+  start_date date not null,
+  end_date date not null,
+  status text not null default 'open' check (status in ('open', 'closed')),
+  closed_at timestamptz,
+  closed_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint accounting_periods_date_range_chk check (end_date >= start_date),
+  constraint accounting_periods_org_id_id_uq unique (organization_id, id),
+  constraint accounting_periods_org_name_uq unique (organization_id, name),
+  constraint accounting_periods_closed_state_chk
+    check ((status = 'open' and closed_at is null) or status = 'closed')
+);
+
+create table public.accounts (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  account_code text not null check (pg_catalog.length(pg_catalog.btrim(account_code)) between 1 and 40),
+  account_name text not null check (pg_catalog.length(pg_catalog.btrim(account_name)) between 1 and 160),
+  account_type text not null
+    check (account_type in ('asset', 'liability', 'equity', 'revenue', 'expense')),
+  parent_account_id uuid,
+  normal_balance text not null check (normal_balance in ('debit', 'credit')),
+  is_control_account boolean not null default false,
+  is_system_account boolean not null default false,
+  is_postable boolean not null default true,
+  is_active boolean not null default true,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint accounts_org_id_id_uq unique (organization_id, id),
+  constraint accounts_org_code_uq unique (organization_id, account_code),
+  constraint accounts_parent_same_org_fk
+    foreign key (organization_id, parent_account_id)
+    references public.accounts (organization_id, id)
+    on delete restrict,
+  constraint accounts_not_own_parent_chk check (parent_account_id is distinct from id)
+);
+
+create table public.units_of_measure (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 80),
+  is_active boolean not null default true,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint units_of_measure_org_id_id_uq unique (organization_id, id),
+  constraint units_of_measure_org_name_uq unique (organization_id, name)
+);
+
+create table public.contacts (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  contact_number text not null check (pg_catalog.length(pg_catalog.btrim(contact_number)) between 1 and 50),
+  name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 180),
+  phone text,
+  email text,
+  address text,
+  is_active boolean not null default true,
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint contacts_org_id_id_uq unique (organization_id, id),
+  constraint contacts_org_number_uq unique (organization_id, contact_number)
+);
+
+create table public.products (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  product_code text not null check (pg_catalog.length(pg_catalog.btrim(product_code)) between 1 and 60),
+  name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 180),
+  unit_id uuid not null,
+  inventory_account_id uuid,
+  sales_account_id uuid,
+  cogs_account_id uuid,
+  is_active boolean not null default true,
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint products_org_id_id_uq unique (organization_id, id),
+  constraint products_org_code_uq unique (organization_id, product_code),
+  constraint products_unit_same_org_fk
+    foreign key (organization_id, unit_id)
+    references public.units_of_measure (organization_id, id)
+    on delete restrict,
+  constraint products_inventory_account_same_org_fk
+    foreign key (organization_id, inventory_account_id)
+    references public.accounts (organization_id, id)
+    on delete restrict,
+  constraint products_sales_account_same_org_fk
+    foreign key (organization_id, sales_account_id)
+    references public.accounts (organization_id, id)
+    on delete restrict,
+  constraint products_cogs_account_same_org_fk
+    foreign key (organization_id, cogs_account_id)
+    references public.accounts (organization_id, id)
+    on delete restrict
+);
+
+create table public.expense_categories (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  category_code text not null check (pg_catalog.length(pg_catalog.btrim(category_code)) between 1 and 40),
+  name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 120),
+  expense_account_id uuid,
+  is_active boolean not null default true,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint expense_categories_org_id_id_uq unique (organization_id, id),
+  constraint expense_categories_org_code_uq unique (organization_id, category_code),
+  constraint expense_categories_account_same_org_fk
+    foreign key (organization_id, expense_account_id)
+    references public.accounts (organization_id, id)
+    on delete restrict
+);
+
+create table public.number_sequences (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  document_type text not null check (pg_catalog.length(pg_catalog.btrim(document_type)) between 1 and 60),
+  prefix text not null default '',
+  next_number bigint not null default 1 check (next_number > 0),
+  padding smallint not null default 5 check (padding between 1 and 18),
+  is_active boolean not null default true,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint number_sequences_org_id_id_uq unique (organization_id, id),
+  constraint number_sequences_org_type_uq unique (organization_id, document_type)
+);
+
+-- Frequently used foreign-key and tenant filters.
+create index organization_users_user_active_idx
+  on public.organization_users (user_id, is_active);
+create index organization_users_role_idx
+  on public.organization_users (role_id);
+create index roles_org_status_idx on public.roles (organization_id, status);
+create index role_permissions_permission_idx on public.role_permissions (permission_id);
+create index accounting_periods_org_dates_idx
+  on public.accounting_periods (organization_id, start_date, end_date);
+create index accounts_org_parent_idx on public.accounts (organization_id, parent_account_id);
+create index contacts_org_name_idx on public.contacts (organization_id, name);
+create index products_org_name_idx on public.products (organization_id, name);
+create index expense_categories_org_name_idx on public.expense_categories (organization_id, name);
+
+-- Maintain updated_at consistently.
+create trigger organizations_set_updated_at before update on public.organizations
+for each row execute function public.set_updated_at();
+create trigger roles_set_updated_at before update on public.roles
+for each row execute function public.set_updated_at();
+create trigger permissions_set_updated_at before update on public.permissions
+for each row execute function public.set_updated_at();
+create trigger organization_users_set_updated_at before update on public.organization_users
+for each row execute function public.set_updated_at();
+create trigger accounting_periods_set_updated_at before update on public.accounting_periods
+for each row execute function public.set_updated_at();
+create trigger accounts_set_updated_at before update on public.accounts
+for each row execute function public.set_updated_at();
+create trigger units_of_measure_set_updated_at before update on public.units_of_measure
+for each row execute function public.set_updated_at();
+create trigger contacts_set_updated_at before update on public.contacts
+for each row execute function public.set_updated_at();
+create trigger products_set_updated_at before update on public.products
+for each row execute function public.set_updated_at();
+create trigger expense_categories_set_updated_at before update on public.expense_categories
+for each row execute function public.set_updated_at();
+create trigger number_sequences_set_updated_at before update on public.number_sequences
+for each row execute function public.set_updated_at();
+
+-- Security-definer helpers prevent RLS recursion when policies inspect membership.
+-- They intentionally return false for anonymous callers.
+create or replace function public.is_active_org_member(p_organization_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.organization_users ou
+    join public.organizations o on o.id = ou.organization_id
+    where ou.organization_id = p_organization_id
+      and ou.user_id = (select auth.uid())
+      and ou.is_active
+      and o.is_active
+  );
+$$;
+
+create or replace function public.has_org_permission(
+  p_organization_id uuid,
+  p_permission_key text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.organization_users ou
+    join public.roles r
+      on r.id = ou.role_id
+     and r.organization_id = ou.organization_id
+    join public.role_permissions rp on rp.role_id = r.id
+    join public.permissions p on p.id = rp.permission_id
+    where ou.organization_id = p_organization_id
+      and ou.user_id = (select auth.uid())
+      and ou.is_active
+      and r.status = 'active'
+      and p.permission_key = p_permission_key
+  );
+$$;
+
+revoke all on function public.is_active_org_member(uuid) from public, anon;
+revoke all on function public.has_org_permission(uuid, text) from public, anon;
+grant execute on function public.is_active_org_member(uuid) to authenticated;
+grant execute on function public.has_org_permission(uuid, text) to authenticated;
+
+-- RLS: tenant-owned foundation tables are not accessible by default.
+alter table public.organizations enable row level security;
+alter table public.organization_users enable row level security;
+alter table public.roles enable row level security;
+alter table public.permissions enable row level security;
+alter table public.role_permissions enable row level security;
+alter table public.accounting_periods enable row level security;
+alter table public.accounts enable row level security;
+alter table public.units_of_measure enable row level security;
+alter table public.contacts enable row level security;
+alter table public.products enable row level security;
+alter table public.expense_categories enable row level security;
+alter table public.number_sequences enable row level security;
+
+-- Read access is scoped to active membership. Mutations are introduced through
+-- permission-checked RPCs in later migrations; no broad client write policies exist.
+create policy organizations_select_member
+  on public.organizations for select to authenticated
+  using (public.is_active_org_member(id));
+
+create policy organization_users_select_member_or_self
+  on public.organization_users for select to authenticated
+  using (user_id = (select auth.uid()) or public.is_active_org_member(organization_id));
+
+create policy roles_select_member
+  on public.roles for select to authenticated
+  using (public.is_active_org_member(organization_id));
+
+create policy permissions_select_authenticated
+  on public.permissions for select to authenticated
+  using (true);
+
+create policy role_permissions_select_member
+  on public.role_permissions for select to authenticated
+  using (
+    exists (
+      select 1
+      from public.roles r
+      where r.id = role_permissions.role_id
+        and public.is_active_org_member(r.organization_id)
+    )
+  );
+
+create policy accounting_periods_select_member
+  on public.accounting_periods for select to authenticated
+  using (public.is_active_org_member(organization_id));
+
+create policy accounts_select_member
+  on public.accounts for select to authenticated
+  using (public.is_active_org_member(organization_id));
+
+create policy units_of_measure_select_member
+  on public.units_of_measure for select to authenticated
+  using (public.is_active_org_member(organization_id));
+
+create policy contacts_select_member
+  on public.contacts for select to authenticated
+  using (public.is_active_org_member(organization_id));
+
+create policy products_select_member
+  on public.products for select to authenticated
+  using (public.is_active_org_member(organization_id));
+
+create policy expense_categories_select_member
+  on public.expense_categories for select to authenticated
+  using (public.is_active_org_member(organization_id));
+
+create policy number_sequences_select_member
+  on public.number_sequences for select to authenticated
+  using (public.is_active_org_member(organization_id));
+
+-- Remove default privileges from anon and keep writes unavailable to browser roles
+-- until permission-checked RPC contracts are implemented.
+revoke all on public.organizations, public.organization_users, public.roles,
+  public.permissions, public.role_permissions, public.accounting_periods,
+  public.accounts, public.units_of_measure, public.contacts, public.products,
+  public.expense_categories, public.number_sequences
+from anon, authenticated;
+
+grant select on public.organizations, public.organization_users, public.roles,
+  public.permissions, public.role_permissions, public.accounting_periods,
+  public.accounts, public.units_of_measure, public.contacts, public.products,
+  public.expense_categories, public.number_sequences
+to authenticated;
+
+
+
+-- ============================================================================
+-- TRANSACTION SCHEMA
+-- Source: 20261102000200_transaction_schema.sql
+-- ============================================================================
+
+-- Zero ERP: ledger, inventory, purchasing, sales, expenses, and payments
+-- Migration: 20261102000200_transaction_schema.sql
+-- Depends on 20261102000100_core_foundation.sql.
+-- All financial and inventory writes remain unavailable to client roles until the
+-- posting and allocation RPCs have been implemented and granted explicitly.
+
+create table public.journal_entries (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  entry_number text not null check (pg_catalog.length(pg_catalog.btrim(entry_number)) between 1 and 80),
+  accounting_period_id uuid not null,
+  entry_date date not null,
+  entry_type text not null
+    check (entry_type in ('manual', 'purchase', 'purchase_return', 'sale', 'sales_return', 'expense', 'payment', 'reversal', 'opening_balance', 'adjustment')),
+  status text not null default 'draft' check (status in ('draft', 'posted', 'reversed', 'void')),
+  reference_type text,
+  reference_id uuid,
+  description text,
+  posted_at timestamptz,
+  reversal_of_id uuid,
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint journal_entries_org_id_id_uq unique (organization_id, id),
+  constraint journal_entries_org_number_uq unique (organization_id, entry_number),
+  constraint journal_entries_period_same_org_fk
+    foreign key (organization_id, accounting_period_id)
+    references public.accounting_periods (organization_id, id)
+    on delete restrict,
+  constraint journal_entries_reversal_same_org_fk
+    foreign key (organization_id, reversal_of_id)
+    references public.journal_entries (organization_id, id)
+    on delete restrict,
+  constraint journal_entries_not_self_reversal_chk check (reversal_of_id is distinct from id),
+  constraint journal_entries_posted_timestamp_chk
+    check ((status in ('posted', 'reversed') and posted_at is not null) or status in ('draft', 'void'))
+);
+
+create table public.account_transactions (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  journal_entry_id uuid not null,
+  account_id uuid not null,
+  line_number integer not null check (line_number > 0),
+  description text,
+  debit numeric(20, 4) not null default 0 check (debit >= 0),
+  credit numeric(20, 4) not null default 0 check (credit >= 0),
+  contact_id uuid,
+  created_at timestamptz not null default pg_catalog.now(),
+  constraint account_transactions_org_id_id_uq unique (organization_id, id),
+  constraint account_transactions_line_uq unique (organization_id, journal_entry_id, line_number),
+  constraint account_transactions_journal_same_org_fk
+    foreign key (organization_id, journal_entry_id)
+    references public.journal_entries (organization_id, id)
+    on delete restrict,
+  constraint account_transactions_account_same_org_fk
+    foreign key (organization_id, account_id)
+    references public.accounts (organization_id, id)
+    on delete restrict,
+  constraint account_transactions_contact_same_org_fk
+    foreign key (organization_id, contact_id)
+    references public.contacts (organization_id, id)
+    on delete restrict,
+  constraint account_transactions_one_side_chk check (
+    (debit > 0 and credit = 0) or (credit > 0 and debit = 0)
+  )
+);
+
+create table public.inventory_transactions (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  transaction_number text not null check (pg_catalog.length(pg_catalog.btrim(transaction_number)) between 1 and 80),
+  product_id uuid not null,
+  transaction_date date not null,
+  transaction_type text not null
+    check (transaction_type in ('purchase', 'sale', 'purchase_return', 'sales_return', 'adjustment', 'opening_balance')),
+  direction text not null check (direction in ('in', 'out')),
+  quantity numeric(20, 6) not null check (quantity > 0),
+  unit_cost numeric(20, 6) not null default 0 check (unit_cost >= 0),
+  total_value numeric(20, 4) not null default 0 check (total_value >= 0),
+  reference_type text,
+  reference_id uuid,
+  unit_cost_before numeric(20, 6) check (unit_cost_before is null or unit_cost_before >= 0),
+  average_cost_after numeric(20, 6) check (average_cost_after is null or average_cost_after >= 0),
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default pg_catalog.now(),
+  constraint inventory_transactions_org_id_id_uq unique (organization_id, id),
+  constraint inventory_transactions_org_number_uq unique (organization_id, transaction_number),
+  constraint inventory_transactions_product_same_org_fk
+    foreign key (organization_id, product_id)
+    references public.products (organization_id, id)
+    on delete restrict
+);
+
+create table public.inventory_balances (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  product_id uuid not null,
+  quantity numeric(20, 6) not null default 0,
+  average_cost numeric(20, 6) not null default 0 check (average_cost >= 0),
+  inventory_value numeric(20, 4) not null default 0,
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint inventory_balances_org_id_id_uq unique (organization_id, id),
+  constraint inventory_balances_product_uq unique (organization_id, product_id),
+  constraint inventory_balances_product_same_org_fk
+    foreign key (organization_id, product_id)
+    references public.products (organization_id, id)
+    on delete restrict
+);
+
+create table public.purchase (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  invoice_id text not null check (pg_catalog.length(pg_catalog.btrim(invoice_id)) between 1 and 80),
+  supplier_id uuid not null,
+  invoice_date date not null,
+  status text not null default 'draft' check (status in ('draft', 'approved', 'posted', 'partially_returned', 'returned', 'void')),
+  subtotal numeric(20, 4) not null default 0 check (subtotal >= 0),
+  discount_amount numeric(20, 4) not null default 0 check (discount_amount >= 0),
+  total_amount numeric(20, 4) not null default 0 check (total_amount >= 0),
+  payable_account_id uuid not null,
+  posted_journal_entry_id uuid,
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint purchase_org_id_id_uq unique (organization_id, id),
+  constraint purchase_org_invoice_uq unique (organization_id, invoice_id),
+  constraint purchase_supplier_same_org_fk
+    foreign key (organization_id, supplier_id)
+    references public.contacts (organization_id, id)
+    on delete restrict,
+  constraint purchase_payable_account_same_org_fk
+    foreign key (organization_id, payable_account_id)
+    references public.accounts (organization_id, id)
+    on delete restrict,
+  constraint purchase_discount_limit_chk check (discount_amount <= subtotal)
+);
+
+create table public.purchase_items (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  purchase_id uuid not null,
+  line_number integer not null check (line_number > 0),
+  product_id uuid not null,
+  quantity numeric(20, 6) not null check (quantity > 0),
+  unit_cost numeric(20, 6) not null check (unit_cost >= 0),
+  line_total numeric(20, 4) not null check (line_total >= 0),
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint purchase_items_org_id_id_uq unique (organization_id, id),
+  constraint purchase_items_line_uq unique (organization_id, purchase_id, line_number),
+  constraint purchase_items_purchase_same_org_fk
+    foreign key (organization_id, purchase_id)
+    references public.purchase (organization_id, id)
+    on delete restrict,
+  constraint purchase_items_product_same_org_fk
+    foreign key (organization_id, product_id)
+    references public.products (organization_id, id)
+    on delete restrict
+);
+
+create table public.purchase_returns (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  return_number text not null check (pg_catalog.length(pg_catalog.btrim(return_number)) between 1 and 80),
+  purchase_id uuid not null,
+  supplier_id uuid not null,
+  return_date date not null,
+  status text not null default 'draft' check (status in ('draft', 'posted', 'void')),
+  subtotal numeric(20, 4) not null default 0 check (subtotal >= 0),
+  discount_amount numeric(20, 4) not null default 0 check (discount_amount >= 0),
+  total_amount numeric(20, 4) not null default 0 check (total_amount >= 0),
+  payable_account_id uuid not null,
+  posted_journal_entry_id uuid,
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint purchase_returns_org_id_id_uq unique (organization_id, id),
+  constraint purchase_returns_org_number_uq unique (organization_id, return_number),
+  constraint purchase_returns_purchase_same_org_fk
+    foreign key (organization_id, purchase_id)
+    references public.purchase (organization_id, id)
+    on delete restrict,
+  constraint purchase_returns_supplier_same_org_fk
+    foreign key (organization_id, supplier_id)
+    references public.contacts (organization_id, id)
+    on delete restrict,
+  constraint purchase_returns_account_same_org_fk
+    foreign key (organization_id, payable_account_id)
+    references public.accounts (organization_id, id)
+    on delete restrict,
+  constraint purchase_returns_discount_limit_chk check (discount_amount <= subtotal)
+);
+
+create table public.purchase_return_items (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  purchase_return_id uuid not null,
+  line_number integer not null check (line_number > 0),
+  purchase_item_id uuid not null,
+  product_id uuid not null,
+  quantity numeric(20, 6) not null check (quantity > 0),
+  unit_cost numeric(20, 6) not null check (unit_cost >= 0),
+  line_total numeric(20, 4) not null check (line_total >= 0),
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint purchase_return_items_org_id_id_uq unique (organization_id, id),
+  constraint purchase_return_items_line_uq unique (organization_id, purchase_return_id, line_number),
+  constraint purchase_return_items_return_same_org_fk
+    foreign key (organization_id, purchase_return_id)
+    references public.purchase_returns (organization_id, id)
+    on delete restrict,
+  constraint purchase_return_items_purchase_item_same_org_fk
+    foreign key (organization_id, purchase_item_id)
+    references public.purchase_items (organization_id, id)
+    on delete restrict,
+  constraint purchase_return_items_product_same_org_fk
+    foreign key (organization_id, product_id)
+    references public.products (organization_id, id)
+    on delete restrict
+);
+
+create table public.sales (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  invoice_id text not null check (pg_catalog.length(pg_catalog.btrim(invoice_id)) between 1 and 80),
+  customer_id uuid not null,
+  invoice_date date not null,
+  status text not null default 'draft' check (status in ('draft', 'approved', 'posted', 'partially_returned', 'returned', 'void')),
+  subtotal numeric(20, 4) not null default 0 check (subtotal >= 0),
+  discount_amount numeric(20, 4) not null default 0 check (discount_amount >= 0),
+  total_amount numeric(20, 4) not null default 0 check (total_amount >= 0),
+  receivable_account_id uuid not null,
+  posted_journal_entry_id uuid,
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint sales_org_id_id_uq unique (organization_id, id),
+  constraint sales_org_invoice_uq unique (organization_id, invoice_id),
+  constraint sales_customer_same_org_fk
+    foreign key (organization_id, customer_id)
+    references public.contacts (organization_id, id)
+    on delete restrict,
+  constraint sales_receivable_account_same_org_fk
+    foreign key (organization_id, receivable_account_id)
+    references public.accounts (organization_id, id)
+    on delete restrict,
+  constraint sales_discount_limit_chk check (discount_amount <= subtotal)
+);
+
+create table public.sales_items (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  sales_id uuid not null,
+  line_number integer not null check (line_number > 0),
+  product_id uuid not null,
+  quantity numeric(20, 6) not null check (quantity > 0),
+  unit_price numeric(20, 6) not null check (unit_price >= 0),
+  line_total numeric(20, 4) not null check (line_total >= 0),
+  cogs_unit_cost numeric(20, 6) not null default 0 check (cogs_unit_cost >= 0),
+  cogs_total numeric(20, 4) not null default 0 check (cogs_total >= 0),
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint sales_items_org_id_id_uq unique (organization_id, id),
+  constraint sales_items_line_uq unique (organization_id, sales_id, line_number),
+  constraint sales_items_sales_same_org_fk
+    foreign key (organization_id, sales_id)
+    references public.sales (organization_id, id)
+    on delete restrict,
+  constraint sales_items_product_same_org_fk
+    foreign key (organization_id, product_id)
+    references public.products (organization_id, id)
+    on delete restrict
+);
+
+create table public.sales_returns (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  return_number text not null check (pg_catalog.length(pg_catalog.btrim(return_number)) between 1 and 80),
+  sales_id uuid not null,
+  customer_id uuid not null,
+  return_date date not null,
+  status text not null default 'draft' check (status in ('draft', 'posted', 'void')),
+  subtotal numeric(20, 4) not null default 0 check (subtotal >= 0),
+  discount_amount numeric(20, 4) not null default 0 check (discount_amount >= 0),
+  total_amount numeric(20, 4) not null default 0 check (total_amount >= 0),
+  receivable_account_id uuid not null,
+  posted_journal_entry_id uuid,
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint sales_returns_org_id_id_uq unique (organization_id, id),
+  constraint sales_returns_org_number_uq unique (organization_id, return_number),
+  constraint sales_returns_sales_same_org_fk
+    foreign key (organization_id, sales_id)
+    references public.sales (organization_id, id)
+    on delete restrict,
+  constraint sales_returns_customer_same_org_fk
+    foreign key (organization_id, customer_id)
+    references public.contacts (organization_id, id)
+    on delete restrict,
+  constraint sales_returns_account_same_org_fk
+    foreign key (organization_id, receivable_account_id)
+    references public.accounts (organization_id, id)
+    on delete restrict,
+  constraint sales_returns_discount_limit_chk check (discount_amount <= subtotal)
+);
+
+create table public.sales_return_items (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  sales_return_id uuid not null,
+  line_number integer not null check (line_number > 0),
+  sales_item_id uuid not null,
+  product_id uuid not null,
+  quantity numeric(20, 6) not null check (quantity > 0),
+  unit_price numeric(20, 6) not null check (unit_price >= 0),
+  line_total numeric(20, 4) not null check (line_total >= 0),
+  cogs_unit_cost numeric(20, 6) not null default 0 check (cogs_unit_cost >= 0),
+  cogs_total numeric(20, 4) not null default 0 check (cogs_total >= 0),
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint sales_return_items_org_id_id_uq unique (organization_id, id),
+  constraint sales_return_items_line_uq unique (organization_id, sales_return_id, line_number),
+  constraint sales_return_items_return_same_org_fk
+    foreign key (organization_id, sales_return_id)
+    references public.sales_returns (organization_id, id)
+    on delete restrict,
+  constraint sales_return_items_sales_item_same_org_fk
+    foreign key (organization_id, sales_item_id)
+    references public.sales_items (organization_id, id)
+    on delete restrict,
+  constraint sales_return_items_product_same_org_fk
+    foreign key (organization_id, product_id)
+    references public.products (organization_id, id)
+    on delete restrict
+);
+
+create table public.expenses (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  expense_number text not null check (pg_catalog.length(pg_catalog.btrim(expense_number)) between 1 and 80),
+  expense_category_id uuid not null,
+  contact_id uuid,
+  payable_account_id uuid,
+  expense_date date not null,
+  amount numeric(20, 4) not null check (amount > 0),
+  description text,
+  status text not null default 'draft' check (status in ('draft', 'approved', 'posted', 'void')),
+  posted_journal_entry_id uuid,
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint expenses_org_id_id_uq unique (organization_id, id),
+  constraint expenses_org_number_uq unique (organization_id, expense_number),
+  constraint expenses_category_same_org_fk
+    foreign key (organization_id, expense_category_id)
+    references public.expense_categories (organization_id, id)
+    on delete restrict,
+  constraint expenses_contact_same_org_fk
+    foreign key (organization_id, contact_id)
+    references public.contacts (organization_id, id)
+    on delete restrict,
+  constraint expenses_account_same_org_fk
+    foreign key (organization_id, payable_account_id)
+    references public.accounts (organization_id, id)
+    on delete restrict
+);
+
+create table public.payments (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  payment_number text not null check (pg_catalog.length(pg_catalog.btrim(payment_number)) between 1 and 80),
+  payment_type text not null check (payment_type in ('receipt', 'payment', 'transfer', 'refund')),
+  contact_id uuid,
+  payment_date date not null,
+  amount numeric(20, 4) not null check (amount > 0),
+  account_id uuid not null,
+  settlement_account_id uuid,
+  status text not null default 'draft' check (status in ('draft', 'approved', 'posted', 'void')),
+  posted_journal_entry_id uuid,
+  description text,
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint payments_org_id_id_uq unique (organization_id, id),
+  constraint payments_org_number_uq unique (organization_id, payment_number),
+  constraint payments_contact_same_org_fk
+    foreign key (organization_id, contact_id)
+    references public.contacts (organization_id, id)
+    on delete restrict,
+  constraint payments_account_same_org_fk
+    foreign key (organization_id, account_id)
+    references public.accounts (organization_id, id)
+    on delete restrict,
+  constraint payments_settlement_account_same_org_fk
+    foreign key (organization_id, settlement_account_id)
+    references public.accounts (organization_id, id)
+    on delete restrict
+);
+
+create table public.payment_allocations (
+  id uuid primary key default pg_catalog.gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete restrict,
+  payment_id uuid not null,
+  document_type text not null
+    check (document_type in ('purchase', 'purchase_return', 'sales', 'sales_return', 'expense')),
+  document_id uuid not null,
+  allocated_amount numeric(20, 4) not null check (allocated_amount > 0),
+  created_at timestamptz not null default pg_catalog.now(),
+  updated_at timestamptz not null default pg_catalog.now(),
+  constraint payment_allocations_org_id_id_uq unique (organization_id, id),
+  constraint payment_allocations_payment_document_uq
+    unique (organization_id, payment_id, document_type, document_id),
+  constraint payment_allocations_payment_same_org_fk
+    foreign key (organization_id, payment_id)
+    references public.payments (organization_id, id)
+    on delete restrict
+);
+
+-- Add document-to-journal references after both sides exist. Composite FKs enforce tenant equality.
+alter table public.purchase
+  add constraint purchase_posted_journal_same_org_fk
+  foreign key (organization_id, posted_journal_entry_id)
+  references public.journal_entries (organization_id, id) on delete restrict;
+alter table public.purchase_returns
+  add constraint purchase_returns_posted_journal_same_org_fk
+  foreign key (organization_id, posted_journal_entry_id)
+  references public.journal_entries (organization_id, id) on delete restrict;
+alter table public.sales
+  add constraint sales_posted_journal_same_org_fk
+  foreign key (organization_id, posted_journal_entry_id)
+  references public.journal_entries (organization_id, id) on delete restrict;
+alter table public.sales_returns
+  add constraint sales_returns_posted_journal_same_org_fk
+  foreign key (organization_id, posted_journal_entry_id)
+  references public.journal_entries (organization_id, id) on delete restrict;
+alter table public.expenses
+  add constraint expenses_posted_journal_same_org_fk
+  foreign key (organization_id, posted_journal_entry_id)
+  references public.journal_entries (organization_id, id) on delete restrict;
+alter table public.payments
+  add constraint payments_posted_journal_same_org_fk
+  foreign key (organization_id, posted_journal_entry_id)
+  references public.journal_entries (organization_id, id) on delete restrict;
+
+-- Index FK columns and common tenant/date/status access paths.
+create index journal_entries_org_date_idx on public.journal_entries (organization_id, entry_date desc);
+create index journal_entries_org_status_idx on public.journal_entries (organization_id, status);
+create index journal_entries_period_idx on public.journal_entries (organization_id, accounting_period_id);
+create unique index journal_entries_one_reversal_per_entry_uq
+  on public.journal_entries (organization_id, reversal_of_id) where reversal_of_id is not null;
+create index account_transactions_account_idx on public.account_transactions (organization_id, account_id);
+create index inventory_transactions_product_date_idx
+  on public.inventory_transactions (organization_id, product_id, transaction_date desc);
+create index purchase_supplier_date_idx on public.purchase (organization_id, supplier_id, invoice_date desc);
+create index purchase_items_product_idx on public.purchase_items (organization_id, product_id);
+create index purchase_returns_purchase_idx on public.purchase_returns (organization_id, purchase_id);
+create index purchase_return_items_source_idx on public.purchase_return_items (organization_id, purchase_item_id);
+create index sales_customer_date_idx on public.sales (organization_id, customer_id, invoice_date desc);
+create index sales_items_product_idx on public.sales_items (organization_id, product_id);
+create index sales_returns_sales_idx on public.sales_returns (organization_id, sales_id);
+create index sales_return_items_source_idx on public.sales_return_items (organization_id, sales_item_id);
+create index expenses_org_date_idx on public.expenses (organization_id, expense_date desc);
+create index payments_org_date_idx on public.payments (organization_id, payment_date desc);
+create index payment_allocations_document_idx
+  on public.payment_allocations (organization_id, document_type, document_id);
+
+-- Timestamp maintenance.
+create trigger journal_entries_set_updated_at before update on public.journal_entries
+for each row execute function public.set_updated_at();
+create trigger purchase_set_updated_at before update on public.purchase
+for each row execute function public.set_updated_at();
+create trigger purchase_items_set_updated_at before update on public.purchase_items
+for each row execute function public.set_updated_at();
+create trigger purchase_returns_set_updated_at before update on public.purchase_returns
+for each row execute function public.set_updated_at();
+create trigger purchase_return_items_set_updated_at before update on public.purchase_return_items
+for each row execute function public.set_updated_at();
+create trigger sales_set_updated_at before update on public.sales
+for each row execute function public.set_updated_at();
+create trigger sales_items_set_updated_at before update on public.sales_items
+for each row execute function public.set_updated_at();
+create trigger sales_returns_set_updated_at before update on public.sales_returns
+for each row execute function public.set_updated_at();
+create trigger sales_return_items_set_updated_at before update on public.sales_return_items
+for each row execute function public.set_updated_at();
+create trigger expenses_set_updated_at before update on public.expenses
+for each row execute function public.set_updated_at();
+create trigger payments_set_updated_at before update on public.payments
+for each row execute function public.set_updated_at();
+create trigger payment_allocations_set_updated_at before update on public.payment_allocations
+for each row execute function public.set_updated_at();
+
+-- Enable RLS on every tenant-owned transactional table.
+alter table public.journal_entries enable row level security;
+alter table public.account_transactions enable row level security;
+alter table public.inventory_transactions enable row level security;
+alter table public.inventory_balances enable row level security;
+alter table public.purchase enable row level security;
+alter table public.purchase_items enable row level security;
+alter table public.purchase_returns enable row level security;
+alter table public.purchase_return_items enable row level security;
+alter table public.sales enable row level security;
+alter table public.sales_items enable row level security;
+alter table public.sales_returns enable row level security;
+alter table public.sales_return_items enable row level security;
+alter table public.expenses enable row level security;
+alter table public.payments enable row level security;
+alter table public.payment_allocations enable row level security;
+
+-- Read policies. No browser-role INSERT/UPDATE/DELETE policies are granted in this phase.
+create policy journal_entries_select_member on public.journal_entries
+  for select to authenticated using (public.is_active_org_member(organization_id));
+create policy account_transactions_select_member on public.account_transactions
+  for select to authenticated using (public.is_active_org_member(organization_id));
+create policy inventory_transactions_select_member on public.inventory_transactions
+  for select to authenticated using (public.is_active_org_member(organization_id));
+create policy inventory_balances_select_member on public.inventory_balances
+  for select to authenticated using (public.is_active_org_member(organization_id));
+create policy purchase_select_member on public.purchase
+  for select to authenticated using (public.is_active_org_member(organization_id));
+create policy purchase_items_select_member on public.purchase_items
+  for select to authenticated using (public.is_active_org_member(organization_id));
+create policy purchase_returns_select_member on public.purchase_returns
+  for select to authenticated using (public.is_active_org_member(organization_id));
+create policy purchase_return_items_select_member on public.purchase_return_items
+  for select to authenticated using (public.is_active_org_member(organization_id));
+create policy sales_select_member on public.sales
+  for select to authenticated using (public.is_active_org_member(organization_id));
+create policy sales_items_select_member on public.sales_items
+  for select to authenticated using (public.is_active_org_member(organization_id));
+create policy sales_returns_select_member on public.sales_returns
+  for select to authenticated using (public.is_active_org_member(organization_id));
+create policy sales_return_items_select_member on public.sales_return_items
+  for select to authenticated using (public.is_active_org_member(organization_id));
+create policy expenses_select_member on public.expenses
+  for select to authenticated using (public.is_active_org_member(organization_id));
+create policy payments_select_member on public.payments
+  for select to authenticated using (public.is_active_org_member(organization_id));
+create policy payment_allocations_select_member on public.payment_allocations
+  for select to authenticated using (public.is_active_org_member(organization_id));
+
+revoke all on public.journal_entries, public.account_transactions,
+  public.inventory_transactions, public.inventory_balances, public.purchase,
+  public.purchase_items, public.purchase_returns, public.purchase_return_items,
+  public.sales, public.sales_items, public.sales_returns, public.sales_return_items,
+  public.expenses, public.payments, public.payment_allocations from anon, authenticated;
+
+grant select on public.journal_entries, public.account_transactions,
+  public.inventory_transactions, public.inventory_balances, public.purchase,
+  public.purchase_items, public.purchase_returns, public.purchase_return_items,
+  public.sales, public.sales_items, public.sales_returns, public.sales_return_items,
+  public.expenses, public.payments, public.payment_allocations to authenticated;
+
+
+
+-- ============================================================================
+-- RBAC BOOTSTRAP
+-- Source: 20261102000300_rbac_bootstrap.sql
+-- ============================================================================
+
+-- Zero ERP: permission catalog, organization bootstrap, and Administrator safeguards
+-- Migration: 20261102000300_rbac_bootstrap.sql
+-- Depends on 20261102000100_core_foundation.sql.
+
+insert into public.permissions (permission_key, name, description, module)
+values
+  ('organization.read', 'View organization', 'View organization profile and settings.', 'organization'),
+  ('organization.update', 'Update organization', 'Update organization profile and settings.', 'organization'),
+  ('users.read', 'View members', 'View organization memberships.', 'users'),
+  ('users.manage', 'Manage members', 'Invite, deactivate, and assign roles to members.', 'users'),
+  ('roles.read', 'View roles', 'View organization roles and their permissions.', 'roles'),
+  ('roles.manage', 'Manage roles', 'Create and update organization-specific custom roles.', 'roles'),
+  ('accounting_periods.read', 'View accounting periods', 'View accounting periods.', 'accounting'),
+  ('accounting_periods.manage', 'Manage accounting periods', 'Create and close accounting periods.', 'accounting'),
+  ('accounts.read', 'View chart of accounts', 'View accounts and account hierarchy.', 'accounting'),
+  ('accounts.manage', 'Manage chart of accounts', 'Create and update chart of accounts.', 'accounting'),
+  ('journal_entries.read', 'View journal entries', 'View journal entries and lines.', 'accounting'),
+  ('journal_entries.create', 'Create journal entries', 'Create draft journal entries.', 'accounting'),
+  ('journal_entries.post', 'Post journal entries', 'Post balanced journal entries.', 'accounting'),
+  ('journal_entries.reverse', 'Reverse journal entries', 'Create controlled reversals of posted entries.', 'accounting'),
+  ('contacts.read', 'View contacts', 'View customers, suppliers, and other contacts.', 'contacts'),
+  ('contacts.manage', 'Manage contacts', 'Create and update contacts.', 'contacts'),
+  ('products.read', 'View products', 'View products and units.', 'inventory'),
+  ('products.manage', 'Manage products', 'Create and update products and account mappings.', 'inventory'),
+  ('inventory.read', 'View inventory', 'View stock balances and movements.', 'inventory'),
+  ('inventory.adjust', 'Adjust inventory', 'Post authorized inventory adjustments.', 'inventory'),
+  ('purchases.read', 'View purchases', 'View purchase invoices and returns.', 'purchases'),
+  ('purchases.create', 'Create purchases', 'Create and update draft purchase documents.', 'purchases'),
+  ('purchases.post', 'Post purchases', 'Post purchases and related stock/accounting effects.', 'purchases'),
+  ('purchases.returns.post', 'Post purchase returns', 'Post purchase returns.', 'purchases'),
+  ('sales.read', 'View sales', 'View sales invoices and returns.', 'sales'),
+  ('sales.create', 'Create sales', 'Create and update draft sales documents.', 'sales'),
+  ('sales.post', 'Post sales', 'Post sales and related stock/accounting effects.', 'sales'),
+  ('sales.returns.post', 'Post sales returns', 'Post sales returns.', 'sales'),
+  ('expenses.read', 'View expenses', 'View expense records.', 'expenses'),
+  ('expenses.manage', 'Manage expenses', 'Create and update draft expenses.', 'expenses'),
+  ('expenses.post', 'Post expenses', 'Post expenses to the ledger.', 'expenses'),
+  ('payments.read', 'View payments', 'View payments and allocations.', 'payments'),
+  ('payments.manage', 'Manage payments', 'Create payments and manage draft allocations.', 'payments'),
+  ('payments.post', 'Post payments', 'Post payments and allocation effects.', 'payments'),
+  ('reports.read', 'View reports', 'View organization financial and operational reports.', 'reports')
+on conflict (permission_key) do update
+set name = excluded.name,
+    description = excluded.description,
+    module = excluded.module;
+
+-- New permissions are assigned to existing system Administrator roles as part of
+-- the same migration, so deployments do not leave a protected admin role incomplete.
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+cross join public.permissions p
+where r.is_system_role and r.name = 'Administrator'
+on conflict (role_id, permission_id) do nothing;
+
+create or replace function public.create_organization_with_admin(
+  p_name text,
+  p_currency text default 'BDT',
+  p_timezone text default 'Asia/Dhaka'
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_user_id uuid;
+  v_organization_id uuid;
+  v_role_id uuid;
+begin
+  v_user_id := (select auth.uid());
+
+  if v_user_id is null then
+    raise exception using
+      errcode = '42501',
+      message = 'Authentication is required to create an organization.';
+  end if;
+
+  if p_name is null or pg_catalog.length(pg_catalog.btrim(p_name)) not between 1 and 160 then
+    raise exception using
+      errcode = '22023',
+      message = 'Organization name must contain between 1 and 160 characters.';
+  end if;
+
+  if p_currency is null or p_currency !~ '^[A-Z]{3}$' then
+    raise exception using
+      errcode = '22023',
+      message = 'Currency must be a three-letter uppercase ISO currency code.';
+  end if;
+
+  if p_timezone is null or pg_catalog.length(pg_catalog.btrim(p_timezone)) = 0 then
+    raise exception using
+      errcode = '22023',
+      message = 'Timezone is required.';
+  end if;
+
+  insert into public.organizations (name, currency, timezone)
+  values (pg_catalog.btrim(p_name), p_currency, p_timezone)
+  returning id into v_organization_id;
+
+  insert into public.roles (organization_id, name, status, is_system_role)
+  values (v_organization_id, 'Administrator', 'active', true)
+  returning id into v_role_id;
+
+  insert into public.role_permissions (role_id, permission_id)
+  select v_role_id, p.id
+  from public.permissions p
+  on conflict (role_id, permission_id) do nothing;
+
+  insert into public.organization_users (organization_id, user_id, role_id, is_active)
+  values (v_organization_id, v_user_id, v_role_id, true);
+
+  return v_organization_id;
+end;
+$$;
+
+revoke all on function public.create_organization_with_admin(text, text, text) from public, anon;
+grant execute on function public.create_organization_with_admin(text, text, text) to authenticated;
+
+create or replace function public.guard_system_role_mutation()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if old.is_system_role then
+    if tg_op = 'DELETE' then
+      raise exception using errcode = '42501', message = 'System roles cannot be deleted.';
+    end if;
+
+    if new.is_system_role is distinct from true
+       or new.name is distinct from old.name
+       or new.organization_id is distinct from old.organization_id
+       or new.status is distinct from 'active' then
+      raise exception using errcode = '42501', message = 'System roles cannot be renamed, moved, or deactivated.';
+    end if;
+  end if;
+
+  if tg_op = 'DELETE' then
+    return old;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger roles_guard_system_role
+before update or delete on public.roles
+for each row execute function public.guard_system_role_mutation();
+
+create or replace function public.guard_administrator_membership()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_is_active_admin boolean := false;
+  v_remaining_admins integer;
+begin
+  select exists (
+    select 1
+    from public.roles r
+    where r.id = old.role_id
+      and r.organization_id = old.organization_id
+      and r.is_system_role
+      and r.name = 'Administrator'
+  ) into v_is_active_admin;
+
+  if not old.is_active or not v_is_active_admin then
+    if tg_op = 'DELETE' then return old; end if;
+    return new;
+  end if;
+
+  if tg_op = 'UPDATE'
+     and new.is_active
+     and new.role_id = old.role_id
+     and new.organization_id = old.organization_id then
+    return new;
+  end if;
+
+  select pg_catalog.count(*)
+  into v_remaining_admins
+  from public.organization_users ou
+  join public.roles r
+    on r.id = ou.role_id
+   and r.organization_id = ou.organization_id
+  where ou.organization_id = old.organization_id
+    and ou.is_active
+    and r.is_system_role
+    and r.name = 'Administrator'
+    and ou.id <> old.id;
+
+  if v_remaining_admins < 1 then
+    raise exception using
+      errcode = '23514',
+      message = 'An organization must retain at least one active Administrator.';
+  end if;
+
+  if tg_op = 'DELETE' then return old; end if;
+  return new;
+end;
+$$;
+
+create trigger organization_users_guard_last_admin
+before update or delete on public.organization_users
+for each row execute function public.guard_administrator_membership();
+
+create or replace function public.guard_system_role_permissions()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_protected_role boolean;
+begin
+  select exists (
+    select 1
+    from public.roles r
+    where r.id = old.role_id
+      and r.is_system_role
+      and r.name = 'Administrator'
+  ) or (
+    tg_op = 'UPDATE' and exists (
+      select 1
+      from public.roles r
+      where r.id = new.role_id
+        and r.is_system_role
+        and r.name = 'Administrator'
+    )
+  )
+  into v_protected_role;
+
+  if coalesce(v_protected_role, false) then
+    raise exception using
+      errcode = '42501',
+      message = 'Administrator permissions cannot be removed or reassigned.';
+  end if;
+
+  if tg_op = 'DELETE' then return old; end if;
+  return new;
+end;
+$$;
+
+create trigger role_permissions_guard_admin
+before update or delete on public.role_permissions
+for each row execute function public.guard_system_role_permissions();
+
+revoke all on function public.guard_system_role_mutation() from public, anon, authenticated;
+revoke all on function public.guard_administrator_membership() from public, anon, authenticated;
+revoke all on function public.guard_system_role_permissions() from public, anon, authenticated;
+
+
+
+-- ============================================================================
+-- MANUAL JOURNAL POSTING RPC
+-- Source: 20261102000400_manual_journal_posting_rpc.sql
+-- ============================================================================
+
+-- Zero ERP: atomic balanced manual journal posting RPC
+-- Depends on core foundation, transaction schema, and RBAC bootstrap migrations.
+-- Browser clients cannot write ledger tables directly; this function is the controlled posting boundary.
+
+create or replace function public.post_manual_journal_entry(
+  p_organization_id uuid,
+  p_entry_number text,
+  p_accounting_period_id uuid,
+  p_entry_date date,
+  p_description text,
+  p_lines jsonb
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_user_id uuid;
+  v_journal_entry_id uuid;
+  v_period_status text;
+  v_period_start date;
+  v_period_end date;
+  v_line_count integer;
+  v_invalid_line_count integer;
+  v_debit_total numeric(20, 4);
+  v_credit_total numeric(20, 4);
+begin
+  v_user_id := (select auth.uid());
+
+  if v_user_id is null then
+    raise exception using errcode = '42501',
+      message = 'Authentication is required to post a journal entry.';
+  end if;
+
+  if not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, 'journal_entries.create')
+     or not public.has_org_permission(p_organization_id, 'journal_entries.post') then
+    raise exception using errcode = '42501',
+      message = 'You are not authorized to create and post journal entries for this organization.';
+  end if;
+
+  if p_entry_number is null
+     or pg_catalog.length(pg_catalog.btrim(p_entry_number)) not between 1 and 80 then
+    raise exception using errcode = '22023',
+      message = 'Entry number must contain between 1 and 80 characters.';
+  end if;
+
+  if p_entry_date is null then
+    raise exception using errcode = '22023',
+      message = 'Entry date is required.';
+  end if;
+
+  if p_lines is null or pg_catalog.jsonb_typeof(p_lines) <> 'array' then
+    raise exception using errcode = '22023',
+      message = 'Journal lines must be provided as a JSON array.';
+  end if;
+
+  if pg_catalog.jsonb_array_length(p_lines) < 2 then
+    raise exception using errcode = '22023',
+      message = 'At least two journal lines are required.';
+  end if;
+
+  -- Lock the period row to serialize posting against a concurrent period close.
+  select ap.status, ap.start_date, ap.end_date
+    into v_period_status, v_period_start, v_period_end
+  from public.accounting_periods ap
+  where ap.organization_id = p_organization_id
+    and ap.id = p_accounting_period_id
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503',
+      message = 'Accounting period does not exist in this organization.';
+  end if;
+
+  if v_period_status <> 'open' then
+    raise exception using errcode = '23514',
+      message = 'Journal entries can only be posted to an open accounting period.';
+  end if;
+
+  if p_entry_date < v_period_start or p_entry_date > v_period_end then
+    raise exception using errcode = '23514',
+      message = 'Entry date must fall within the selected accounting period.';
+  end if;
+
+  select
+    pg_catalog.count(*)::integer,
+    pg_catalog.count(*) filter (
+      where x.account_id is null
+         or x.debit is null
+         or x.credit is null
+         or x.debit < 0
+         or x.credit < 0
+         or not ((x.debit > 0 and x.credit = 0) or (x.credit > 0 and x.debit = 0))
+    )::integer,
+    coalesce(pg_catalog.sum(x.debit), 0),
+    coalesce(pg_catalog.sum(x.credit), 0)
+  into v_line_count, v_invalid_line_count, v_debit_total, v_credit_total
+  from pg_catalog.jsonb_to_recordset(p_lines) as x(
+    account_id uuid,
+    description text,
+    debit numeric,
+    credit numeric,
+    contact_id uuid
+  );
+
+  if v_line_count <> pg_catalog.jsonb_array_length(p_lines) then
+    raise exception using errcode = '22023',
+      message = 'Journal lines could not be parsed.';
+  end if;
+
+  if v_invalid_line_count > 0 then
+    raise exception using errcode = '22023',
+      message = 'Each journal line must contain an account, non-negative amounts, and exactly one positive debit or credit.';
+  end if;
+
+  if v_debit_total <= 0 or v_debit_total <> v_credit_total then
+    raise exception using errcode = '23514',
+      message = 'Journal entry is not balanced: total debits must equal total credits and be greater than zero.';
+  end if;
+
+  if exists (
+    select 1
+    from pg_catalog.jsonb_to_recordset(p_lines) as x(
+      account_id uuid,
+      description text,
+      debit numeric,
+      credit numeric,
+      contact_id uuid
+    )
+    left join public.accounts a
+      on a.organization_id = p_organization_id
+     and a.id = x.account_id
+    where a.id is null or not a.is_active or not a.is_postable
+  ) then
+    raise exception using errcode = '23503',
+      message = 'Every journal line must reference an active, postable account in this organization.';
+  end if;
+
+  if exists (
+    select 1
+    from pg_catalog.jsonb_to_recordset(p_lines) as x(
+      account_id uuid,
+      description text,
+      debit numeric,
+      credit numeric,
+      contact_id uuid
+    )
+    left join public.contacts c
+      on c.organization_id = p_organization_id
+     and c.id = x.contact_id
+    where x.contact_id is not null and (c.id is null or not c.is_active)
+  ) then
+    raise exception using errcode = '23503',
+      message = 'Each contact on a journal line must be active and belong to this organization.';
+  end if;
+
+  insert into public.journal_entries (
+    organization_id,
+    entry_number,
+    accounting_period_id,
+    entry_date,
+    entry_type,
+    status,
+    description,
+    posted_at,
+    created_by
+  )
+  values (
+    p_organization_id,
+    pg_catalog.btrim(p_entry_number),
+    p_accounting_period_id,
+    p_entry_date,
+    'manual',
+    'posted',
+    nullif(pg_catalog.btrim(coalesce(p_description, '')), ''),
+    pg_catalog.now(),
+    v_user_id
+  )
+  returning id into v_journal_entry_id;
+
+  insert into public.account_transactions (
+    organization_id,
+    journal_entry_id,
+    account_id,
+    line_number,
+    description,
+    debit,
+    credit,
+    contact_id
+  )
+  select
+    p_organization_id,
+    v_journal_entry_id,
+    x.account_id,
+    x.ordinality::integer,
+    nullif(pg_catalog.btrim(coalesce(x.description, '')), ''),
+    x.debit,
+    x.credit,
+    x.contact_id
+  from pg_catalog.jsonb_to_recordset(p_lines) with ordinality as x(
+    account_id uuid,
+    description text,
+    debit numeric,
+    credit numeric,
+    contact_id uuid,
+    ordinality bigint
+  );
+
+  return v_journal_entry_id;
+end;
+$$;
+
+revoke all on function public.post_manual_journal_entry(uuid, text, uuid, date, text, jsonb)
+  from public, anon;
+grant execute on function public.post_manual_journal_entry(uuid, text, uuid, date, text, jsonb)
+  to authenticated;
+
+
+
+-- ============================================================================
+-- PURCHASE POSTING RPC
+-- Source: 20261102000500_purchase_posting_rpc.sql
+-- ============================================================================
+
+-- Zero ERP: controlled purchase posting with inventory valuation and ledger effects.
+-- Discounts are allocated proportionally to line values; rounding residue goes to the
+-- final line so inventory valuation and accounts payable reconcile exactly.
+
+create or replace function public.post_purchase(
+  p_organization_id uuid,
+  p_purchase_id uuid
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_user_id uuid;
+  v_purchase public.purchase%rowtype;
+  v_period_id uuid;
+  v_period_status text;
+  v_supplier_active boolean;
+  v_line_count integer;
+  v_subtotal numeric(20,4);
+  v_balance_quantity numeric(20,6);
+  v_balance_value numeric(20,4);
+  v_line_net numeric(20,4);
+  v_allocated numeric(20,4) := 0;
+  v_new_quantity numeric(20,6);
+  v_new_value numeric(20,4);
+  v_new_average numeric(20,6);
+  v_journal_id uuid;
+  v_line record;
+  v_last_line integer;
+begin
+  v_user_id := (select auth.uid());
+  if v_user_id is null then
+    raise exception using errcode = '42501', message = 'Authentication is required to post a purchase.';
+  end if;
+
+  if not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, 'purchases.post') then
+    raise exception using errcode = '42501', message = 'You are not authorized to post purchases for this organization.';
+  end if;
+
+  select p.* into v_purchase
+  from public.purchase p
+  where p.organization_id = p_organization_id and p.id = p_purchase_id
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503', message = 'Purchase document was not found in this organization.';
+  end if;
+  if v_purchase.status not in ('draft', 'approved') or v_purchase.posted_journal_entry_id is not null then
+    raise exception using errcode = '23514', message = 'Only an unposted draft or approved purchase can be posted.';
+  end if;
+
+  select c.is_active into v_supplier_active
+  from public.contacts c
+  where c.organization_id = p_organization_id and c.id = v_purchase.supplier_id;
+  if coalesce(v_supplier_active, false) is not true then
+    raise exception using errcode = '23503', message = 'Supplier must be active and belong to this organization.';
+  end if;
+
+  select count(*)::integer, coalesce(sum(pi.line_total), 0), max(pi.line_number)
+  into v_line_count, v_subtotal, v_last_line
+  from public.purchase_items pi
+  where pi.organization_id = p_organization_id and pi.purchase_id = p_purchase_id;
+
+  if v_line_count < 1 then
+    raise exception using errcode = '23514', message = 'A purchase must contain at least one item.';
+  end if;
+  if v_subtotal <> v_purchase.subtotal then
+    raise exception using errcode = '23514', message = 'Purchase subtotal must equal the sum of item line totals.';
+  end if;
+  if v_purchase.discount_amount > v_subtotal
+     or v_purchase.total_amount <> v_subtotal - v_purchase.discount_amount
+     or v_purchase.total_amount <= 0 then
+    raise exception using errcode = '23514', message = 'Purchase totals are inconsistent or net total is not positive.';
+  end if;
+
+  select ap.id, ap.status into v_period_id, v_period_status
+  from public.accounting_periods ap
+  where ap.organization_id = p_organization_id
+    and v_purchase.invoice_date between ap.start_date and ap.end_date
+  order by ap.start_date desc
+  limit 1
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503', message = 'No accounting period covers the purchase invoice date.';
+  end if;
+  if v_period_status <> 'open' then
+    raise exception using errcode = '23514', message = 'Purchase can only be posted to an open accounting period.';
+  end if;
+
+  if not exists (
+    select 1 from public.accounts a
+    where a.organization_id = p_organization_id
+      and a.id = v_purchase.payable_account_id
+      and a.is_active and a.is_postable and a.is_control_account
+      and a.account_type = 'liability'
+  ) then
+    raise exception using errcode = '23503', message = 'Payable account must be an active, postable liability account.';
+  end if;
+
+  if exists (
+    select 1
+    from public.purchase_items pi
+    join public.products pr on pr.organization_id = pi.organization_id and pr.id = pi.product_id
+    left join public.accounts a on a.organization_id = pr.organization_id and a.id = pr.inventory_account_id
+    where pi.organization_id = p_organization_id and pi.purchase_id = p_purchase_id
+      and (not pr.is_active or a.id is null or not a.is_active or not a.is_postable
+        or a.account_type <> 'asset'
+        or pi.line_total <> round(pi.quantity * pi.unit_cost, 4))
+  ) then
+    raise exception using errcode = '23514',
+      message = 'Each item requires an active product, a postable inventory asset account, and a consistent line total.';
+  end if;
+
+  -- Lock stock rows in stable order to reduce deadlocks when purchases overlap.
+  for v_line in
+    select distinct pi.product_id
+    from public.purchase_items pi
+    where pi.organization_id = p_organization_id and pi.purchase_id = p_purchase_id
+    order by pi.product_id
+  loop
+    insert into public.inventory_balances (organization_id, product_id, quantity, average_cost, inventory_value)
+    values (p_organization_id, v_line.product_id, 0, 0, 0)
+    on conflict (organization_id, product_id) do nothing;
+
+    select b.quantity, b.inventory_value into v_balance_quantity, v_balance_value
+    from public.inventory_balances b
+    where b.organization_id = p_organization_id and b.product_id = v_line.product_id
+    for update;
+
+    if v_balance_quantity < 0 or v_balance_value < 0 then
+      raise exception using errcode = '23514',
+        message = 'Negative inventory balance must be reconciled before purchase posting.';
+    end if;
+  end loop;
+
+  insert into public.journal_entries (
+    organization_id, entry_number, accounting_period_id, entry_date,
+    entry_type, status, reference_type, reference_id, description, posted_at, created_by
+  )
+  values (
+    p_organization_id,
+    'PUR-' || pg_catalog.replace(p_purchase_id::text, '-', ''),
+    v_period_id, v_purchase.invoice_date, 'purchase', 'posted',
+    'purchase', p_purchase_id, 'Purchase invoice ' || v_purchase.invoice_id,
+    pg_catalog.now(), v_user_id
+  )
+  returning id into v_journal_id;
+
+  -- Apply proportional discount allocation with final-line rounding adjustment.
+  for v_line in
+    select pi.id, pi.product_id, pi.quantity, pi.line_total, pi.line_number,
+           pr.inventory_account_id
+    from public.purchase_items pi
+    join public.products pr on pr.organization_id = pi.organization_id and pr.id = pi.product_id
+    where pi.organization_id = p_organization_id and pi.purchase_id = p_purchase_id
+    order by pi.line_number
+  loop
+    if v_line.line_number = v_last_line then
+      v_line_net := v_purchase.total_amount - v_allocated;
+    else
+      v_line_net := round(v_line.line_total * v_purchase.total_amount / v_subtotal, 4);
+      v_allocated := v_allocated + v_line_net;
+    end if;
+
+    select b.quantity, b.inventory_value into v_balance_quantity, v_balance_value
+    from public.inventory_balances b
+    where b.organization_id = p_organization_id and b.product_id = v_line.product_id
+    for update;
+
+    v_new_quantity := v_balance_quantity + v_line.quantity;
+    v_new_value := v_balance_value + v_line_net;
+    v_new_average := case when v_new_quantity = 0 then 0 else round(v_new_value / v_new_quantity, 6) end;
+
+    update public.inventory_balances
+    set quantity = v_new_quantity, inventory_value = v_new_value,
+        average_cost = v_new_average, updated_at = pg_catalog.now()
+    where organization_id = p_organization_id and product_id = v_line.product_id;
+
+    insert into public.inventory_transactions (
+      organization_id, transaction_number, product_id, transaction_date,
+      transaction_type, direction, quantity, unit_cost, total_value,
+      reference_type, reference_id, unit_cost_before, average_cost_after, created_by
+    )
+    values (
+      p_organization_id,
+      'PUR-' || pg_catalog.replace(p_purchase_id::text, '-', '') || '-' || v_line.line_number::text,
+      v_line.product_id, v_purchase.invoice_date, 'purchase', 'in', v_line.quantity,
+      round(v_line_net / v_line.quantity, 6), v_line_net,
+      'purchase', p_purchase_id,
+      case when v_balance_quantity = 0 then null else round(v_balance_value / v_balance_quantity, 6) end,
+      v_new_average, v_user_id
+    );
+  end loop;
+
+  -- Ledger debit amounts use the same allocation formula and rounding residue as stock valuation.
+  insert into public.account_transactions (
+    organization_id, journal_entry_id, account_id, line_number,
+    description, debit, credit, contact_id
+  )
+  select p_organization_id, v_journal_id, g.inventory_account_id,
+         row_number() over (order by g.inventory_account_id)::integer,
+         'Inventory received - ' || v_purchase.invoice_id, g.debit_amount, 0, v_purchase.supplier_id
+  from (
+    select pr.inventory_account_id,
+           sum(case
+             when pi.line_number = v_last_line then
+               v_purchase.total_amount - coalesce((
+                 select sum(round(pi2.line_total * v_purchase.total_amount / v_subtotal, 4))
+                 from public.purchase_items pi2
+                 where pi2.organization_id = p_organization_id
+                   and pi2.purchase_id = p_purchase_id
+                   and pi2.line_number <> v_last_line
+               ), 0)
+             else round(pi.line_total * v_purchase.total_amount / v_subtotal, 4)
+           end) as debit_amount
+    from public.purchase_items pi
+    join public.products pr on pr.organization_id = pi.organization_id and pr.id = pi.product_id
+    where pi.organization_id = p_organization_id and pi.purchase_id = p_purchase_id
+    group by pr.inventory_account_id
+  ) g
+  where g.debit_amount > 0;
+
+  insert into public.account_transactions (
+    organization_id, journal_entry_id, account_id, line_number,
+    description, debit, credit, contact_id
+  )
+  values (
+    p_organization_id, v_journal_id, v_purchase.payable_account_id,
+    (select count(*)::integer + 1
+     from public.account_transactions atx
+     where atx.organization_id = p_organization_id and atx.journal_entry_id = v_journal_id),
+    'Accounts payable - ' || v_purchase.invoice_id, 0, v_purchase.total_amount, v_purchase.supplier_id
+  );
+
+  update public.purchase
+  set status = 'posted', posted_journal_entry_id = v_journal_id, updated_at = pg_catalog.now()
+  where organization_id = p_organization_id and id = p_purchase_id;
+
+  return v_journal_id;
+end;
+$$;
+
+revoke all on function public.post_purchase(uuid, uuid) from public, anon;
+grant execute on function public.post_purchase(uuid, uuid) to authenticated;
+
+
+
+-- ============================================================================
+-- OPENING BALANCES
+-- Source: 20261103000100_opening_balances_existing_tables.sql
+-- ============================================================================
+
+-- Zero ERP: one-time opening balances using existing ledger and inventory tables only.
+-- No new tables are introduced.
+-- Depends on migrations 001-005.
+
+-- A single organization-level opening journal is allowed. Corrections after posting
+-- must use the normal reversal/adjustment workflow, not a second opening post.
+create unique index journal_entries_one_org_opening_balance_uq
+  on public.journal_entries (organization_id)
+  where entry_type = 'opening_balance'
+    and reference_type = 'organization_opening_balance';
+
+-- Add a dedicated permission and grant it to existing Administrator system roles.
+insert into public.permissions (permission_key, name, description, module)
+values (
+  'opening_balances.post',
+  'Post opening balances',
+  'Post an organization''s one-time general ledger, party, and inventory opening balances.',
+  'accounting'
+)
+on conflict (permission_key) do update
+set name = excluded.name,
+    description = excluded.description,
+    module = excluded.module;
+
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+cross join public.permissions p
+where r.is_system_role
+  and r.name = 'Administrator'
+  and p.permission_key = 'opening_balances.post'
+on conflict (role_id, permission_id) do nothing;
+
+create or replace function public.post_opening_balances(
+  p_organization_id uuid,
+  p_accounting_period_id uuid,
+  p_entry_date date,
+  p_account_lines jsonb,
+  p_party_balances jsonb,
+  p_inventory_lines jsonb,
+  p_description text default 'Opening balances'
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_user_id uuid;
+  v_journal_entry_id uuid;
+  v_period_status text;
+  v_period_start date;
+  v_period_end date;
+  v_debit_total numeric(20,4) := 0;
+  v_credit_total numeric(20,4) := 0;
+  v_inventory_value numeric(20,4) := 0;
+  v_entry_number text;
+  v_product record;
+begin
+  v_user_id := (select auth.uid());
+
+  if v_user_id is null then
+    raise exception using errcode = '42501',
+      message = 'Authentication is required to post opening balances.';
+  end if;
+
+  if not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, 'opening_balances.post') then
+    raise exception using errcode = '42501',
+      message = 'You are not authorized to post opening balances for this organization.';
+  end if;
+
+  if p_entry_date is null then
+    raise exception using errcode = '22023',
+      message = 'Opening balance date is required.';
+  end if;
+
+  if p_account_lines is null or pg_catalog.jsonb_typeof(p_account_lines) <> 'array'
+     or p_party_balances is null or pg_catalog.jsonb_typeof(p_party_balances) <> 'array'
+     or p_inventory_lines is null or pg_catalog.jsonb_typeof(p_inventory_lines) <> 'array' then
+    raise exception using errcode = '22023',
+      message = 'Account, party, and inventory lines must each be supplied as JSON arrays.';
+  end if;
+
+  -- Serialize organization-level opening posts and prevent a second opening balance.
+  perform 1
+  from public.organizations o
+  where o.id = p_organization_id
+    and o.is_active
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503',
+      message = 'Active organization was not found.';
+  end if;
+
+  if exists (
+    select 1
+    from public.journal_entries je
+    where je.organization_id = p_organization_id
+      and je.entry_type = 'opening_balance'
+      and je.reference_type = 'organization_opening_balance'
+  ) then
+    raise exception using errcode = '23514',
+      message = 'Opening balances have already been posted for this organization. Use a reversal or adjustment for corrections.';
+  end if;
+
+  -- Lock the accounting period so a concurrent close cannot race this posting.
+  select ap.status, ap.start_date, ap.end_date
+    into v_period_status, v_period_start, v_period_end
+  from public.accounting_periods ap
+  where ap.organization_id = p_organization_id
+    and ap.id = p_accounting_period_id
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503',
+      message = 'Accounting period does not exist in this organization.';
+  end if;
+
+  if v_period_status <> 'open' then
+    raise exception using errcode = '23514',
+      message = 'Opening balances can only be posted to an open accounting period.';
+  end if;
+
+  if p_entry_date < v_period_start or p_entry_date > v_period_end then
+    raise exception using errcode = '23514',
+      message = 'Opening balance date must fall within the selected accounting period.';
+  end if;
+
+  -- Validate ordinary GL lines. Accounts also used by party/inventory detail
+  -- lines are rejected below to avoid double-counting those control balances.
+  if exists (
+    select 1
+    from pg_catalog.jsonb_to_recordset(p_account_lines) as x(
+      account_id uuid, debit numeric, credit numeric, description text
+    )
+    where x.account_id is null
+       or x.debit is null
+       or x.credit is null
+       or x.debit < 0
+       or x.credit < 0
+       or x.debit <> round(x.debit, 4)
+       or x.credit <> round(x.credit, 4)
+       or not ((x.debit > 0 and x.credit = 0) or (x.credit > 0 and x.debit = 0))
+  ) then
+    raise exception using errcode = '22023',
+      message = 'Each GL line must contain an account, non-negative amounts, and exactly one positive debit or credit.';
+  end if;
+
+  if exists (
+    select 1
+    from pg_catalog.jsonb_to_recordset(p_account_lines) as x(
+      account_id uuid, debit numeric, credit numeric, description text
+    )
+    left join public.accounts a
+      on a.organization_id = p_organization_id
+     and a.id = x.account_id
+    where a.id is null
+       or not a.is_active
+       or not a.is_postable
+  ) then
+    raise exception using errcode = '23503',
+      message = 'GL lines must reference active, postable accounts in this organization.';
+  end if;
+
+  -- Validate customer/supplier summary balances. Contacts do not carry a
+  -- customer-vs-supplier discriminator in the current schema, so party_type
+  -- is supplied explicitly by the caller and the contact must belong to this org.
+  if exists (
+    select 1
+    from pg_catalog.jsonb_to_recordset(p_party_balances) as x(
+      contact_id uuid, party_type text, account_id uuid, amount numeric, description text
+    )
+    where x.contact_id is null
+       or x.party_type is null
+       or x.party_type not in ('customer', 'supplier')
+       or x.account_id is null
+       or x.amount is null
+       or x.amount <= 0
+       or x.amount <> round(x.amount, 4)
+  ) then
+    raise exception using errcode = '22023',
+      message = 'Each party balance must include a contact, customer/supplier type, control account, and positive amount.';
+  end if;
+
+  if exists (
+    select 1
+    from pg_catalog.jsonb_to_recordset(p_party_balances) as x(
+      contact_id uuid, party_type text, account_id uuid, amount numeric, description text
+    )
+    left join public.contacts c
+      on c.organization_id = p_organization_id
+     and c.id = x.contact_id
+    left join public.accounts a
+      on a.organization_id = p_organization_id
+     and a.id = x.account_id
+    where c.id is null or not c.is_active
+       or a.id is null or not a.is_active or not a.is_postable
+       or not a.is_control_account
+       or (x.party_type = 'customer' and a.account_type <> 'asset')
+       or (x.party_type = 'supplier' and a.account_type <> 'liability')
+  ) then
+    raise exception using errcode = '23503',
+      message = 'Customer balances require an active receivable asset control account; supplier balances require an active payable liability control account. Contacts and accounts must belong to this organization.';
+  end if;
+
+  -- Validate inventory lines. One opening line per product keeps the initial
+  -- valuation deterministic with the current product-level inventory schema.
+  if exists (
+    select 1
+    from pg_catalog.jsonb_to_recordset(p_inventory_lines) as x(
+      product_id uuid, quantity numeric, unit_cost numeric
+    )
+    where x.product_id is null
+       or x.quantity is null or x.quantity <= 0
+       or x.quantity <> round(x.quantity, 6)
+       or x.unit_cost is null or x.unit_cost < 0
+       or x.unit_cost <> round(x.unit_cost, 6)
+  ) then
+    raise exception using errcode = '22023',
+      message = 'Each inventory line must include a product, positive quantity, and non-negative unit cost.';
+  end if;
+
+  if exists (
+    select x.product_id
+    from pg_catalog.jsonb_to_recordset(p_inventory_lines) as x(
+      product_id uuid, quantity numeric, unit_cost numeric
+    )
+    group by x.product_id
+    having pg_catalog.count(*) > 1
+  ) then
+    raise exception using errcode = '22023',
+      message = 'Duplicate products are not allowed in opening inventory lines; combine their quantities into one line.';
+  end if;
+
+  if exists (
+    select 1
+    from pg_catalog.jsonb_to_recordset(p_inventory_lines) as x(
+      product_id uuid, quantity numeric, unit_cost numeric
+    )
+    left join public.products pr
+      on pr.organization_id = p_organization_id
+     and pr.id = x.product_id
+    left join public.accounts a
+      on a.organization_id = pr.organization_id
+     and a.id = pr.inventory_account_id
+    where pr.id is null or not pr.is_active
+       or a.id is null or not a.is_active or not a.is_postable
+       or a.account_type <> 'asset'
+  ) then
+    raise exception using errcode = '23503',
+      message = 'Every opening inventory product must be active and mapped to an active, postable inventory asset account in this organization.';
+  end if;
+
+  -- A single account cannot serve both the party control and inventory control
+  -- subledgers in the same opening post.
+  if exists (
+    select 1
+    from pg_catalog.jsonb_to_recordset(p_party_balances) as party(
+      contact_id uuid, party_type text, account_id uuid, amount numeric, description text
+    )
+    join pg_catalog.jsonb_to_recordset(p_inventory_lines) as inv(
+      product_id uuid, quantity numeric, unit_cost numeric
+    ) on true
+    join public.products pr
+      on pr.organization_id = p_organization_id
+     and pr.id = inv.product_id
+    where party.account_id = pr.inventory_account_id
+  ) then
+    raise exception using errcode = '23514',
+      message = 'A party control account cannot also be used as an inventory control account.';
+  end if;
+
+  -- Prevent a GL line from duplicating a party control or product inventory account.
+  if exists (
+    select 1
+    from pg_catalog.jsonb_to_recordset(p_account_lines) as gl(account_id uuid)
+    where gl.account_id in (
+      select party.account_id
+      from pg_catalog.jsonb_to_recordset(p_party_balances) as party(
+        contact_id uuid, party_type text, account_id uuid, amount numeric, description text
+      )
+      union
+      select pr.inventory_account_id
+      from pg_catalog.jsonb_to_recordset(p_inventory_lines) as inv(
+        product_id uuid, quantity numeric, unit_cost numeric
+      )
+      join public.products pr
+        on pr.organization_id = p_organization_id
+       and pr.id = inv.product_id
+    )
+  ) then
+    raise exception using errcode = '23514',
+      message = 'Do not enter a party or inventory control account again in ordinary GL lines; those balances are derived from the detail lines.';
+  end if;
+
+  select
+    coalesce(pg_catalog.sum(x.debit), 0),
+    coalesce(pg_catalog.sum(x.credit), 0)
+  into v_debit_total, v_credit_total
+  from pg_catalog.jsonb_to_recordset(p_account_lines) as x(
+    account_id uuid, debit numeric, credit numeric, description text
+  );
+
+  select
+    v_debit_total
+      + coalesce(pg_catalog.sum(case when x.party_type = 'customer' then x.amount else 0 end), 0),
+    v_credit_total
+      + coalesce(pg_catalog.sum(case when x.party_type = 'supplier' then x.amount else 0 end), 0)
+  into v_debit_total, v_credit_total
+  from pg_catalog.jsonb_to_recordset(p_party_balances) as x(
+    contact_id uuid, party_type text, account_id uuid, amount numeric, description text
+  );
+
+  select coalesce(pg_catalog.sum(round(x.quantity * x.unit_cost, 4)), 0)
+    into v_inventory_value
+  from pg_catalog.jsonb_to_recordset(p_inventory_lines) as x(
+    product_id uuid, quantity numeric, unit_cost numeric
+  );
+
+  v_debit_total := v_debit_total + v_inventory_value;
+
+  if v_debit_total <= 0 or v_debit_total <> v_credit_total then
+    raise exception using errcode = '23514',
+      message = pg_catalog.format(
+        'Opening balances are not balanced. Debits: %s; credits: %s.',
+        v_debit_total, v_credit_total
+      );
+  end if;
+
+  -- Lock/create product balance rows in stable product order. Opening stock is
+  -- an initialization, so pre-existing non-zero stock must be reconciled first.
+  for v_product in
+    select x.product_id
+    from pg_catalog.jsonb_to_recordset(p_inventory_lines) as x(
+      product_id uuid, quantity numeric, unit_cost numeric
+    )
+    order by x.product_id
+  loop
+    insert into public.inventory_balances (
+      organization_id, product_id, quantity, average_cost, inventory_value
+    )
+    values (p_organization_id, v_product.product_id, 0, 0, 0)
+    on conflict (organization_id, product_id) do nothing;
+
+    perform 1
+    from public.inventory_balances b
+    where b.organization_id = p_organization_id
+      and b.product_id = v_product.product_id
+    for update;
+
+    if exists (
+      select 1
+      from public.inventory_balances b
+      where b.organization_id = p_organization_id
+        and b.product_id = v_product.product_id
+        and (b.quantity <> 0 or b.inventory_value <> 0)
+    ) then
+      raise exception using errcode = '23514',
+        message = 'Opening inventory can only initialize products with zero existing stock. Reconcile existing stock before posting.';
+    end if;
+  end loop;
+
+  v_entry_number := 'OB-' || pg_catalog.substr(
+    pg_catalog.replace(p_organization_id::text, '-', ''), 1, 12
+  );
+
+  insert into public.journal_entries (
+    organization_id, entry_number, accounting_period_id, entry_date,
+    entry_type, status, reference_type, reference_id, description,
+    posted_at, created_by
+  )
+  values (
+    p_organization_id, v_entry_number, p_accounting_period_id, p_entry_date,
+    'opening_balance', 'posted', 'organization_opening_balance',
+    p_organization_id, nullif(pg_catalog.btrim(coalesce(p_description, '')), ''),
+    pg_catalog.now(), v_user_id
+  )
+  returning id into v_journal_entry_id;
+
+  -- Post ordinary GL lines, customer/supplier control balances, and inventory
+  -- control balances into the same journal and account ledger.
+  with journal_lines as (
+    select
+      1 as sort_group,
+      x.ordinality as sort_order,
+      x.account_id,
+      nullif(pg_catalog.btrim(coalesce(x.description, '')), '') as description,
+      x.debit,
+      x.credit,
+      null::uuid as contact_id
+    from pg_catalog.jsonb_to_recordset(p_account_lines) with ordinality as x(
+      account_id uuid, debit numeric, credit numeric, description text, ordinality bigint
+    )
+
+    union all
+
+    select
+      2,
+      x.ordinality,
+      x.account_id,
+      coalesce(nullif(pg_catalog.btrim(coalesce(x.description, '')), ''),
+        case when x.party_type = 'customer' then 'Opening receivable' else 'Opening payable' end),
+      case when x.party_type = 'customer' then x.amount else 0 end,
+      case when x.party_type = 'supplier' then x.amount else 0 end,
+      x.contact_id
+    from pg_catalog.jsonb_to_recordset(p_party_balances) with ordinality as x(
+      contact_id uuid, party_type text, account_id uuid, amount numeric,
+      description text, ordinality bigint
+    )
+
+    union all
+
+    select
+      3,
+      row_number() over (order by pr.inventory_account_id),
+      pr.inventory_account_id,
+      'Opening inventory',
+      sum(round(x.quantity * x.unit_cost, 4)),
+      0::numeric,
+      null::uuid
+    from pg_catalog.jsonb_to_recordset(p_inventory_lines) as x(
+      product_id uuid, quantity numeric, unit_cost numeric
+    )
+    join public.products pr
+      on pr.organization_id = p_organization_id
+     and pr.id = x.product_id
+    group by pr.inventory_account_id
+    having sum(round(x.quantity * x.unit_cost, 4)) > 0
+  )
+  insert into public.account_transactions (
+    organization_id, journal_entry_id, account_id, line_number,
+    description, debit, credit, contact_id
+  )
+  select
+    p_organization_id,
+    v_journal_entry_id,
+    jl.account_id,
+    row_number() over (order by jl.sort_group, jl.sort_order)::integer,
+    jl.description,
+    jl.debit,
+    jl.credit,
+    jl.contact_id
+  from journal_lines jl
+  where jl.debit > 0 or jl.credit > 0;
+
+  -- Initialize product-level stock balances and record auditable stock movements.
+  with inventory_totals as (
+    select
+      x.product_id,
+      sum(x.quantity) as quantity,
+      sum(round(x.quantity * x.unit_cost, 4)) as inventory_value
+    from pg_catalog.jsonb_to_recordset(p_inventory_lines) as x(
+      product_id uuid, quantity numeric, unit_cost numeric
+    )
+    group by x.product_id
+  )
+  update public.inventory_balances b
+  set quantity = t.quantity,
+      inventory_value = t.inventory_value,
+      average_cost = case
+        when t.quantity = 0 then 0
+        else round(t.inventory_value / t.quantity, 6)
+      end,
+      updated_at = pg_catalog.now()
+  from inventory_totals t
+  where b.organization_id = p_organization_id
+    and b.product_id = t.product_id;
+
+  insert into public.inventory_transactions (
+    organization_id, transaction_number, product_id, transaction_date,
+    transaction_type, direction, quantity, unit_cost, total_value,
+    reference_type, reference_id, unit_cost_before, average_cost_after, created_by
+  )
+  select
+    p_organization_id,
+    'OB-' || pg_catalog.substr(pg_catalog.replace(p_organization_id::text, '-', ''), 1, 12)
+      || '-' || x.ordinality::text,
+    x.product_id,
+    p_entry_date,
+    'opening_balance',
+    'in',
+    x.quantity,
+    x.unit_cost,
+    round(x.quantity * x.unit_cost, 4),
+    'organization_opening_balance',
+    p_organization_id,
+    null,
+    round(x.unit_cost, 6),
+    v_user_id
+  from pg_catalog.jsonb_to_recordset(p_inventory_lines) with ordinality as x(
+    product_id uuid, quantity numeric, unit_cost numeric, ordinality bigint
+  );
+
+  return v_journal_entry_id;
+end;
+$$;
+
+revoke all on function public.post_opening_balances(uuid, uuid, date, jsonb, jsonb, jsonb, text)
+  from public, anon;
+grant execute on function public.post_opening_balances(uuid, uuid, date, jsonb, jsonb, jsonb, text)
+  to authenticated;
+
+
+
+-- ============================================================================
+-- CONTACT PAYMENT AND RECEIPT POSTING RPC
+-- Source: 20261103000200_contact_payment_receipt_posting_rpc.sql
+-- ============================================================================
+
+-- Zero ERP: contact-wise receipt/payment posting against existing party control ledgers.
+-- No new tables. Opening balances and subsequent activity share account_transactions.
+
+create unique index journal_entries_payment_reference_uq
+  on public.journal_entries (organization_id, reference_type, reference_id)
+  where entry_type = 'payment'
+    and reference_type = 'payment'
+    and reference_id is not null;
+
+create index account_transactions_party_balance_idx
+  on public.account_transactions (organization_id, account_id, contact_id)
+  where contact_id is not null;
+
+create or replace function public.post_contact_payment(
+  p_organization_id uuid,
+  p_payment_id uuid,
+  p_accounting_period_id uuid
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_user_id uuid;
+  v_payment public.payments%rowtype;
+  v_period_status text;
+  v_period_start date;
+  v_period_end date;
+  v_cash_account public.accounts%rowtype;
+  v_control_account public.accounts%rowtype;
+  v_outstanding numeric(20,4);
+  v_journal_entry_id uuid;
+  v_entry_number text;
+begin
+  v_user_id := (select auth.uid());
+
+  if v_user_id is null then
+    raise exception using errcode = '42501',
+      message = 'Authentication is required to post a payment or receipt.';
+  end if;
+
+  if not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, 'payments.post') then
+    raise exception using errcode = '42501',
+      message = 'You are not authorized to post payments or receipts for this organization.';
+  end if;
+
+  -- Lock the payment first. A second concurrent call will see the posted status.
+  select *
+    into v_payment
+  from public.payments p
+  where p.organization_id = p_organization_id
+    and p.id = p_payment_id
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503',
+      message = 'Payment or receipt was not found in this organization.';
+  end if;
+
+  if v_payment.status = 'posted' then
+    raise exception using errcode = '23514',
+      message = 'This payment or receipt has already been posted.';
+  end if;
+
+  if v_payment.status not in ('draft', 'approved') then
+    raise exception using errcode = '23514',
+      message = 'Only draft or approved payments and receipts can be posted.';
+  end if;
+
+  if v_payment.payment_type not in ('receipt', 'payment') then
+    raise exception using errcode = '22023',
+      message = 'This RPC supports customer receipts and supplier payments only. Transfers and refunds require separate posting rules.';
+  end if;
+
+  if v_payment.contact_id is null or v_payment.settlement_account_id is null then
+    raise exception using errcode = '22023',
+      message = 'A customer/supplier contact and its receivable/payable control account are required.';
+  end if;
+
+  -- The cash/bank account receives or pays the funds.
+  select *
+    into v_cash_account
+  from public.accounts a
+  where a.organization_id = p_organization_id
+    and a.id = v_payment.account_id;
+
+  if not found
+     or not v_cash_account.is_active
+     or not v_cash_account.is_postable
+     or v_cash_account.account_type <> 'asset' then
+    raise exception using errcode = '23503',
+      message = 'The payment account must be an active, postable cash/bank asset account in this organization.';
+  end if;
+
+  -- settlement_account_id is the party control account:
+  -- receipt -> Accounts Receivable; payment -> Accounts Payable.
+  select *
+    into v_control_account
+  from public.accounts a
+  where a.organization_id = p_organization_id
+    and a.id = v_payment.settlement_account_id;
+
+  if not found
+     or not v_control_account.is_active
+     or not v_control_account.is_postable
+     or not v_control_account.is_control_account
+     or (v_payment.payment_type = 'receipt' and v_control_account.account_type <> 'asset')
+     or (v_payment.payment_type = 'payment' and v_control_account.account_type <> 'liability') then
+    raise exception using errcode = '23503',
+      message = 'Receipt requires an active receivable asset control account; supplier payment requires an active payable liability control account.';
+  end if;
+
+  if v_payment.account_id = v_payment.settlement_account_id then
+    raise exception using errcode = '23514',
+      message = 'Cash/bank account and party control account must be different.';
+  end if;
+
+  -- Serialize concurrent receipts/payments for this party before checking
+  -- its current outstanding, preventing two payments from spending the same balance.
+  perform 1
+  from public.contacts c
+  where c.organization_id = p_organization_id
+    and c.id = v_payment.contact_id
+    and c.is_active
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503',
+      message = 'The customer/supplier contact is missing or inactive.';
+  end if;
+
+  -- Lock and validate the accounting period.
+  select ap.status, ap.start_date, ap.end_date
+    into v_period_status, v_period_start, v_period_end
+  from public.accounting_periods ap
+  where ap.organization_id = p_organization_id
+    and ap.id = p_accounting_period_id
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503',
+      message = 'Accounting period does not exist in this organization.';
+  end if;
+
+  if v_period_status <> 'open' then
+    raise exception using errcode = '23514',
+      message = 'Payments and receipts can only be posted to an open accounting period.';
+  end if;
+
+  if v_payment.payment_date < v_period_start or v_payment.payment_date > v_period_end then
+    raise exception using errcode = '23514',
+      message = 'Payment date must fall within the selected accounting period.';
+  end if;
+
+  -- Outstanding is calculated from the same contact + control account ledger
+  -- used by opening balances, sales and purchases. No invoice allocation is needed.
+  select coalesce(
+    sum(case
+      when v_payment.payment_type = 'receipt' then atx.debit - atx.credit
+      else atx.credit - atx.debit
+    end),
+    0
+  )
+  into v_outstanding
+  from public.account_transactions atx
+  where atx.organization_id = p_organization_id
+    and atx.account_id = v_payment.settlement_account_id
+    and atx.contact_id = v_payment.contact_id;
+
+  if v_outstanding < v_payment.amount then
+    raise exception using errcode = '23514',
+      message = pg_catalog.format(
+        'Payment amount exceeds the current party outstanding. Outstanding: %s; payment: %s.',
+        v_outstanding, v_payment.amount
+      );
+  end if;
+
+  v_entry_number := 'PMT-' || pg_catalog.replace(v_payment.id::text, '-', '');
+
+  insert into public.journal_entries (
+    organization_id, entry_number, accounting_period_id, entry_date,
+    entry_type, status, reference_type, reference_id, description,
+    posted_at, created_by
+  )
+  values (
+    p_organization_id,
+    v_entry_number,
+    p_accounting_period_id,
+    v_payment.payment_date,
+    'payment',
+    'posted',
+    'payment',
+    v_payment.id,
+    coalesce(
+      nullif(pg_catalog.btrim(v_payment.description), ''),
+      case when v_payment.payment_type = 'receipt'
+        then 'Customer receipt ' || v_payment.payment_number
+        else 'Supplier payment ' || v_payment.payment_number
+      end
+    ),
+    pg_catalog.now(),
+    v_user_id
+  )
+  returning id into v_journal_entry_id;
+
+  if v_payment.payment_type = 'receipt' then
+    -- Dr Cash/Bank; Cr Accounts Receivable (same customer contact).
+    insert into public.account_transactions (
+      organization_id, journal_entry_id, account_id, line_number,
+      description, debit, credit, contact_id
+    )
+    values
+      (
+        p_organization_id, v_journal_entry_id, v_payment.account_id, 1,
+        'Receipt ' || v_payment.payment_number, v_payment.amount, 0, null
+      ),
+      (
+        p_organization_id, v_journal_entry_id, v_payment.settlement_account_id, 2,
+        'Receivable settled - ' || v_payment.payment_number, 0, v_payment.amount,
+        v_payment.contact_id
+      );
+  else
+    -- Dr Accounts Payable (same supplier contact); Cr Cash/Bank.
+    insert into public.account_transactions (
+      organization_id, journal_entry_id, account_id, line_number,
+      description, debit, credit, contact_id
+    )
+    values
+      (
+        p_organization_id, v_journal_entry_id, v_payment.settlement_account_id, 1,
+        'Payable settled - ' || v_payment.payment_number, v_payment.amount, 0,
+        v_payment.contact_id
+      ),
+      (
+        p_organization_id, v_journal_entry_id, v_payment.account_id, 2,
+        'Payment ' || v_payment.payment_number, 0, v_payment.amount, null
+      );
+  end if;
+
+  update public.payments
+  set status = 'posted',
+      posted_journal_entry_id = v_journal_entry_id,
+      updated_at = pg_catalog.now()
+  where organization_id = p_organization_id
+    and id = p_payment_id;
+
+  return v_journal_entry_id;
+end;
+$$;
+
+revoke all on function public.post_contact_payment(uuid, uuid, uuid)
+  from public, anon;
+grant execute on function public.post_contact_payment(uuid, uuid, uuid)
+  to authenticated;
+
+
+
+-- ============================================================================
+-- SALES POSTING RPC
+-- Source: 20261103000300_sales_posting_rpc.sql
+-- ============================================================================
+
+-- Zero ERP: atomic sales posting with contact-wise receivables, revenue, COGS and stock effects.
+-- Revenue discounts are allocated proportionally; the final line receives rounding residue.
+-- COGS is calculated server-side from the locked weighted-average inventory balance.
+
+create unique index if not exists journal_entries_sales_reference_uq
+  on public.journal_entries (organization_id, reference_type, reference_id)
+  where entry_type = 'sale' and reference_type = 'sale' and reference_id is not null;
+
+create index if not exists account_transactions_org_account_contact_idx
+  on public.account_transactions (organization_id, account_id, contact_id)
+  where contact_id is not null;
+
+create or replace function public.post_sales(
+  p_organization_id uuid,
+  p_sales_id uuid
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_user_id uuid;
+  v_sales public.sales%rowtype;
+  v_period_id uuid;
+  v_period_status text;
+  v_customer_active boolean;
+  v_receivable public.accounts%rowtype;
+  v_line_count integer;
+  v_subtotal numeric(20,4);
+  v_allocated_revenue numeric(20,4) := 0;
+  v_line_revenue numeric(20,4);
+  v_balance_quantity numeric(20,6);
+  v_balance_value numeric(20,4);
+  v_average_cost numeric(20,6);
+  v_line_cost numeric(20,4);
+  v_new_quantity numeric(20,6);
+  v_new_value numeric(20,4);
+  v_journal_id uuid;
+  v_line record;
+  v_last_line integer;
+  v_line_number integer := 0;
+begin
+  v_user_id := (select auth.uid());
+  if v_user_id is null then
+    raise exception using errcode = '42501', message = 'Authentication is required to post a sales invoice.';
+  end if;
+
+  if not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, 'sales.post') then
+    raise exception using errcode = '42501', message = 'You are not authorized to post sales for this organization.';
+  end if;
+
+  select s.* into v_sales
+  from public.sales s
+  where s.organization_id = p_organization_id and s.id = p_sales_id
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503', message = 'Sales invoice was not found in this organization.';
+  end if;
+  if v_sales.status not in ('draft', 'approved') or v_sales.posted_journal_entry_id is not null then
+    raise exception using errcode = '23514', message = 'Only an unposted draft or approved sales invoice can be posted.';
+  end if;
+
+  select c.is_active into v_customer_active
+  from public.contacts c
+  where c.organization_id = p_organization_id and c.id = v_sales.customer_id
+  for update;
+  if coalesce(v_customer_active, false) is not true then
+    raise exception using errcode = '23503', message = 'Customer must be active and belong to this organization.';
+  end if;
+
+  select a.* into v_receivable
+  from public.accounts a
+  where a.organization_id = p_organization_id and a.id = v_sales.receivable_account_id;
+  if not found or not v_receivable.is_active or not v_receivable.is_postable
+     or not v_receivable.is_control_account or v_receivable.account_type <> 'asset' then
+    raise exception using errcode = '23503',
+      message = 'Receivable account must be an active, postable asset control account.';
+  end if;
+
+  select count(*)::integer, coalesce(sum(si.line_total), 0), max(si.line_number)
+  into v_line_count, v_subtotal, v_last_line
+  from public.sales_items si
+  where si.organization_id = p_organization_id and si.sales_id = p_sales_id;
+
+  if v_line_count < 1 then
+    raise exception using errcode = '23514', message = 'A sales invoice must contain at least one item.';
+  end if;
+  if v_subtotal <> v_sales.subtotal then
+    raise exception using errcode = '23514', message = 'Sales subtotal must equal the sum of item line totals.';
+  end if;
+  if v_sales.discount_amount > v_subtotal
+     or v_sales.total_amount <> v_subtotal - v_sales.discount_amount
+     or v_sales.total_amount <= 0 then
+    raise exception using errcode = '23514', message = 'Sales totals are inconsistent or net total is not positive.';
+  end if;
+
+  select ap.id, ap.status into v_period_id, v_period_status
+  from public.accounting_periods ap
+  where ap.organization_id = p_organization_id
+    and v_sales.invoice_date between ap.start_date and ap.end_date
+  order by ap.start_date desc
+  limit 1
+  for update;
+
+  if not found then
+    raise exception using errcode = '23503', message = 'No accounting period covers the sales invoice date.';
+  end if;
+  if v_period_status <> 'open' then
+    raise exception using errcode = '23514', message = 'Sales can only be posted to an open accounting period.';
+  end if;
+
+  if exists (
+    select 1
+    from public.sales_items si
+    join public.products pr on pr.organization_id = si.organization_id and pr.id = si.product_id
+    left join public.accounts sa on sa.organization_id = pr.organization_id and sa.id = pr.sales_account_id
+    left join public.accounts ia on ia.organization_id = pr.organization_id and ia.id = pr.inventory_account_id
+    left join public.accounts ca on ca.organization_id = pr.organization_id and ca.id = pr.cogs_account_id
+    where si.organization_id = p_organization_id and si.sales_id = p_sales_id
+      and (
+        not pr.is_active
+        or sa.id is null or not sa.is_active or not sa.is_postable or sa.account_type <> 'revenue'
+        or ia.id is null or not ia.is_active or not ia.is_postable or ia.account_type <> 'asset'
+        or ca.id is null or not ca.is_active or not ca.is_postable or ca.account_type <> 'expense'
+        or si.line_total <> round(si.quantity * si.unit_price, 4)
+      )
+  ) then
+    raise exception using errcode = '23514',
+      message = 'Each item requires an active product, valid revenue/inventory/COGS accounts, and a consistent line total.';
+  end if;
+
+  -- Lock each product balance in deterministic order and reject insufficient stock.
+  for v_line in
+    select distinct si.product_id
+    from public.sales_items si
+    where si.organization_id = p_organization_id and si.sales_id = p_sales_id
+    order by si.product_id
+  loop
+    select b.quantity, b.inventory_value, b.average_cost
+    into v_balance_quantity, v_balance_value, v_average_cost
+    from public.inventory_balances b
+    where b.organization_id = p_organization_id and b.product_id = v_line.product_id
+    for update;
+
+    if not found then
+      raise exception using errcode = '23514',
+        message = 'Opening stock or a prior stock receipt is required before this product can be sold.';
+    end if;
+
+    if v_balance_quantity < (
+      select coalesce(sum(si.quantity), 0)
+      from public.sales_items si
+      where si.organization_id = p_organization_id
+        and si.sales_id = p_sales_id and si.product_id = v_line.product_id
+    ) then
+      raise exception using errcode = '23514',
+        message = 'Insufficient stock to post this sales invoice.';
+    end if;
+    if v_balance_quantity < 0 or v_balance_value < 0 then
+      raise exception using errcode = '23514',
+        message = 'Negative inventory balance must be reconciled before sales posting.';
+    end if;
+  end loop;
+
+  insert into public.journal_entries (
+    organization_id, entry_number, accounting_period_id, entry_date,
+    entry_type, status, reference_type, reference_id, description, posted_at, created_by
+  )
+  values (
+    p_organization_id,
+    'SAL-' || pg_catalog.replace(p_sales_id::text, '-', ''),
+    v_period_id, v_sales.invoice_date, 'sale', 'posted',
+    'sale', p_sales_id, 'Sales invoice ' || v_sales.invoice_id,
+    pg_catalog.now(), v_user_id
+  )
+  returning id into v_journal_id;
+
+  -- Allocate net sales revenue to products/accounts; last line absorbs rounding residue.
+  for v_line in
+    select si.id, si.product_id, si.quantity, si.line_total, si.line_number,
+           pr.sales_account_id, pr.inventory_account_id, pr.cogs_account_id
+    from public.sales_items si
+    join public.products pr on pr.organization_id = si.organization_id and pr.id = si.product_id
+    where si.organization_id = p_organization_id and si.sales_id = p_sales_id
+    order by si.line_number
+  loop
+    if v_line.line_number = v_last_line then
+      v_line_revenue := v_sales.total_amount - v_allocated_revenue;
+    else
+      v_line_revenue := round(v_line.line_total * v_sales.total_amount / v_subtotal, 4);
+      v_allocated_revenue := v_allocated_revenue + v_line_revenue;
+    end if;
+
+    select b.quantity, b.inventory_value, b.average_cost
+    into v_balance_quantity, v_balance_value, v_average_cost
+    from public.inventory_balances b
+    where b.organization_id = p_organization_id and b.product_id = v_line.product_id
+    for update;
+
+    v_line_cost := round(v_line.quantity * v_average_cost, 4);
+    v_new_quantity := v_balance_quantity - v_line.quantity;
+    v_new_value := v_balance_value - v_line_cost;
+
+    if v_new_quantity < 0 or v_new_value < 0 then
+      raise exception using errcode = '23514',
+        message = 'Sales would create a negative stock quantity or inventory value.';
+    end if;
+
+    update public.inventory_balances
+    set quantity = v_new_quantity,
+        inventory_value = v_new_value,
+        average_cost = case when v_new_quantity = 0 then 0 else v_average_cost end,
+        updated_at = pg_catalog.now()
+    where organization_id = p_organization_id and product_id = v_line.product_id;
+
+    update public.sales_items
+    set cogs_unit_cost = v_average_cost,
+        cogs_total = v_line_cost,
+        updated_at = pg_catalog.now()
+    where organization_id = p_organization_id and id = v_line.id;
+
+    insert into public.inventory_transactions (
+      organization_id, transaction_number, product_id, transaction_date,
+      transaction_type, direction, quantity, unit_cost, total_value,
+      reference_type, reference_id, unit_cost_before, average_cost_after, created_by
+    )
+    values (
+      p_organization_id,
+      'SAL-' || pg_catalog.replace(p_sales_id::text, '-', '') || '-' || v_line.line_number::text,
+      v_line.product_id, v_sales.invoice_date, 'sale', 'out', v_line.quantity,
+      v_average_cost, v_line_cost, 'sale', p_sales_id,
+      v_average_cost, case when v_new_quantity = 0 then 0 else v_average_cost end, v_user_id
+    );
+
+    -- Revenue line, net of the proportionally allocated invoice discount.
+    if v_line_revenue > 0 then
+      insert into public.account_transactions (
+        organization_id, journal_entry_id, account_id, line_number,
+        description, debit, credit, contact_id
+      )
+      values (
+        p_organization_id, v_journal_id, v_line.sales_account_id, v_line_number + 1,
+        'Sales revenue - ' || v_sales.invoice_id, 0, v_line_revenue, null
+      );
+      v_line_number := v_line_number + 1;
+    end if;
+
+    -- COGS debit and inventory credit are posted per invoice line.
+    if v_line_cost > 0 then
+      insert into public.account_transactions (
+        organization_id, journal_entry_id, account_id, line_number,
+        description, debit, credit, contact_id
+      )
+      values
+        (p_organization_id, v_journal_id, v_line.cogs_account_id, v_line_number + 1,
+         'Cost of goods sold - ' || v_sales.invoice_id, v_line_cost, 0, null),
+        (p_organization_id, v_journal_id, v_line.inventory_account_id, v_line_number + 2,
+         'Inventory issued - ' || v_sales.invoice_id, 0, v_line_cost, null);
+      v_line_number := v_line_number + 2;
+    end if;
+  end loop;
+
+  -- Receivable debit is the single contact-tagged customer balance line.
+  insert into public.account_transactions (
+    organization_id, journal_entry_id, account_id, line_number,
+    description, debit, credit, contact_id
+  )
+  values (
+    p_organization_id, v_journal_id, v_sales.receivable_account_id,
+    v_line_number + 1, 'Accounts receivable - ' || v_sales.invoice_id,
+    v_sales.total_amount, 0, v_sales.customer_id
+  );
+
+  update public.sales
+  set status = 'posted', posted_journal_entry_id = v_journal_id, updated_at = pg_catalog.now()
+  where organization_id = p_organization_id and id = p_sales_id;
+
+  return v_journal_id;
+end;
+$$;
+
+revoke all on function public.post_sales(uuid, uuid) from public, anon;
+grant execute on function public.post_sales(uuid, uuid) to authenticated;
+
+
+commit;
