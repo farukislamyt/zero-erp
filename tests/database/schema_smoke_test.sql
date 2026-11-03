@@ -27,6 +27,10 @@ DECLARE
   v_balance_quantity numeric(20,6);
   v_trial_debits numeric(20,4);
   v_trial_credits numeric(20,4);
+  v_sales_id uuid;
+  v_payment_id uuid;
+  v_payment_journal_id uuid;
+  v_second_adjustment_id uuid;
 BEGIN
   SELECT count(*)
     INTO v_table_count
@@ -277,7 +281,22 @@ BEGIN
     'public.confirm_transaction_document(uuid,text,uuid)',
     'public.revert_transaction_document_to_draft(uuid,text,uuid)',
     'public.void_transaction_document(uuid,text,uuid,text)',
-    'public.delete_draft_transaction_document(uuid,text,uuid)'
+    'public.delete_draft_transaction_document(uuid,text,uuid)',
+    'public.save_master_data(uuid,text,jsonb,uuid)',
+    'public.create_custom_role(uuid,text,text[])',
+    'public.replace_custom_role_permissions(uuid,uuid,text[])',
+    'public.update_organization_profile(uuid,text,text,text,text,text,text,text,text,text,text)',
+    'public.set_payment_allocations(uuid,uuid,jsonb)',
+    'public.post_inventory_adjustment(uuid,date,text,jsonb,uuid,uuid)',
+    'public.report_trial_balance(uuid,date,date)',
+    'public.report_general_ledger(uuid,uuid,date,date)',
+    'public.report_profit_and_loss(uuid,date,date)',
+    'public.report_balance_sheet(uuid,date)',
+    'public.report_inventory_valuation(uuid,date)',
+    'public.report_contact_balances(uuid,date)',
+    'public.report_receivables_aging(uuid,date)',
+    'public.report_payables_aging(uuid,date)',
+    'public.report_unapplied_payments(uuid,date)'
   ]::text[]) AS expected(signature)
   WHERE to_regprocedure(expected.signature) IS NULL
      OR NOT has_function_privilege('authenticated', to_regprocedure(expected.signature), 'EXECUTE')
@@ -486,6 +505,55 @@ BEGIN
       AND reversal_of_id=v_adjustment_journal_id AND status='posted'
   ) THEN
     RAISE EXCEPTION 'Inventory adjustment reversal journal was not recorded';
+  END IF;
+
+
+  -- Re-seed stock for a complete sales -> receipt -> invoice-allocation workflow.
+  v_second_adjustment_id := public.post_inventory_adjustment(
+    v_test_organization_id,'2026-11-03','Smoke test sales stock',
+    pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+      'product_id',v_product_id,'direction','increase','quantity',10,'unit_cost',100
+    ))
+  );
+
+  v_sales_id := public.save_draft_transaction_document(
+    v_test_organization_id,'sales',
+    pg_catalog.jsonb_build_object(
+      'customer_id',v_contact_id,
+      'invoice_date','2026-11-03',
+      'subtotal',100,'discount_amount',0,'total_amount',100,
+      'receivable_account_id',(SELECT id FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='1120')
+    ),
+    pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+      'line_number',1,'product_id',v_product_id,'quantity',1,'unit_price',100,'line_total',100
+    ))
+  );
+  PERFORM public.confirm_transaction_document(v_test_organization_id,'sales',v_sales_id);
+  PERFORM public.post_sales(v_test_organization_id,v_sales_id);
+
+  v_payment_id := public.save_draft_transaction_document(
+    v_test_organization_id,'payment',
+    pg_catalog.jsonb_build_object(
+      'payment_type','receipt','contact_id',v_contact_id,'payment_date','2026-11-03',
+      'amount',100,'account_id',(SELECT id FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='1110'),
+      'settlement_account_id',(SELECT id FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='1120'),
+      'description','Smoke test customer receipt'
+    )
+  );
+  PERFORM public.set_payment_allocations(
+    v_test_organization_id,v_payment_id,
+    pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+      'document_type','sales','document_id',v_sales_id,'allocated_amount',100
+    ))
+  );
+  PERFORM public.confirm_transaction_document(v_test_organization_id,'payment',v_payment_id);
+  v_payment_journal_id := public.post_contact_payment(v_test_organization_id,v_payment_id);
+  IF NOT EXISTS (
+    SELECT 1 FROM public.payments
+    WHERE organization_id=v_test_organization_id AND id=v_payment_id
+      AND status='posted' AND posted_journal_entry_id=v_payment_journal_id
+  ) THEN
+    RAISE EXCEPTION 'Allocated customer receipt did not post';
   END IF;
 
   -- Reporting RPCs must be exposed to authenticated users and return balanced totals.
