@@ -2,7 +2,7 @@
 
 **Audit date:** 2026-11-03  
 **Branch:** `feat/database-migrations`  
-**Audit type:** Static source audit of the single consolidated bootstrap SQL file and its database documentation.  
+**Audit type:** Static source audit and follow-up verification of tenant-isolation and reporting fixes in the single consolidated bootstrap SQL file.  
 **Live database status:** No Supabase project was queried or modified. No PostgreSQL migration execution or runtime test is claimed.
 
 ## 1. Scope and source of truth
@@ -46,41 +46,49 @@ All SECURITY DEFINER functions in the effective migration set specify an empty s
 12. **Numbering:** sequence storage, a permission-checked allocator and document-number triggers are present for purchase, sales, expenses, payments, returns and manual journal entries.
 13. **RLS and privileges:** RLS is enabled on all 26 public tables. The installed 26 policies are SELECT policies; direct browser-role table writes are revoked and controlled RPCs are granted explicitly.
 
-## 4. Findings requiring attention
+## 4. Findings and remediation status
 
-### P1 — Inventory-adjustment numbering permission is missing
+The following source-level defects identified in the earlier audit have been corrected in the canonical SQL file on this branch.
 
-`seed_default_chart_of_accounts` creates an `inventory_adjustment` row in `number_sequences`. `post_inventory_adjustment` calls `next_document_number(p_organization_id, 'inventory_adjustment')`. However, the current `next_document_number` permission CASE expression has no `inventory_adjustment` branch. It therefore sets the required permission to NULL and raises the authorization error before allocating the number.
+### Fixed — Inventory-adjustment numbering permission
 
-**Impact:** although `post_inventory_adjustment` exists and has an authenticated EXECUTE grant, its current call path cannot successfully allocate its document number.
+`next_document_number` now maps `inventory_adjustment` to `inventory.adjust`. The allocator still requires an authenticated caller, active membership in the specified active organization, and that permission before incrementing the organization's sequence.
 
-**Documentation treatment:** the reference records the RPC as defined, and this audit explicitly records the implementation defect. This documentation-only task did not change database behavior.
+**Verification:** the final CASE mapping and the call from `post_inventory_adjustment` were inspected statically. No live posting test has been run.
 
-### P1 — Receivables aging includes payments after the as-of date
+### Fixed — Receivables aging historical cutoff
 
-`report_receivables_aging` filters the sales invoice and sales-return dates by `p_as_of_date`, but its payment-allocation subquery does not filter the related posted payment by `payment_date <= p_as_of_date`. A payment made after the requested historical date can therefore reduce the reported historical receivable.
+The payment-allocation subquery in `report_receivables_aging` now requires the related posted payment's `payment_date <= p_as_of_date`. This aligns its historical payment cutoff with the payable-aging report.
 
-`report_payables_aging` does include the payment-date cutoff in its allocation subqueries.
+**Verification:** the final SQL predicate was inspected statically. No historical fixture/report comparison has been run.
 
-**Impact:** historical receivables aging can be understated. The report should apply a consistent payment-date cutoff (and the product's intended accounting-date semantics should be confirmed).
+### Fixed — Own inactive/historical membership metadata exposure
 
-### P2 — Creator Auth hard deletion is intentionally blocked by the membership guard
+The self-read branch of `organization_users_select_member_or_self` now requires the caller's own membership to be active and its organization to be active. The separate `users.read` branch remains permission-scoped to the organization.
 
-`organization_users.user_id` references `auth.users(id) ON DELETE CASCADE`, while the original creator membership rejects DELETE. A hard deletion of the original creator's Auth row attempts the cascade and fails because the protected membership cannot be removed.
+**Verification:** the final RLS predicate was inspected statically. No authenticated-JWT RLS test has been run.
 
-**Operational implication:** disable/ban the creator's Auth account rather than hard-delete it while the organization exists. If hard deletion must later be supported, the data model needs a separately retained immutable creator identity; that is not present in the current schema.
+### Fixed — Manual journal cross-tenant polymorphic reference validation
 
-### P2 — Historical function definitions are repeated in the bootstrap
+When a manual journal draft supplies a non-empty `reference_id`, `save_draft_transaction_document` now requires a `reference_type` and validates the target against a closed allowlist (`purchase`, `sale`, `expense`, `payment`, `purchase_return`, `sales_return`, `journal_entry`, and `inventory_adjustment`). Every lookup includes `organization_id = p_organization_id`; unsupported types and targets not found in that organization are rejected.
 
-The initial bootstrap contains multiple `CREATE OR REPLACE FUNCTION` definitions for several function names. The later definition in the same bootstrap is authoritative, and subsequent migrations may replace it again. The reference documents the effective final function set rather than treating every historical definition as a separate callable RPC.
+**Verification:** the final allowlist and tenant-scoped predicates were inspected statically. No adversarial RPC test has been run. This validation applies to the manual-journal draft RPC; the underlying polymorphic UUID column remains without a conventional FK.
 
-**Maintainability implication:** when changing a function, update the authoritative final definition and keep the migration history explicit. Do not infer the final behavior from the first matching definition.
+### P2 — Creator Auth hard deletion remains intentionally blocked
 
-## 5. Important boundaries — do not document as implemented features
+`organization_users.user_id` references `auth.users(id) ON DELETE CASCADE`, while the original creator membership rejects DELETE. Hard deletion of the original creator's Auth row therefore attempts a cascade that the membership guard blocks.
+
+**Operational implication:** disable/ban the creator's Auth account rather than hard-delete it while the organization exists. Supporting hard deletion would require a separately retained immutable creator identity, which is not present in the current schema.
+
+### Maintainability — Repeated historical function definitions
+
+The bootstrap contains multiple `CREATE OR REPLACE FUNCTION` definitions for several names. The last effective definition in execution order is authoritative. Update and inspect that final definition when changing behavior.
+
+## 5. Important boundaries and remaining operational caveats — do not document as implemented features
 
 - `contacts` has no dedicated customer/supplier discriminator.
 - `organization_users` supports one role per membership.
-- `payment_allocations.document_id`, `journal_entries.reference_id` and `inventory_transactions.reference_id` are polymorphic UUID references, not ordinary foreign keys to all possible target tables.
+- `payment_allocations.document_id`, `journal_entries.reference_id` and `inventory_transactions.reference_id` are polymorphic UUID references, not ordinary foreign keys to all possible target tables. Manual-journal references are now validated by the draft RPC against same-organization targets, but the column itself remains polymorphic.
 - The final schema contains no views or materialized views.
 - No accounting-period table, accounting-period column, period permission, period-close function or period-lock workflow exists.
 - The presence of a database RPC does not establish that a frontend screen or complete user workflow exists.
@@ -88,7 +96,7 @@ The initial bootstrap contains multiple `CREATE OR REPLACE FUNCTION` definitions
 
 ## 6. Test and verification boundary
 
-The repository branch currently contains one consolidated database SQL file and the documentation files; the earlier database smoke test and GitHub Actions SQL-test workflow were removed at the user's request. Therefore:
+The repository branch currently contains one consolidated database SQL file and the documentation files; the earlier database smoke test and GitHub Actions SQL-test workflow were removed at the user's request. The remediation checks above are static source checks only. Therefore:
 
 | Verification | Status |
 |---|---|
