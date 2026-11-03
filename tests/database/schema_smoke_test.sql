@@ -21,8 +21,8 @@ BEGIN
   WHERE n.nspname = 'public'
     AND c.relkind = 'r';
 
-  IF v_table_count <> 27 THEN
-    RAISE EXCEPTION 'Expected 27 public tables; found %', v_table_count;
+  IF v_table_count <> 26 THEN
+    RAISE EXCEPTION 'Expected 26 public tables; found %', v_table_count;
   END IF;
 
   SELECT count(*)
@@ -43,8 +43,8 @@ BEGIN
   FROM pg_catalog.pg_policies
   WHERE schemaname = 'public';
 
-  IF v_policy_count <> 27 THEN
-    RAISE EXCEPTION 'Expected 27 public RLS policies; found %', v_policy_count;
+  IF v_policy_count <> 26 THEN
+    RAISE EXCEPTION 'Expected 26 public RLS policies; found %', v_policy_count;
   END IF;
 
   -- The global permissions catalog is intentionally readable by authenticated
@@ -67,7 +67,7 @@ BEGIN
      OR to_regprocedure('public.next_document_number(uuid,text)') IS NULL
      OR to_regprocedure('public.post_sales(uuid,uuid)') IS NULL
      OR to_regprocedure('public.post_purchase(uuid,uuid)') IS NULL
-     OR to_regprocedure('public.post_contact_payment(uuid,uuid,uuid)') IS NULL THEN
+     OR to_regprocedure('public.post_contact_payment(uuid,uuid)') IS NULL THEN
     RAISE EXCEPTION 'One or more required security/posting RPCs are missing';
   END IF;
 
@@ -110,17 +110,23 @@ BEGIN
     RAISE EXCEPTION 'Account hierarchy cycle trigger is missing';
   END IF;
 
-  IF NOT EXISTS (
-    SELECT 1
-    FROM pg_catalog.pg_trigger t
-    JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
-    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'public'
-      AND c.relname = 'accounting_periods'
-      AND t.tgname = 'accounting_periods_prevent_overlap'
-      AND NOT t.tgisinternal
-  ) THEN
-    RAISE EXCEPTION 'Accounting period overlap trigger is missing';
+  -- Accounting periods are intentionally absent from the database model.
+  IF pg_catalog.to_regclass('public.accounting_periods') IS NOT NULL
+     OR EXISTS (
+       SELECT 1
+       FROM pg_catalog.pg_attribute a
+       JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public'
+         AND a.attname = 'accounting_period_id'
+         AND a.attnum > 0
+         AND NOT a.attisdropped
+     )
+     OR EXISTS (
+       SELECT 1 FROM public.permissions
+       WHERE permission_key LIKE 'accounting_periods.%'
+     ) THEN
+    RAISE EXCEPTION 'Accounting period table, columns, or permissions must not exist';
   END IF;
 
   -- Confirm the Supabase auth.uid() compatibility shim and exercise organization setup.
@@ -196,8 +202,8 @@ BEGIN
     'public.update_organization_user_role(uuid,uuid,uuid)',
     'public.set_organization_user_active(uuid,uuid,boolean)',
     'public.post_purchase(uuid,uuid)',
-    'public.post_opening_balances(uuid,uuid,date,jsonb,jsonb,jsonb,text)',
-    'public.post_contact_payment(uuid,uuid,uuid)',
+    'public.post_opening_balances(uuid,date,jsonb,jsonb,jsonb,text)',
+    'public.post_contact_payment(uuid,uuid)',
     'public.post_sales(uuid,uuid)',
     'public.reverse_journal_entry(uuid,uuid,date,text)',
     'public.post_expense(uuid,uuid)',
@@ -220,7 +226,7 @@ BEGIN
 
   IF has_function_privilege(
     'authenticated',
-    'public.post_manual_journal_entry(uuid,text,uuid,date,text,jsonb)',
+    'public.post_manual_journal_entry(uuid,text,date,text,jsonb)',
     'EXECUTE'
   ) THEN
     RAISE EXCEPTION 'Legacy one-step journal posting RPC must remain unavailable';
