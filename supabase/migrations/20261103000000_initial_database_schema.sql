@@ -2680,13 +2680,7 @@ begin
   end if;
 
 
-  if exists (
-    select 1 from public.payment_allocations pa
-    where pa.organization_id = p_organization_id and pa.payment_id = p_payment_id
-  ) then
-    raise exception using errcode = '0A000',
-      message = 'Invoice-wise payment allocations are not enabled in the current contact-level control-account model.';
-  end if;
+  perform public.validate_payment_allocations(p_organization_id,p_payment_id);
 
   update public.payments
   set status = 'posted', posted_journal_entry_id = v_journal_entry_id,
@@ -3043,15 +3037,28 @@ begin
     raise exception using errcode = '23503', message = 'Original journal entry was not found in this organization.';
   end if;
   if v_original.status <> 'posted' or v_original.reversal_of_id is not null
-     or v_original.entry_type not in ('manual','expense','payment','purchase_return','sales_return') then
+     or v_original.entry_type not in ('manual','expense','payment','purchase_return','sales_return','adjustment') then
     raise exception using errcode = '23514',
-      message = 'Only posted manual, expense, payment, and return journals can be reversed here. Purchase and sales invoices require return documents; opening balances require a controlled adjustment.';
+      message = 'Only posted manual, expense, payment, return, and inventory-adjustment journals can be reversed here. Purchase and sales invoices require return documents; opening balances require a separate controlled adjustment.';
   end if;
   if exists (
     select 1 from public.journal_entries
     where organization_id = p_organization_id and reversal_of_id = p_journal_entry_id
   ) then
     raise exception using errcode = '23514', message = 'This journal entry has already been reversed.';
+  end if;
+
+  if v_original.entry_type = 'adjustment' then
+    if v_original.reference_type is distinct from 'inventory_adjustment'
+       or v_original.reference_id is distinct from p_journal_entry_id
+       or not exists (
+         select 1 from public.inventory_transactions it
+         where it.organization_id=p_organization_id
+           and it.reference_type='inventory_adjustment'
+           and it.reference_id=p_journal_entry_id
+       ) then
+      raise exception using errcode='23514',message='Inventory adjustment source movements are missing or invalid.';
+    end if;
   end if;
 
   if v_original.entry_type = 'expense' then
@@ -3136,7 +3143,7 @@ begin
   )
   returning id into v_reversal_id;
 
-  if v_original.entry_type in ('purchase_return','sales_return') then
+  if v_original.entry_type in ('purchase_return','sales_return','adjustment') then
     if not exists (
       select 1 from public.inventory_transactions it
       where it.organization_id = p_organization_id
@@ -3176,7 +3183,8 @@ begin
       where b.organization_id = p_organization_id and b.product_id = v_inventory.product_id
       for update;
 
-      if v_original.entry_type = 'purchase_return' then
+      if v_original.entry_type = 'purchase_return'
+         or (v_original.entry_type = 'adjustment' and v_inventory.direction = 'out') then
         v_direction := 'in';
         v_new_quantity := v_balance_quantity + v_inventory.quantity;
         v_new_value := v_balance_value + v_inventory.total_value;
@@ -3185,7 +3193,7 @@ begin
         v_new_quantity := v_balance_quantity - v_inventory.quantity;
         v_new_value := v_balance_value - v_inventory.total_value;
         if v_new_quantity < 0 or v_new_value < 0 then
-          raise exception using errcode = '23514', message = 'Cannot reverse this sales return because the returned stock has already been consumed.';
+          raise exception using errcode = '23514', message = 'Cannot reverse this stock movement because the affected inventory has already been consumed.';
         end if;
       end if;
       v_new_average := case when v_new_quantity = 0 then 0 else round(v_new_value / v_new_quantity,6) end;
@@ -5261,15 +5269,15 @@ begin
     raise exception using errcode = '22023', message = 'Role name and permission list are required.';
   end if;
   if exists (
-    select 1 from unnest(p_permission_keys) k
-    where not public.has_org_permission(p_organization_id,k)
+    select 1 from unnest(p_permission_keys) as x(permission_key)
+    where not public.has_org_permission(p_organization_id,x.permission_key)
   ) then
     raise exception using errcode = '42501', message = 'A custom role cannot receive permissions the current user does not hold.';
   end if;
   insert into public.roles(organization_id,name,status,is_system_role)
   values(p_organization_id,pg_catalog.btrim(p_name),'active',false)
   returning id into v_role_id;
-  select count(distinct k) into v_requested from unnest(p_permission_keys) k;
+  select count(distinct x.permission_key) into v_requested from unnest(p_permission_keys) as x(permission_key);
   insert into public.role_permissions(role_id,permission_id)
   select v_role_id,p.id from public.permissions p
   where p.permission_key = any(p_permission_keys);
@@ -5309,7 +5317,7 @@ begin
   for update;
   if not found then raise exception using errcode = '23503', message = 'Active role was not found.'; end if;
   if v_system then raise exception using errcode = '42501', message = 'System Administrator permissions are immutable.'; end if;
-  if exists (select 1 from unnest(p_permission_keys) k where not public.has_org_permission(p_organization_id,k)) then
+  if exists (select 1 from unnest(p_permission_keys) as x(permission_key) where not public.has_org_permission(p_organization_id,x.permission_key)) then
     raise exception using errcode = '42501', message = 'A custom role cannot receive permissions the current user does not hold.';
   end if;
   select count(distinct k) into v_requested from unnest(p_permission_keys) k;
@@ -5324,6 +5332,775 @@ revoke all on function public.create_custom_role(uuid,text,text[]) from public,a
 revoke all on function public.replace_custom_role_permissions(uuid,uuid,text[]) from public,anon;
 grant execute on function public.create_custom_role(uuid,text,text[]) to authenticated;
 grant execute on function public.replace_custom_role_permissions(uuid,uuid,text[]) to authenticated;
+
+
+
+-- ============================================================================
+-- INVOICE-LEVEL SUBLEDGER ALLOCATIONS
+-- ============================================================================
+
+create or replace function public.validate_payment_allocations(
+  p_organization_id uuid,
+  p_payment_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_payment public.payments%rowtype;
+  v_allocation record;
+  v_outstanding numeric(20,4);
+  v_allocated numeric(20,4);
+  v_settlement_type text;
+begin
+  select * into v_payment
+  from public.payments p
+  where p.organization_id = p_organization_id and p.id = p_payment_id;
+  if not found then raise exception using errcode = '23503', message = 'Payment was not found.'; end if;
+
+  select coalesce(sum(pa.allocated_amount),0) into v_allocated
+  from public.payment_allocations pa
+  where pa.organization_id = p_organization_id and pa.payment_id = p_payment_id;
+  if v_allocated > v_payment.amount then
+    raise exception using errcode = '23514', message = 'Invoice allocations cannot exceed the payment amount.';
+  end if;
+
+  if v_allocated = 0 then return; end if;
+  if v_payment.payment_type = 'transfer' then
+    raise exception using errcode = '23514', message = 'Bank transfers cannot be allocated to contact documents.';
+  end if;
+
+  select a.account_type into v_settlement_type
+  from public.accounts a
+  where a.organization_id = p_organization_id and a.id = v_payment.settlement_account_id;
+  if v_payment.payment_type = 'refund' and v_settlement_type not in ('asset','liability') then
+    raise exception using errcode = '23514', message = 'Refund allocations require an AR or AP control account.';
+  end if;
+
+  for v_allocation in
+    select pa.document_type, pa.document_id, pa.allocated_amount
+    from public.payment_allocations pa
+    where pa.organization_id = p_organization_id and pa.payment_id = p_payment_id
+    order by pa.document_type, pa.document_id
+  loop
+    v_outstanding := null;
+
+    if v_allocation.document_type = 'sales' then
+      if v_payment.payment_type <> 'receipt' then
+        raise exception using errcode = '23514', message = 'Receipts can only be allocated to sales invoices.';
+      end if;
+      perform 1 from public.sales s
+      where s.organization_id = p_organization_id and s.id = v_allocation.document_id
+      for update;
+      select s.total_amount
+        - coalesce((select sum(pa.allocated_amount)
+          from public.payment_allocations pa
+          join public.payments p on p.organization_id=pa.organization_id and p.id=pa.payment_id
+          where pa.organization_id=p_organization_id and pa.document_type='sales'
+            and pa.document_id=s.id and p.status='posted' and p.id<>p_payment_id),0)
+        - coalesce((select sum(sr.total_amount) from public.sales_returns sr
+          where sr.organization_id=p_organization_id and sr.sales_id=s.id and sr.status='posted'),0)
+      into v_outstanding
+      from public.sales s
+      where s.organization_id=p_organization_id and s.id=v_allocation.document_id
+        and s.status in ('posted','partially_returned');
+      if v_outstanding is null then
+        raise exception using errcode = '23503', message = 'Allocated sales invoice must be posted and belong to this organization.';
+      end if;
+      if (select customer_id from public.sales where organization_id=p_organization_id and id=v_allocation.document_id)
+         is distinct from v_payment.contact_id then
+        raise exception using errcode = '23514', message = 'Sales invoice customer must match the payment contact.';
+      end if;
+
+    elsif v_allocation.document_type = 'purchase' then
+      if v_payment.payment_type <> 'payment' then
+        raise exception using errcode = '23514', message = 'Supplier payments can only be allocated to purchases.';
+      end if;
+      perform 1 from public.purchase p
+      where p.organization_id=p_organization_id and p.id=v_allocation.document_id
+      for update;
+      select p.total_amount
+        - coalesce((select sum(pa.allocated_amount)
+          from public.payment_allocations pa
+          join public.payments pm on pm.organization_id=pa.organization_id and pm.id=pa.payment_id
+          where pa.organization_id=p_organization_id and pa.document_type='purchase'
+            and pa.document_id=p.id and pm.status='posted' and pm.id<>p_payment_id),0)
+        - coalesce((select sum(pr.total_amount) from public.purchase_returns pr
+          where pr.organization_id=p_organization_id and pr.purchase_id=p.id and pr.status='posted'),0)
+      into v_outstanding
+      from public.purchase p
+      where p.organization_id=p_organization_id and p.id=v_allocation.document_id
+        and p.status in ('posted','partially_returned');
+      if v_outstanding is null then
+        raise exception using errcode = '23503', message = 'Allocated purchase must be posted and belong to this organization.';
+      end if;
+      if (select supplier_id from public.purchase where organization_id=p_organization_id and id=v_allocation.document_id)
+         is distinct from v_payment.contact_id then
+        raise exception using errcode = '23514', message = 'Purchase supplier must match the payment contact.';
+      end if;
+
+    elsif v_allocation.document_type = 'expense' then
+      if v_payment.payment_type <> 'payment' then
+        raise exception using errcode = '23514', message = 'Supplier payments can only be allocated to expenses.';
+      end if;
+      perform 1 from public.expenses e
+      where e.organization_id=p_organization_id and e.id=v_allocation.document_id
+      for update;
+      select e.amount
+        - coalesce((select sum(pa.allocated_amount)
+          from public.payment_allocations pa
+          join public.payments pm on pm.organization_id=pa.organization_id and pm.id=pa.payment_id
+          where pa.organization_id=p_organization_id and pa.document_type='expense'
+            and pa.document_id=e.id and pm.status='posted' and pm.id<>p_payment_id),0)
+      into v_outstanding
+      from public.expenses e
+      where e.organization_id=p_organization_id and e.id=v_allocation.document_id
+        and e.status='posted';
+      if v_outstanding is null then
+        raise exception using errcode = '23503', message = 'Allocated expense must be posted and belong to this organization.';
+      end if;
+      if (select contact_id from public.expenses where organization_id=p_organization_id and id=v_allocation.document_id)
+         is distinct from v_payment.contact_id then
+        raise exception using errcode = '23514', message = 'Expense contact must match the payment contact.';
+      end if;
+
+    elsif v_allocation.document_type = 'sales_return' then
+      if v_payment.payment_type <> 'refund' or v_settlement_type <> 'asset' then
+        raise exception using errcode = '23514', message = 'Customer refunds can only be allocated to sales return credit notes.';
+      end if;
+      perform 1 from public.sales_returns sr
+      where sr.organization_id=p_organization_id and sr.id=v_allocation.document_id
+      for update;
+      select sr.total_amount
+        - coalesce((select sum(pa.allocated_amount)
+          from public.payment_allocations pa
+          join public.payments pm on pm.organization_id=pa.organization_id and pm.id=pa.payment_id
+          where pa.organization_id=p_organization_id and pa.document_type='sales_return'
+            and pa.document_id=sr.id and pm.status='posted' and pm.id<>p_payment_id),0)
+      into v_outstanding
+      from public.sales_returns sr
+      where sr.organization_id=p_organization_id and sr.id=v_allocation.document_id
+        and sr.status='posted';
+      if v_outstanding is null then
+        raise exception using errcode = '23503', message = 'Allocated sales return must be posted and belong to this organization.';
+      end if;
+      if (select customer_id from public.sales_returns where organization_id=p_organization_id and id=v_allocation.document_id)
+         is distinct from v_payment.contact_id then
+        raise exception using errcode = '23514', message = 'Sales return customer must match the refund contact.';
+      end if;
+
+    elsif v_allocation.document_type = 'purchase_return' then
+      if v_payment.payment_type <> 'refund' or v_settlement_type <> 'liability' then
+        raise exception using errcode = '23514', message = 'Supplier refunds can only be allocated to purchase return credit notes.';
+      end if;
+      perform 1 from public.purchase_returns pr
+      where pr.organization_id=p_organization_id and pr.id=v_allocation.document_id
+      for update;
+      select pr.total_amount
+        - coalesce((select sum(pa.allocated_amount)
+          from public.payment_allocations pa
+          join public.payments pm on pm.organization_id=pa.organization_id and pm.id=pa.payment_id
+          where pa.organization_id=p_organization_id and pa.document_type='purchase_return'
+            and pa.document_id=pr.id and pm.status='posted' and pm.id<>p_payment_id),0)
+      into v_outstanding
+      from public.purchase_returns pr
+      where pr.organization_id=p_organization_id and pr.id=v_allocation.document_id
+        and pr.status='posted';
+      if v_outstanding is null then
+        raise exception using errcode = '23503', message = 'Allocated purchase return must be posted and belong to this organization.';
+      end if;
+      if (select supplier_id from public.purchase_returns where organization_id=p_organization_id and id=v_allocation.document_id)
+         is distinct from v_payment.contact_id then
+        raise exception using errcode = '23514', message = 'Purchase return supplier must match the refund contact.';
+      end if;
+    else
+      raise exception using errcode = '22023', message = 'Unsupported allocation document type.';
+    end if;
+
+    if v_allocation.allocated_amount > v_outstanding or v_outstanding <= 0 then
+      raise exception using errcode = '23514',
+        message = pg_catalog.format('Allocation %s exceeds the document outstanding balance %s.',
+          v_allocation.allocated_amount, v_outstanding);
+    end if;
+  end loop;
+end;
+$function$;
+revoke all on function public.validate_payment_allocations(uuid,uuid) from public,anon,authenticated;
+
+create or replace function public.set_payment_allocations(
+  p_organization_id uuid,
+  p_payment_id uuid,
+  p_allocations jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_payment public.payments%rowtype;
+  v_count integer;
+begin
+  if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id,'payments.manage') then
+    raise exception using errcode='42501',message='Not authorized to manage payment allocations.';
+  end if;
+  if p_allocations is null or pg_catalog.jsonb_typeof(p_allocations)<>'array' then
+    raise exception using errcode='22023',message='Allocations must be supplied as a JSON array.';
+  end if;
+  select * into v_payment from public.payments p
+  where p.organization_id=p_organization_id and p.id=p_payment_id for update;
+  if not found then raise exception using errcode='23503',message='Payment was not found.'; end if;
+  if v_payment.status<>'draft' then
+    raise exception using errcode='23514',message='Allocations can only be changed while the payment is a draft.';
+  end if;
+  if v_payment.payment_type='transfer' and pg_catalog.jsonb_array_length(p_allocations)>0 then
+    raise exception using errcode='23514',message='Bank transfers cannot have invoice allocations.';
+  end if;
+  if exists (
+    select 1 from pg_catalog.jsonb_to_recordset(p_allocations) as x(
+      document_type text,document_id uuid,allocated_amount numeric
+    )
+    where x.document_type not in ('purchase','purchase_return','sales','sales_return','expense')
+      or x.document_id is null or x.allocated_amount is null or x.allocated_amount<=0
+  ) then
+    raise exception using errcode='22023',message='Every allocation requires a supported document type, document ID, and positive amount.';
+  end if;
+  select count(*) into v_count
+  from pg_catalog.jsonb_to_recordset(p_allocations) as x(
+    document_type text,document_id uuid,allocated_amount numeric
+  );
+  if v_count<>pg_catalog.jsonb_array_length(p_allocations) then
+    raise exception using errcode='22023',message='Allocation records could not be parsed.';
+  end if;
+  delete from public.payment_allocations
+  where organization_id=p_organization_id and payment_id=p_payment_id;
+  insert into public.payment_allocations(
+    organization_id,payment_id,document_type,document_id,allocated_amount
+  )
+  select p_organization_id,p_payment_id,x.document_type,x.document_id,x.allocated_amount
+  from pg_catalog.jsonb_to_recordset(p_allocations) as x(
+    document_type text,document_id uuid,allocated_amount numeric
+  );
+  perform public.validate_payment_allocations(p_organization_id,p_payment_id);
+end;
+$function$;
+revoke all on function public.set_payment_allocations(uuid,uuid,jsonb) from public,anon;
+grant execute on function public.set_payment_allocations(uuid,uuid,jsonb) to authenticated;
+
+-- ============================================================================
+-- CONTROLLED INVENTORY ADJUSTMENT POSTING
+-- ============================================================================
+
+create or replace function public.post_inventory_adjustment(
+  p_organization_id uuid,
+  p_adjustment_date date,
+  p_reason text,
+  p_lines jsonb,
+  p_gain_account_id uuid default null,
+  p_loss_account_id uuid default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_journal_id uuid := pg_catalog.gen_random_uuid();
+  v_entry_number text;
+  v_gain_account uuid;
+  v_loss_account uuid;
+  v_line record;
+  v_balance_quantity numeric(20,6);
+  v_balance_value numeric(20,4);
+  v_average_cost numeric(20,6);
+  v_new_quantity numeric(20,6);
+  v_new_value numeric(20,4);
+  v_new_average numeric(20,6);
+  v_line_value numeric(20,4);
+  v_line_no integer := 0;
+  v_count integer;
+begin
+  perform 1 from public.organizations o
+  where o.id=p_organization_id and o.is_active for share;
+  if not found then raise exception using errcode='23503',message='Active organization was not found.'; end if;
+  if v_user_id is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id,'inventory.adjust') then
+    raise exception using errcode='42501',message='Not authorized to post inventory adjustments.';
+  end if;
+  if p_adjustment_date is null or p_reason is null or pg_catalog.length(pg_catalog.btrim(p_reason))<3
+     or p_lines is null or pg_catalog.jsonb_typeof(p_lines)<>'array'
+     or pg_catalog.jsonb_array_length(p_lines)<1 then
+    raise exception using errcode='22023',message='Adjustment date, reason, and at least one inventory line are required.';
+  end if;
+
+  select count(*) into v_count
+  from pg_catalog.jsonb_to_recordset(p_lines) as x(
+    product_id uuid,direction text,quantity numeric,unit_cost numeric
+  );
+  if v_count<>pg_catalog.jsonb_array_length(p_lines) or exists (
+    select 1 from pg_catalog.jsonb_to_recordset(p_lines) as x(
+      product_id uuid,direction text,quantity numeric,unit_cost numeric
+    )
+    where x.product_id is null or x.direction not in ('increase','decrease')
+      or x.quantity is null or x.quantity<=0
+      or (x.direction='increase' and (x.unit_cost is null or x.unit_cost<=0))
+  ) then
+    raise exception using errcode='22023',message='Each adjustment line requires a product, increase/decrease direction, positive quantity, and positive cost for increases.';
+  end if;
+
+  select a.id into v_gain_account
+  from public.accounts a
+  where a.organization_id=p_organization_id
+    and a.id=coalesce(p_gain_account_id,(select id from public.accounts where organization_id=p_organization_id and account_code='4300'))
+    and a.account_type='revenue' and a.is_active and a.is_postable;
+  if v_gain_account is null then raise exception using errcode='23514',message='An active, postable inventory adjustment gain revenue account is required.'; end if;
+
+  select a.id into v_loss_account
+  from public.accounts a
+  where a.organization_id=p_organization_id
+    and a.id=coalesce(p_loss_account_id,(select id from public.accounts where organization_id=p_organization_id and account_code='5300'))
+    and a.account_type='expense' and a.is_active and a.is_postable;
+  if v_loss_account is null then raise exception using errcode='23514',message='An active, postable inventory adjustment loss expense account is required.'; end if;
+
+  for v_line in
+    select distinct x.product_id
+    from pg_catalog.jsonb_to_recordset(p_lines) as x(
+      product_id uuid,direction text,quantity numeric,unit_cost numeric
+    )
+    order by x.product_id
+  loop
+    if not exists (
+      select 1 from public.products pr
+      join public.accounts a on a.organization_id=pr.organization_id and a.id=pr.inventory_account_id
+      where pr.organization_id=p_organization_id and pr.id=v_line.product_id
+        and pr.is_active and a.is_active and a.is_postable and a.account_type='asset'
+    ) then
+      raise exception using errcode='23514',message='Every adjusted product must be active and mapped to an active, postable inventory asset account.';
+    end if;
+    insert into public.inventory_balances(organization_id,product_id,quantity,average_cost,inventory_value)
+    values(p_organization_id,v_line.product_id,0,0,0)
+    on conflict(organization_id,product_id) do nothing;
+    perform 1 from public.inventory_balances b
+    where b.organization_id=p_organization_id and b.product_id=v_line.product_id for update;
+  end loop;
+
+  v_entry_number := public.next_document_number(p_organization_id,'inventory_adjustment');
+  insert into public.journal_entries(
+    id,organization_id,entry_number,entry_date,entry_type,status,reference_type,reference_id,
+    description,posted_at,posted_by,created_by
+  )
+  values(
+    v_journal_id,p_organization_id,v_entry_number,p_adjustment_date,'adjustment','posted',
+    'inventory_adjustment',v_journal_id,pg_catalog.btrim(p_reason),pg_catalog.now(),v_user_id,v_user_id
+  );
+
+  for v_line in
+    select x.product_id,x.direction,x.quantity,x.unit_cost,x.ordinality
+    from pg_catalog.jsonb_to_recordset(p_lines) with ordinality as x(
+      product_id uuid,direction text,quantity numeric,unit_cost numeric,ordinality bigint
+    )
+    order by x.product_id,x.ordinality
+  loop
+    select b.quantity,b.inventory_value,b.average_cost
+    into v_balance_quantity,v_balance_value,v_average_cost
+    from public.inventory_balances b
+    where b.organization_id=p_organization_id and b.product_id=v_line.product_id
+    for update;
+
+    if v_line.direction='increase' then
+      v_line_value:=round(v_line.quantity*v_line.unit_cost,4);
+      v_new_quantity:=v_balance_quantity+v_line.quantity;
+      v_new_value:=v_balance_value+v_line_value;
+    else
+      if v_line.quantity>v_balance_quantity then
+        raise exception using errcode='23514',message='Inventory decrease exceeds the available product quantity.';
+      end if;
+      v_line_value:=case when v_line.quantity=v_balance_quantity then v_balance_value
+        else round(v_line.quantity*v_average_cost,4) end;
+      v_new_quantity:=v_balance_quantity-v_line.quantity;
+      v_new_value:=v_balance_value-v_line_value;
+    end if;
+    if v_line_value<=0 or v_new_quantity<0 or v_new_value<0 then
+      raise exception using errcode='23514',message='Inventory adjustment would create a zero-value movement or negative stock valuation.';
+    end if;
+    v_new_average:=case when v_new_quantity=0 then 0 else round(v_new_value/v_new_quantity,6) end;
+
+    update public.inventory_balances
+    set quantity=v_new_quantity,inventory_value=v_new_value,average_cost=v_new_average,updated_at=pg_catalog.now()
+    where organization_id=p_organization_id and product_id=v_line.product_id;
+
+    insert into public.inventory_transactions(
+      organization_id,transaction_number,product_id,transaction_date,transaction_type,direction,
+      quantity,unit_cost,total_value,reference_type,reference_id,unit_cost_before,average_cost_after,created_by
+    )
+    values(
+      p_organization_id,v_entry_number||'-'||v_line.ordinality::text,v_line.product_id,p_adjustment_date,
+      'adjustment',case when v_line.direction='increase' then 'in' else 'out' end,
+      v_line.quantity,case when v_line.direction='increase' then v_line.unit_cost else v_average_cost end,
+      v_line_value,'inventory_adjustment',v_journal_id,v_average_cost,v_new_average,v_user_id
+    );
+  end loop;
+
+  insert into public.account_transactions(
+    organization_id,journal_entry_id,account_id,line_number,description,debit,credit,contact_id
+  )
+  select p_organization_id,v_journal_id,pr.inventory_account_id,
+    row_number() over(order by pr.inventory_account_id,it.direction)::integer,
+    'Inventory adjustment - '||v_entry_number,
+    case when it.direction='in' then sum(it.total_value) else 0 end,
+    case when it.direction='out' then sum(it.total_value) else 0 end,
+    null
+  from public.inventory_transactions it
+  join public.products pr on pr.organization_id=it.organization_id and pr.id=it.product_id
+  where it.organization_id=p_organization_id and it.reference_type='inventory_adjustment' and it.reference_id=v_journal_id
+  group by pr.inventory_account_id,it.direction
+  having sum(it.total_value)>0;
+
+  select coalesce(max(atx.line_number),0) into v_line_no
+  from public.account_transactions atx
+  where atx.organization_id=p_organization_id and atx.journal_entry_id=v_journal_id;
+
+  insert into public.account_transactions(
+    organization_id,journal_entry_id,account_id,line_number,description,debit,credit,contact_id
+  )
+  select p_organization_id,v_journal_id,v_gain_account,v_line_no+1,
+    'Inventory adjustment gain - '||v_entry_number,0,sum(it.total_value),null
+  from public.inventory_transactions it
+  where it.organization_id=p_organization_id and it.reference_type='inventory_adjustment'
+    and it.reference_id=v_journal_id and it.direction='in'
+  having sum(it.total_value)>0;
+
+  insert into public.account_transactions(
+    organization_id,journal_entry_id,account_id,line_number,description,debit,credit,contact_id
+  )
+  select p_organization_id,v_journal_id,v_loss_account,v_line_no+2,
+    'Inventory adjustment loss - '||v_entry_number,sum(it.total_value),0,null
+  from public.inventory_transactions it
+  where it.organization_id=p_organization_id and it.reference_type='inventory_adjustment'
+    and it.reference_id=v_journal_id and it.direction='out'
+  having sum(it.total_value)>0;
+
+  if (select coalesce(sum(debit),0) from public.account_transactions where organization_id=p_organization_id and journal_entry_id=v_journal_id)
+     <> (select coalesce(sum(credit),0) from public.account_transactions where organization_id=p_organization_id and journal_entry_id=v_journal_id) then
+    raise exception using errcode='23514',message='Inventory adjustment journal failed debit/credit reconciliation.';
+  end if;
+  return v_journal_id;
+end;
+$function$;
+revoke all on function public.post_inventory_adjustment(uuid,date,text,jsonb,uuid,uuid) from public,anon;
+grant execute on function public.post_inventory_adjustment(uuid,date,text,jsonb,uuid,uuid) to authenticated;
+
+-- ============================================================================
+-- FINANCIAL AND OPERATIONAL REPORTING CONTRACTS
+-- ============================================================================
+
+create or replace function public.report_trial_balance(
+  p_organization_id uuid,p_date_from date,p_date_to date
+)
+returns table(account_id uuid,account_code text,account_name text,account_type text,
+  opening_balance numeric,period_debit numeric,period_credit numeric,closing_balance numeric)
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id,'reports.read') then
+    raise exception using errcode='42501',message='Not authorized to view financial reports.';
+  end if;
+  if p_date_from is null or p_date_to is null or p_date_from>p_date_to then
+    raise exception using errcode='22023',message='A valid report date range is required.';
+  end if;
+  return query
+  select a.id,a.account_code,a.account_name,a.account_type,
+    coalesce(sum(atx.debit-atx.credit) filter(where je.entry_date<p_date_from),0)::numeric,
+    coalesce(sum(atx.debit) filter(where je.entry_date between p_date_from and p_date_to),0)::numeric,
+    coalesce(sum(atx.credit) filter(where je.entry_date between p_date_from and p_date_to),0)::numeric,
+    coalesce(sum(atx.debit-atx.credit) filter(where je.entry_date<=p_date_to),0)::numeric
+  from public.accounts a
+  left join public.account_transactions atx on atx.organization_id=a.organization_id and atx.account_id=a.id
+  left join public.journal_entries je on je.organization_id=atx.organization_id and je.id=atx.journal_entry_id
+    and je.status in ('posted','reversed') and je.entry_date<=p_date_to
+  where a.organization_id=p_organization_id and a.is_postable
+  group by a.id,a.account_code,a.account_name,a.account_type
+  order by a.account_code;
+end;
+$function$;
+
+create or replace function public.report_general_ledger(
+  p_organization_id uuid,p_account_id uuid,p_date_from date,p_date_to date
+)
+returns table(entry_date date,entry_number text,description text,contact_id uuid,
+  debit numeric,credit numeric,running_balance numeric)
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id,'reports.read') then
+    raise exception using errcode='42501',message='Not authorized to view financial reports.';
+  end if;
+  if p_date_from is null or p_date_to is null or p_date_from>p_date_to then
+    raise exception using errcode='22023',message='A valid report date range is required.';
+  end if;
+  if not exists(select 1 from public.accounts a where a.organization_id=p_organization_id and a.id=p_account_id) then
+    raise exception using errcode='23503',message='Account was not found in this organization.';
+  end if;
+  return query
+  with opening as (
+    select coalesce(sum(atx.debit-atx.credit),0) as balance
+    from public.account_transactions atx
+    join public.journal_entries je on je.organization_id=atx.organization_id and je.id=atx.journal_entry_id
+    where atx.organization_id=p_organization_id and atx.account_id=p_account_id
+      and je.status in ('posted','reversed') and je.entry_date<p_date_from
+  ), activity as (
+    select je.entry_date,je.entry_number,coalesce(atx.description,je.description) as description,
+      atx.contact_id,atx.debit,atx.credit,
+      row_number() over(order by je.entry_date,je.created_at,je.id,atx.line_number) as rn
+    from public.account_transactions atx
+    join public.journal_entries je on je.organization_id=atx.organization_id and je.id=atx.journal_entry_id
+    where atx.organization_id=p_organization_id and atx.account_id=p_account_id
+      and je.status in ('posted','reversed') and je.entry_date between p_date_from and p_date_to
+  )
+  select a.entry_date,a.entry_number,a.description,a.contact_id,a.debit,a.credit,
+    (o.balance+sum(a.debit-a.credit) over(order by a.rn))::numeric
+  from activity a cross join opening o order by a.rn;
+end;
+$function$;
+
+create or replace function public.report_profit_and_loss(
+  p_organization_id uuid,p_date_from date,p_date_to date
+)
+returns table(account_id uuid,account_code text,account_name text,account_type text,amount numeric)
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id,'reports.read') then
+    raise exception using errcode='42501',message='Not authorized to view financial reports.';
+  end if;
+  if p_date_from is null or p_date_to is null or p_date_from>p_date_to then
+    raise exception using errcode='22023',message='A valid report date range is required.';
+  end if;
+  return query
+  select a.id,a.account_code,a.account_name,a.account_type,
+    (case when a.account_type='revenue' then sum(atx.credit-atx.debit)
+      else sum(atx.debit-atx.credit) end)::numeric
+  from public.accounts a
+  join public.account_transactions atx on atx.organization_id=a.organization_id and atx.account_id=a.id
+  join public.journal_entries je on je.organization_id=atx.organization_id and je.id=atx.journal_entry_id
+  where a.organization_id=p_organization_id and a.account_type in ('revenue','expense')
+    and a.is_postable and je.status in ('posted','reversed')
+    and je.entry_date between p_date_from and p_date_to
+  group by a.id,a.account_code,a.account_name,a.account_type
+  order by a.account_type,a.account_code;
+end;
+$function$;
+
+create or replace function public.report_balance_sheet(
+  p_organization_id uuid,p_as_of_date date
+)
+returns table(account_id uuid,account_code text,account_name text,account_type text,balance numeric)
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id,'reports.read') then
+    raise exception using errcode='42501',message='Not authorized to view financial reports.';
+  end if;
+  if p_as_of_date is null then raise exception using errcode='22023',message='An as-of date is required.'; end if;
+  return query
+  select a.id,a.account_code,a.account_name,a.account_type,
+    (case when a.account_type='asset' then sum(atx.debit-atx.credit)
+      else sum(atx.credit-atx.debit) end)::numeric
+  from public.accounts a
+  join public.account_transactions atx on atx.organization_id=a.organization_id and atx.account_id=a.id
+  join public.journal_entries je on je.organization_id=atx.organization_id and je.id=atx.journal_entry_id
+  where a.organization_id=p_organization_id and a.account_type in ('asset','liability','equity')
+    and a.is_postable and je.status in ('posted','reversed') and je.entry_date<=p_as_of_date
+  group by a.id,a.account_code,a.account_name,a.account_type
+  having sum(atx.debit-atx.credit)<>0
+  order by a.account_type,a.account_code;
+end;
+$function$;
+
+create or replace function public.report_inventory_valuation(
+  p_organization_id uuid,p_as_of_date date default current_date
+)
+returns table(product_id uuid,product_code text,product_name text,quantity numeric,
+  inventory_value numeric,average_cost numeric)
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id,'inventory.read') then
+    raise exception using errcode='42501',message='Not authorized to view inventory valuation.';
+  end if;
+  if p_as_of_date is null then raise exception using errcode='22023',message='An as-of date is required.'; end if;
+  return query
+  select pr.id,pr.product_code,pr.name,
+    coalesce(sum(case when it.direction='in' then it.quantity else -it.quantity end),0)::numeric,
+    coalesce(sum(case when it.direction='in' then it.total_value else -it.total_value end),0)::numeric,
+    case when coalesce(sum(case when it.direction='in' then it.quantity else -it.quantity end),0)=0
+      then 0
+      else round(coalesce(sum(case when it.direction='in' then it.total_value else -it.total_value end),0)
+        /sum(case when it.direction='in' then it.quantity else -it.quantity end),6) end::numeric
+  from public.products pr
+  left join public.inventory_transactions it on it.organization_id=pr.organization_id
+    and it.product_id=pr.id and it.transaction_date<=p_as_of_date
+  where pr.organization_id=p_organization_id
+  group by pr.id,pr.product_code,pr.name
+  order by pr.product_code;
+end;
+$function$;
+
+create or replace function public.report_contact_balances(
+  p_organization_id uuid,p_as_of_date date default current_date
+)
+returns table(contact_id uuid,contact_name text,account_id uuid,account_code text,
+  account_type text,balance numeric)
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id,'reports.read') then
+    raise exception using errcode='42501',message='Not authorized to view contact balances.';
+  end if;
+  if p_as_of_date is null then raise exception using errcode='22023',message='An as-of date is required.'; end if;
+  return query
+  select c.id,c.name,a.id,a.account_code,a.account_type,
+    (case when a.account_type='asset' then sum(atx.debit-atx.credit)
+      else sum(atx.credit-atx.debit) end)::numeric
+  from public.account_transactions atx
+  join public.journal_entries je on je.organization_id=atx.organization_id and je.id=atx.journal_entry_id
+  join public.contacts c on c.organization_id=atx.organization_id and c.id=atx.contact_id
+  join public.accounts a on a.organization_id=atx.organization_id and a.id=atx.account_id
+  where atx.organization_id=p_organization_id and atx.contact_id is not null
+    and a.is_control_account and je.status in ('posted','reversed') and je.entry_date<=p_as_of_date
+  group by c.id,c.name,a.id,a.account_code,a.account_type
+  having sum(atx.debit-atx.credit)<>0
+  order by c.name,a.account_code;
+end;
+$function$;
+
+create or replace function public.report_receivables_aging(
+  p_organization_id uuid,p_as_of_date date default current_date
+)
+returns table(document_id uuid,document_number text,contact_id uuid,contact_name text,
+  invoice_date date,days_outstanding integer,current_amount numeric,days_31_60 numeric,
+  days_61_90 numeric,over_90 numeric)
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id,'reports.read') then
+    raise exception using errcode='42501',message='Not authorized to view receivables aging.';
+  end if;
+  if p_as_of_date is null then raise exception using errcode='22023',message='An as-of date is required.'; end if;
+  return query
+  with open_docs as (
+    select s.id,s.invoice_id,s.customer_id,s.invoice_date,
+      greatest(0,s.total_amount
+        -coalesce((select sum(pa.allocated_amount) from public.payment_allocations pa
+          join public.payments p on p.organization_id=pa.organization_id and p.id=pa.payment_id
+          where pa.organization_id=p_organization_id and pa.document_type='sales'
+            and pa.document_id=s.id and p.status='posted'),0)
+        -coalesce((select sum(sr.total_amount) from public.sales_returns sr
+          where sr.organization_id=p_organization_id and sr.sales_id=s.id and sr.status='posted'
+            and sr.return_date<=p_as_of_date),0)) as outstanding
+    from public.sales s
+    where s.organization_id=p_organization_id and s.status in ('posted','partially_returned')
+      and s.invoice_date<=p_as_of_date
+  )
+  select d.id,d.invoice_id,c.id,c.name,d.invoice_date,(p_as_of_date-d.invoice_date)::integer,
+    case when p_as_of_date-d.invoice_date<=30 then d.outstanding else 0 end,
+    case when p_as_of_date-d.invoice_date between 31 and 60 then d.outstanding else 0 end,
+    case when p_as_of_date-d.invoice_date between 61 and 90 then d.outstanding else 0 end,
+    case when p_as_of_date-d.invoice_date>90 then d.outstanding else 0 end
+  from open_docs d join public.contacts c on c.organization_id=p_organization_id and c.id=d.customer_id
+  where d.outstanding>0 order by d.invoice_date,d.invoice_id;
+end;
+$function$;
+
+create or replace function public.report_payables_aging(
+  p_organization_id uuid,p_as_of_date date default current_date
+)
+returns table(document_type text,document_id uuid,document_number text,contact_id uuid,
+  contact_name text,document_date date,days_outstanding integer,current_amount numeric,
+  days_31_60 numeric,days_61_90 numeric,over_90 numeric)
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id,'reports.read') then
+    raise exception using errcode='42501',message='Not authorized to view payables aging.';
+  end if;
+  if p_as_of_date is null then raise exception using errcode='22023',message='An as-of date is required.'; end if;
+  return query
+  with docs as (
+    select 'purchase'::text as dtype,p.id,p.invoice_id as number,p.supplier_id as contact,p.invoice_date as doc_date,
+      greatest(0,p.total_amount
+        -coalesce((select sum(pa.allocated_amount) from public.payment_allocations pa
+          join public.payments pm on pm.organization_id=pa.organization_id and pm.id=pa.payment_id
+          where pa.organization_id=p_organization_id and pa.document_type='purchase'
+            and pa.document_id=p.id and pm.status='posted'),0)
+        -coalesce((select sum(pr.total_amount) from public.purchase_returns pr
+          where pr.organization_id=p_organization_id and pr.purchase_id=p.id and pr.status='posted'
+            and pr.return_date<=p_as_of_date),0)) as outstanding
+    from public.purchase p where p.organization_id=p_organization_id
+      and p.status in ('posted','partially_returned') and p.invoice_date<=p_as_of_date
+    union all
+    select 'expense',e.id,e.expense_number,e.contact_id,e.expense_date,
+      greatest(0,e.amount-coalesce((select sum(pa.allocated_amount) from public.payment_allocations pa
+        join public.payments pm on pm.organization_id=pa.organization_id and pm.id=pa.payment_id
+        where pa.organization_id=p_organization_id and pa.document_type='expense'
+          and pa.document_id=e.id and pm.status='posted'),0))
+    from public.expenses e where e.organization_id=p_organization_id and e.status='posted'
+      and e.contact_id is not null and e.expense_date<=p_as_of_date
+  )
+  select d.dtype,d.id,d.number,c.id,c.name,d.doc_date,(p_as_of_date-d.doc_date)::integer,
+    case when p_as_of_date-d.doc_date<=30 then d.outstanding else 0 end,
+    case when p_as_of_date-d.doc_date between 31 and 60 then d.outstanding else 0 end,
+    case when p_as_of_date-d.doc_date between 61 and 90 then d.outstanding else 0 end,
+    case when p_as_of_date-d.doc_date>90 then d.outstanding else 0 end
+  from docs d join public.contacts c on c.organization_id=p_organization_id and c.id=d.contact
+  where d.outstanding>0 order by d.doc_date,d.number;
+end;
+$function$;
+
+revoke all on function public.report_trial_balance(uuid,date,date) from public,anon;
+revoke all on function public.report_general_ledger(uuid,uuid,date,date) from public,anon;
+revoke all on function public.report_profit_and_loss(uuid,date,date) from public,anon;
+revoke all on function public.report_balance_sheet(uuid,date) from public,anon;
+revoke all on function public.report_inventory_valuation(uuid,date) from public,anon;
+revoke all on function public.report_contact_balances(uuid,date) from public,anon;
+revoke all on function public.report_receivables_aging(uuid,date) from public,anon;
+revoke all on function public.report_payables_aging(uuid,date) from public,anon;
+grant execute on function public.report_trial_balance(uuid,date,date) to authenticated;
+grant execute on function public.report_general_ledger(uuid,uuid,date,date) to authenticated;
+grant execute on function public.report_profit_and_loss(uuid,date,date) to authenticated;
+grant execute on function public.report_balance_sheet(uuid,date) to authenticated;
+grant execute on function public.report_inventory_valuation(uuid,date) to authenticated;
+grant execute on function public.report_contact_balances(uuid,date) to authenticated;
+grant execute on function public.report_receivables_aging(uuid,date) to authenticated;
+grant execute on function public.report_payables_aging(uuid,date) to authenticated;
 
 
 commit;
