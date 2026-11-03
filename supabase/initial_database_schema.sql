@@ -2819,7 +2819,7 @@ returns uuid
 language plpgsql
 security definer
 set search_path = ''
-as $
+as $$
 declare
   v_user_id uuid := (select auth.uid());
   v_entry public.journal_entries%rowtype;
@@ -2883,7 +2883,7 @@ begin
 
   return p_journal_entry_id;
 end;
-$;
+$$;
 
 revoke all on function public.post_confirmed_journal_entry(uuid, uuid) from public, anon;
 grant execute on function public.post_confirmed_journal_entry(uuid, uuid) to authenticated;
@@ -2897,7 +2897,7 @@ returns void
 language plpgsql
 security definer
 set search_path = ''
-as $
+as $$
 declare
   v_user_id uuid := (select auth.uid());
   v_table text;
@@ -2987,7 +2987,7 @@ begin
     v_table
   ) using p_organization_id, p_document_id, v_user_id;
 end;
-$;
+$$;
 
 create or replace function public.revert_transaction_document_to_draft(
   p_organization_id uuid,
@@ -2998,7 +2998,7 @@ returns void
 language plpgsql
 security definer
 set search_path = ''
-as $
+as $$
 declare
   v_user_id uuid := (select auth.uid());
   v_table text;
@@ -3035,7 +3035,7 @@ begin
     v_table
   ) using p_organization_id, p_document_id;
 end;
-$;
+$$;
 
 create or replace function public.void_transaction_document(
   p_organization_id uuid,
@@ -3047,7 +3047,7 @@ returns void
 language plpgsql
 security definer
 set search_path = ''
-as $
+as $$
 declare
   v_user_id uuid := (select auth.uid());
   v_table text;
@@ -3087,7 +3087,7 @@ begin
     v_table
   ) using p_organization_id, p_document_id, v_user_id, p_reason;
 end;
-$;
+$$;
 
 create or replace function public.delete_draft_transaction_document(
   p_organization_id uuid,
@@ -3098,7 +3098,7 @@ returns void
 language plpgsql
 security definer
 set search_path = ''
-as $
+as $$
 declare
   v_user_id uuid := (select auth.uid());
   v_table text;
@@ -3151,7 +3151,7 @@ begin
     'delete from public.%I where organization_id = $1 and id = $2', v_table
   ) using p_organization_id, p_document_id;
 end;
-$;
+$$;
 
 revoke all on function public.confirm_transaction_document(uuid, text, uuid) from public, anon;
 revoke all on function public.revert_transaction_document_to_draft(uuid, text, uuid) from public, anon;
