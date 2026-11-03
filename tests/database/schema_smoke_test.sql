@@ -502,7 +502,7 @@ BEGIN
     JOIN public.accounts rev ON rev.organization_id=p.organization_id AND rev.id=p.sales_account_id
     JOIN public.accounts cogs ON cogs.organization_id=p.organization_id AND cogs.id=p.cogs_account_id
     WHERE p.organization_id=v_test_organization_id AND p.id=v_product_id
-      AND inv.account_code='1130' AND rev.account_code='4100' AND cogs.account_code='5100'
+      AND inv.account_code='1130' AND rev.account_code='4110' AND cogs.account_code='5100'
   ) THEN
     RAISE EXCEPTION 'Product default account mappings were not assigned';
   END IF;
