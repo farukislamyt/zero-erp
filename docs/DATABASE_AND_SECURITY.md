@@ -443,6 +443,14 @@ The opening balance workflow intentionally introduces no staging or sub-ledger t
 - The system Administrator role cannot be deleted, deactivated, reassigned through ordinary member-role RPCs, or stripped of its permissions.
 - Exactly one active Administrator remains after every committed membership/role operation.
 
+### Company ownership and membership invariants
+- Two concurrent `create_organization_with_admin` calls for the same Auth user cannot create two companies; after one succeeds, every later attempt remains rejected even after Administrator handover or creator deactivation.
+- The creator membership is identified by its initial timestamp matching `organizations.created_at`; attempts to delete it, change its organization/user/creation timestamp/role, or rewrite the organization's creation timestamp are rejected.
+- Administrator handover deactivates (but retains) the outgoing creator membership and promotes one existing active custom-role member; exactly one active Administrator exists after commit.
+- Two concurrent attempts to activate memberships in different companies for the same user cannot both commit. After deactivation, another company may add the user while the old inactive history remains.
+- Reactivation is rejected while the user is active in another company; the permanent creator record is never reactivated as an ordinary membership.
+- An unverified or unknown email cannot be added, and no invitation/account-creation side effect occurs.
+
 ### Accounting
 - Unbalanced journals cannot post.
 - Opening balances reject unbalanced totals, duplicate organization-level opening posts, cross-tenant contacts/products/accounts, invalid party control account types, and non-zero pre-existing stock for products being initialized.
