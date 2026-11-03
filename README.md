@@ -12,7 +12,7 @@ Zero ERP is a multi-organization ERP system designed to support accounting, purc
 
 ## Overview
 
-The supplied database inventory contains 24 core tables. The production data model uses role-based access control (RBAC) with `roles`, `permissions`, and `role_permissions`, plus `organization_users.role_id`. Each organization has a protected Administrator role automatically assigned to its creator. Administrators manage organization-specific custom roles and assign permissions from the system-managed catalog. Tenant isolation is enforced through organization-scoped relationships, database constraints, RPC authorization, and Row-Level Security (RLS).
+The database schema contains 27 tables total: 24 business tables plus three RBAC tables. The production data model uses role-based access control (RBAC) with `roles`, `permissions`, and `role_permissions`, plus `organization_users.role_id`. Each organization has a protected Administrator role automatically assigned to its creator. Administrators manage organization-specific custom roles and assign permissions from the system-managed catalog. Tenant isolation is enforced through organization-scoped relationships, database constraints, RPC authorization, and Row-Level Security (RLS).
 
 This README and the database blueprint define the target relational model, tenant isolation, authorization, integrity rules, and transactional workflows.
 
@@ -79,7 +79,7 @@ The permission catalog is global and roles are organization-specific. Each organ
 | Table | Purpose | Notable columns |
 | --- | --- | --- |
 | `accounts` | Chart of accounts and hierarchy | `account_code`, `account_name`, `account_type`, `parent_account_id`, `normal_balance`, `is_postable` |
-| `journal_entries` | Journal entry headers and lifecycle | `entry_number`, `accounting_period_id`, `entry_date`, `entry_type`, `status`, `reference_type`, `reference_id`, `posted_at`, `reversal_of_id` |
+| `journal_entries` | Journal entry headers and lifecycle | `entry_number`, `accounting_period_id`, `entry_date`, `entry_type`, `status`, `confirmed_at`, `confirmed_by`, `posted_at`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `reversal_of_id` |
 | `account_transactions` | Debit/credit journal lines | `journal_entry_id`, `account_id`, `line_number`, `debit`, `credit`, `contact_id` |
 
 ### Products, contacts, and inventory
@@ -95,7 +95,7 @@ The permission catalog is global and roles are organization-specific. Each organ
 
 | Table | Purpose | Notable columns |
 | --- | --- | --- |
-| `purchase` | Purchase invoice header | `invoice_id`, `supplier_id`, `invoice_date`, `status`, `subtotal`, `discount_amount`, `total_amount`, `payable_account_id`, `posted_journal_entry_id` |
+| `purchase` | Purchase invoice header | `invoice_id`, `supplier_id`, `invoice_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `payable_account_id`, `posted_journal_entry_id` |
 | `purchase_items` | Purchase invoice lines | `purchase_id`, `line_number`, `product_id`, `quantity`, `unit_cost`, `line_total` |
 | `purchase_returns` | Purchase return header | `return_number`, `purchase_id`, `supplier_id`, `return_date`, `total_amount`, `posted_journal_entry_id` |
 | `purchase_return_items` | Purchase return lines | `purchase_return_id`, `purchase_item_id`, `product_id`, `quantity`, `unit_cost`, `line_total` |
@@ -104,7 +104,7 @@ The permission catalog is global and roles are organization-specific. Each organ
 
 | Table | Purpose | Notable columns |
 | --- | --- | --- |
-| `sales` | Sales invoice header | `invoice_id`, `customer_id`, `invoice_date`, `status`, `subtotal`, `discount_amount`, `total_amount`, `receivable_account_id`, `posted_journal_entry_id` |
+| `sales` | Sales invoice header | `invoice_id`, `customer_id`, `invoice_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `receivable_account_id`, `posted_journal_entry_id` |
 | `sales_items` | Sales lines and cost-of-goods-sold values | `sales_id`, `line_number`, `product_id`, `quantity`, `unit_price`, `line_total`, `cogs_unit_cost`, `cogs_total` |
 | `sales_returns` | Sales return header | `return_number`, `sales_id`, `customer_id`, `return_date`, `total_amount`, `posted_journal_entry_id` |
 | `sales_return_items` | Sales return lines and cost values | `sales_return_id`, `sales_item_id`, `product_id`, `quantity`, `unit_price`, `line_total`, `cogs_unit_cost`, `cogs_total` |
@@ -114,14 +114,14 @@ The permission catalog is global and roles are organization-specific. Each organ
 | Table | Purpose | Notable columns |
 | --- | --- | --- |
 | `expense_categories` | Expense classification and ledger mapping | `category_code`, `name`, `expense_account_id`, `is_active` |
-| `expenses` | Expense records | `expense_number`, `expense_category_id`, `contact_id`, `payable_account_id`, `expense_date`, `amount`, `status`, `posted_journal_entry_id` |
-| `payments` | Payment records and ledger accounts | `payment_number`, `payment_type`, `contact_id`, `payment_date`, `amount`, `account_id`, `settlement_account_id`, `status`, `posted_journal_entry_id` |
+| `expenses` | Expense records | `expense_number`, `expense_category_id`, `contact_id`, `payable_account_id`, `expense_date`, `amount`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `posted_journal_entry_id` |
+| `payments` | Payment records and ledger accounts | `payment_number`, `payment_type`, `contact_id`, `payment_date`, `amount`, `account_id`, `settlement_account_id`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `posted_journal_entry_id` |
 | `payment_allocations` | Allocates payments to referenced documents | `payment_id`, `document_type`, `document_id`, `allocated_amount` |
 
 
 ### Complete Column Reference
 
-The complete data model documents the 24 core business tables and the RBAC tables and membership role reference.
+The complete data model documents 24 business tables plus three RBAC tables (27 total), including the membership role reference.
 
 <details>
 <summary>organizations (14 columns)</summary>
@@ -329,7 +329,7 @@ Required accounting controls:
 5. Prevent duplicate posting and use controlled reversal entries to correct posted activity.
 6. Validate that accounts, contacts, products, periods, and source documents belong to the same organization.
 
-Allowed status values and exact posting rules are application-specific and must be documented alongside the relevant business logic.
+Transaction documents follow Draft → Confirmed → Posted. Drafts may be edited/deleted; Confirmed documents are locked but may be reverted to Draft; Draft/Confirmed documents may be voided with a reason; Posted records cannot be edited or hard-deleted and require a controlled reversal/return. Confirmation itself has no ledger or inventory impact; posting is the only source-document step that applies those effects. See [Database Blueprint](docs/DATABASE_AND_SECURITY.md#financial-and-inventory-transaction-lifecycle) for enforced RPCs and known posting-coverage limitations.
 
 ## Inventory
 
