@@ -159,8 +159,8 @@ select set_config('test.customer_credit_journal_id',public.save_draft_transactio
   current_setting('test.org_id')::uuid,'journal_entry',
   jsonb_build_object('entry_number','JRN-CUSTOMER-CREDIT','entry_date','2026-03-08','entry_type','manual','description','Customer credit balance'),
   jsonb_build_array(
-    jsonb_build_object('account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='5300'),'line_number',1,'description','Customer credit adjustment','debit',50,'credit',0),
-    jsonb_build_object('account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='1120'),'line_number',2,'description','Customer credit','debit',0,'credit',50,'contact_id',current_setting('test.customer_id')::uuid)
+    jsonb_build_object('account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='5300'),'line_number',1,'description','Customer credit adjustment','debit',150,'credit',0),
+    jsonb_build_object('account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='1120'),'line_number',2,'description','Customer credit','debit',0,'credit',150,'contact_id',current_setting('test.customer_id')::uuid)
   )
 )::text,true);
 select public.confirm_transaction_document(current_setting('test.org_id')::uuid,'journal_entry',current_setting('test.customer_credit_journal_id')::uuid);
@@ -195,8 +195,8 @@ select set_config('test.supplier_credit_journal_id',public.save_draft_transactio
   current_setting('test.org_id')::uuid,'journal_entry',
   jsonb_build_object('entry_number','JRN-SUPPLIER-CREDIT','entry_date','2026-03-10','entry_type','manual','description','Supplier debit balance'),
   jsonb_build_array(
-    jsonb_build_object('account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='2110'),'line_number',1,'description','Supplier debit','debit',40,'credit',0,'contact_id',current_setting('test.supplier_id')::uuid),
-    jsonb_build_object('account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='3300'),'line_number',2,'description','Offset','debit',0,'credit',40)
+    jsonb_build_object('account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='2110'),'line_number',1,'description','Supplier debit','debit',120,'credit',0,'contact_id',current_setting('test.supplier_id')::uuid),
+    jsonb_build_object('account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='3300'),'line_number',2,'description','Offset','debit',0,'credit',120)
   )
 )::text,true);
 select public.confirm_transaction_document(current_setting('test.org_id')::uuid,'journal_entry',current_setting('test.supplier_credit_journal_id')::uuid);
@@ -226,16 +226,28 @@ select is((select status from public.payments where id=current_setting('test.sup
   'supplier refund posts against AP');
 
 
--- An unallocated supplier payment appears in the unapplied report. Its
--- reversal is effective from the reversal journal date, not wall-clock time.
+-- Create a fresh receivable, then leave a small customer receipt unapplied.
+-- The report must retain it before the reversal's effective date only.
+select set_config('test.second_sale_id',public.save_draft_transaction_document(
+  current_setting('test.org_id')::uuid,'sales',
+  jsonb_build_object(
+    'invoice_id','SAL-UNAPPLIED-001','customer_id',current_setting('test.customer_id')::uuid,
+    'invoice_date','2026-03-11','subtotal',100,'discount_amount',0,'total_amount',100,
+    'receivable_account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='1120')
+  ),
+  jsonb_build_array(jsonb_build_object('line_number',1,'product_id',current_setting('test.product_id')::uuid,'quantity',1,'unit_price',100,'line_total',100))
+)::text,true);
+select public.confirm_transaction_document(current_setting('test.org_id')::uuid,'sales',current_setting('test.second_sale_id')::uuid);
+select public.post_sales(current_setting('test.org_id')::uuid,current_setting('test.second_sale_id')::uuid);
+
 select set_config('test.unapplied_payment_id',public.save_draft_transaction_document(
   current_setting('test.org_id')::uuid,'payment',
   jsonb_build_object(
-    'payment_number','PAY-UNAPPLIED-SUPPLIER','payment_type','payment',
-    'contact_id',current_setting('test.supplier_id')::uuid,'payment_date','2026-03-12',
+    'payment_number','PAY-UNAPPLIED-RECEIPT','payment_type','receipt',
+    'contact_id',current_setting('test.customer_id')::uuid,'payment_date','2026-03-12',
     'amount',10,'account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='1110'),
-    'settlement_account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='2110'),
-    'description','Unapplied supplier payment'
+    'settlement_account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='1120'),
+    'description','Unapplied customer receipt'
   )
 )::text,true);
 select public.confirm_transaction_document(current_setting('test.org_id')::uuid,'payment',current_setting('test.unapplied_payment_id')::uuid);
