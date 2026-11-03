@@ -133,8 +133,9 @@ revoke all on function public.is_org_administrator(uuid) from public, anon;
 grant execute on function public.is_org_administrator(uuid) to authenticated;
 
 -- The original creator record cannot be deleted, moved, reassigned to another
--- Auth user, or have its timestamp/role rewritten. It can only be deactivated
--- by the privileged Administrator-transfer RPC.
+-- Auth user, or have its timestamp/role rewritten. Only the company-creation
+-- RPC may insert the timestamp anchor; only the Administrator-transfer RPC
+-- may deactivate the original Administrator membership.
 create or replace function public.guard_organization_creator_membership()
 returns trigger
 language plpgsql
@@ -144,34 +145,54 @@ as $$
 declare
   v_org_created_at timestamptz;
   v_is_creator_record boolean := false;
+  v_is_admin_role boolean := false;
   v_transfer_allowed boolean :=
     coalesce(pg_catalog.current_setting('app.allow_admin_transfer', true), '') = 'on';
+  v_company_creation_allowed boolean :=
+    coalesce(pg_catalog.current_setting('app.allow_company_creation', true), '') = 'on';
 begin
   if tg_op = 'INSERT' then
-    select o.created_at
-      into v_org_created_at
+    select o.created_at into v_org_created_at
     from public.organizations o
     where o.id = new.organization_id;
 
-    -- Only the atomic company-creation RPC may create the timestamp-matched
-    -- founder row. This prevents later same-transaction inserts from becoming
-    -- ambiguous lifetime-creation markers.
-    if v_org_created_at is not null
-       and new.created_at = v_org_created_at
-       and coalesce(pg_catalog.current_setting('app.allow_company_creation', true), '') <> 'on' then
-      raise exception using errcode = '42501',
-        message = 'Only the company-creation workflow may establish the permanent creator membership record.';
+    if v_org_created_at is not null and new.created_at = v_org_created_at then
+      select coalesce(r.is_system_role and r.name = 'Administrator', false)
+        into v_is_admin_role
+      from public.roles r
+      where r.id = new.role_id
+        and r.organization_id = new.organization_id;
+
+      if not v_company_creation_allowed or not v_is_admin_role then
+        raise exception using errcode = '42501',
+          message = 'Only the company-creation workflow may establish the permanent Administrator creator record.';
+      end if;
+
+      if exists (
+        select 1 from public.organization_users ou
+        where ou.organization_id = new.organization_id
+          and ou.created_at = v_org_created_at
+      ) then
+        raise exception using errcode = '23505',
+          message = 'This company already has its permanent creator membership record.';
+      end if;
     end if;
     return new;
   end if;
 
-  select o.created_at
-    into v_org_created_at
+  select o.created_at into v_org_created_at
   from public.organizations o
   where o.id = old.organization_id;
 
   v_is_creator_record := v_org_created_at is not null
     and old.created_at = v_org_created_at;
+
+  if tg_op = 'UPDATE'
+     and new.created_at = v_org_created_at
+     and old.created_at is distinct from v_org_created_at then
+    raise exception using errcode = '42501',
+      message = 'A membership cannot be rewritten to impersonate the permanent company-creator record.';
+  end if;
 
   if not v_is_creator_record then
     if tg_op = 'DELETE' then return old; end if;
@@ -198,7 +219,7 @@ begin
 
   if not old.is_active and new.is_active then
     raise exception using errcode = '42501',
-      message = 'The permanent company-creator record cannot be reactivated. Add the user with a non-Administrator role if they need to rejoin.';
+      message = 'The permanent company-creator membership cannot be reactivated; its historical record must remain inactive.';
   end if;
 
   return new;
@@ -484,6 +505,41 @@ where rp.role_id = r.id
   and rp.permission_id = p.id
   and not r.is_system_role
   and p.permission_key in ('users.manage', 'roles.manage');
+
+-- A database-level backstop prevents trusted direct writes from granting
+-- control-plane permissions to custom or other non-Administrator roles.
+create or replace function public.guard_custom_role_control_plane_permissions()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_is_administrator boolean := false;
+  v_permission_key text;
+begin
+  select (r.is_system_role and r.name = 'Administrator'), p.permission_key
+    into v_is_administrator, v_permission_key
+  from public.roles r
+  join public.permissions p on p.id = new.permission_id
+  where r.id = new.role_id;
+
+  if v_permission_key in ('users.manage', 'roles.manage')
+     and not coalesce(v_is_administrator, false) then
+    raise exception using errcode = '42501',
+      message = 'users.manage and roles.manage are reserved exclusively for the system Administrator.';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists role_permissions_guard_control_plane on public.role_permissions;
+create trigger role_permissions_guard_control_plane
+before insert or update of role_id, permission_id on public.role_permissions
+for each row execute function public.guard_custom_role_control_plane_permissions();
+
+revoke all on function public.guard_custom_role_control_plane_permissions() from public, anon, authenticated;
 
 -- All administrative operations are Administrator-exclusive, independent of
 -- permissions accidentally granted to an ordinary custom role.
