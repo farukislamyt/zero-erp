@@ -1777,7 +1777,17 @@ create policy organizations_select_member on public.organizations for select to 
 ```
 
 ```sql
-create policy organization_users_select_member_or_self on public.organization_users for select to authenticated using (user_id = (select auth.uid()) or public.has_org_permission(organization_id, 'users.read'));
+create policy organization_users_select_member_or_self on public.organization_users for select to authenticated using (
+  (
+    user_id = (select auth.uid())
+    and is_active
+    and exists (
+      select 1 from public.organizations o
+      where o.id = organization_users.organization_id and o.is_active
+    )
+  )
+  or public.has_org_permission(organization_id, 'users.read')
+);
 ```
 
 ```sql
