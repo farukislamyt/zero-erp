@@ -14,6 +14,50 @@
 
 begin;
 
+-- Fail closed rather than silently choosing which tenant membership/admin to
+-- deactivate when upgrading a database that already violates the new policy.
+do $preflight$
+begin
+  if exists (
+    select 1 from public.organization_users
+    where is_active
+    group by user_id
+    having count(*) > 1
+  ) then
+    raise exception 'Migration blocked: one or more users have active memberships in multiple companies. Resolve those memberships before retrying.';
+  end if;
+
+  if exists (
+    select 1
+    from public.organization_users ou
+    join public.roles r
+      on r.id = ou.role_id and r.organization_id = ou.organization_id
+    where ou.is_active and r.is_system_role and r.name = 'Administrator'
+    group by ou.organization_id
+    having count(*) > 1
+  ) then
+    raise exception 'Migration blocked: one or more companies have multiple active Administrators. Select the intended Administrator before retrying.';
+  end if;
+
+  if exists (
+    select 1
+    from public.organizations o
+    where not exists (
+      select 1
+      from public.organization_users ou
+      join public.roles r
+        on r.id = ou.role_id and r.organization_id = ou.organization_id
+      where ou.organization_id = o.id
+        and ou.created_at = o.created_at
+        and r.is_system_role
+        and r.name = 'Administrator'
+    )
+  ) then
+    raise exception 'Migration blocked: at least one company has no identifiable original Administrator membership timestamp. Founder history must be reconciled before retrying.';
+  end if;
+end;
+$preflight$;
+
 -- One active company membership per Auth user. Inactive historical rows remain.
 create unique index if not exists organization_users_one_active_company_per_user
   on public.organization_users (user_id)
@@ -305,6 +349,14 @@ begin
   ) then
     raise exception using errcode = '23505',
       message = 'This account has already created a company. Each account may create only one company.';
+  end if;
+
+  if exists (
+    select 1 from public.organization_users ou
+    where ou.user_id = v_user_id and ou.is_active
+  ) then
+    raise exception using errcode = '23505',
+      message = 'Deactivate your current company membership before creating a new company.';
   end if;
 
   if p_name is null or pg_catalog.length(pg_catalog.btrim(p_name)) not between 1 and 160 then
