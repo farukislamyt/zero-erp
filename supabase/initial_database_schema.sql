@@ -1,7 +1,7 @@
 -- =============================================================================
 -- ZERO ERP — INITIAL DATABASE SCHEMA
 -- =============================================================================
--- Canonical bootstrap schema consolidated from the project's ordered SQL changes.
+-- Canonical one-file bootstrap schema for a new, empty Supabase database.
 -- Apply once to a NEW / EMPTY Supabase PostgreSQL project after Supabase Auth is
 -- available. This file is not an incremental migration for an existing database.
 -- It intentionally uses one transaction so a failed bootstrap rolls back fully.
@@ -408,7 +408,6 @@ to authenticated;
 -- ============================================================================
 
 -- Zero ERP: ledger, inventory, purchasing, sales, expenses, and payments
--- Migration: 20261102000200_transaction_schema.sql
 -- Depends on 20261102000100_core_foundation.sql.
 -- All financial and inventory writes remain unavailable to client roles until the
 -- posting and allocation RPCs have been implemented and granted explicitly.
@@ -2472,7 +2471,7 @@ grant execute on function public.post_contact_payment(uuid, uuid, uuid)
 -- Revenue discounts are allocated proportionally; the final line receives rounding residue.
 -- COGS is calculated server-side from the locked weighted-average inventory balance.
 
-create unique index if not exists journal_entries_sales_reference_uq
+create unique index journal_entries_sales_reference_uq
   on public.journal_entries (organization_id, reference_type, reference_id)
   where entry_type = 'sale' and reference_type = 'sale' and reference_id is not null;
 
