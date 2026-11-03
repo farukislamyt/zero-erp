@@ -45,6 +45,6 @@ See the [Complete Database Reference](docs/DATABASE_REFERENCE.md) for exact defi
 
 A disposable local Supabase CI environment is defined by [`supabase/config.toml`](supabase/config.toml) and [Database CI](.github/workflows/database-ci.yml). The workflow applies the canonical bootstrap to an empty local database and runs the pgTAP baseline in `supabase/tests/database`.
 
-The initial pgTAP suite verifies the schema catalog, RLS, privileges, seed data, Creator Administrator invariants, custom-role restrictions, document numbering and basic report availability. The exhaustive case-by-case contract and remaining runtime coverage are tracked in the [Database Test Specification](docs/DATABASE_TEST_SPECIFICATION.md). A workflow run must pass before runtime verification is claimed.
+The pgTAP test suite now contains five files covering schema/privilege contracts, company and master-data setup, opening balances, Cash–Bank transfers, purchases, sales, expenses, inventory adjustments, manual journals and reversals, returns, payment allocations, reporting, role/member onboarding and two-tenant isolation. The detailed case-by-case contract and remaining runtime coverage are tracked in the [Database Test Specification](docs/DATABASE_TEST_SPECIFICATION.md). A workflow run must pass before runtime verification is claimed.
 
 The CI environment is disposable and local to the GitHub Actions runner. It must never connect to Production. No new SQL migration is introduced by the test infrastructure.
