@@ -6210,13 +6210,25 @@ begin
       greatest(0,s.total_amount
         -coalesce((select sum(pa.allocated_amount) from public.payment_allocations pa
           join public.payments p on p.organization_id=pa.organization_id and p.id=pa.payment_id
+          left join public.journal_entries payment_reversal
+            on payment_reversal.organization_id=p.organization_id
+           and payment_reversal.id=p.reversal_journal_entry_id
           where pa.organization_id=p_organization_id and pa.document_type='sales'
-            and pa.document_id=s.id and p.status='posted' and p.payment_date<=p_as_of_date),0)
+            and pa.document_id=s.id
+            and (p.status='posted' or
+              (p.status='reversed' and payment_reversal.entry_date>p_as_of_date))
+            and p.payment_date<=p_as_of_date),0)
         -coalesce((select sum(sr.total_amount) from public.sales_returns sr
-          where sr.organization_id=p_organization_id and sr.sales_id=s.id and sr.status='posted'
+          left join public.journal_entries return_reversal
+            on return_reversal.organization_id=sr.organization_id
+           and return_reversal.id=sr.reversal_journal_entry_id
+          where sr.organization_id=p_organization_id and sr.sales_id=s.id
+            and (sr.status='posted' or
+              (sr.status='reversed' and return_reversal.entry_date>p_as_of_date))
             and sr.return_date<=p_as_of_date),0)) as outstanding
     from public.sales s
-    where s.organization_id=p_organization_id and s.status in ('posted','partially_returned')
+    where s.organization_id=p_organization_id
+      and s.status in ('posted','partially_returned','returned')
       and s.invoice_date<=p_as_of_date
   )
   select d.id,d.invoice_id,c.id,c.name,d.invoice_date,(p_as_of_date-d.invoice_date)::integer,
@@ -6251,20 +6263,44 @@ begin
       greatest(0,p.total_amount
         -coalesce((select sum(pa.allocated_amount) from public.payment_allocations pa
           join public.payments pm on pm.organization_id=pa.organization_id and pm.id=pa.payment_id
+          left join public.journal_entries payment_reversal
+            on payment_reversal.organization_id=pm.organization_id
+           and payment_reversal.id=pm.reversal_journal_entry_id
           where pa.organization_id=p_organization_id and pa.document_type='purchase'
-            and pa.document_id=p.id and pm.status='posted' and pm.payment_date<=p_as_of_date),0)
+            and pa.document_id=p.id
+            and (pm.status='posted' or
+              (pm.status='reversed' and payment_reversal.entry_date>p_as_of_date))
+            and pm.payment_date<=p_as_of_date),0)
         -coalesce((select sum(pr.total_amount) from public.purchase_returns pr
-          where pr.organization_id=p_organization_id and pr.purchase_id=p.id and pr.status='posted'
+          left join public.journal_entries return_reversal
+            on return_reversal.organization_id=pr.organization_id
+           and return_reversal.id=pr.reversal_journal_entry_id
+          where pr.organization_id=p_organization_id and pr.purchase_id=p.id
+            and (pr.status='posted' or
+              (pr.status='reversed' and return_reversal.entry_date>p_as_of_date))
             and pr.return_date<=p_as_of_date),0)) as outstanding
     from public.purchase p where p.organization_id=p_organization_id
-      and p.status in ('posted','partially_returned') and p.invoice_date<=p_as_of_date
+      and p.status in ('posted','partially_returned','returned')
+      and p.invoice_date<=p_as_of_date
     union all
     select 'expense',e.id,e.expense_number,e.contact_id,e.expense_date,
       greatest(0,e.amount-coalesce((select sum(pa.allocated_amount) from public.payment_allocations pa
         join public.payments pm on pm.organization_id=pa.organization_id and pm.id=pa.payment_id
+        left join public.journal_entries payment_reversal
+          on payment_reversal.organization_id=pm.organization_id
+         and payment_reversal.id=pm.reversal_journal_entry_id
         where pa.organization_id=p_organization_id and pa.document_type='expense'
-          and pa.document_id=e.id and pm.status='posted' and pm.payment_date<=p_as_of_date),0))
-    from public.expenses e where e.organization_id=p_organization_id and e.status='posted'
+          and pa.document_id=e.id
+          and (pm.status='posted' or
+            (pm.status='reversed' and payment_reversal.entry_date>p_as_of_date))
+          and pm.payment_date<=p_as_of_date),0))
+    from public.expenses e
+    left join public.journal_entries expense_reversal
+      on expense_reversal.organization_id=e.organization_id
+     and expense_reversal.id=e.reversal_journal_entry_id
+    where e.organization_id=p_organization_id
+      and (e.status='posted' or
+        (e.status='reversed' and expense_reversal.entry_date>p_as_of_date))
       and e.contact_id is not null and e.expense_date<=p_as_of_date
   )
   select d.dtype,d.id,d.number,c.id,c.name,d.doc_date,(p_as_of_date-d.doc_date)::integer,
@@ -6297,9 +6333,14 @@ begin
   select p.id,p.payment_number,p.payment_type,p.contact_id,c.name,p.payment_date,
     (p.amount-coalesce(sum(pa.allocated_amount),0))::numeric
   from public.payments p
+  left join public.journal_entries payment_reversal
+    on payment_reversal.organization_id=p.organization_id
+   and payment_reversal.id=p.reversal_journal_entry_id
   left join public.contacts c on c.organization_id=p.organization_id and c.id=p.contact_id
   left join public.payment_allocations pa on pa.organization_id=p.organization_id and pa.payment_id=p.id
-  where p.organization_id=p_organization_id and p.status='posted'
+  where p.organization_id=p_organization_id
+    and (p.status='posted' or
+      (p.status='reversed' and payment_reversal.entry_date>p_as_of_date))
     and p.payment_type in ('receipt','payment','refund') and p.payment_date<=p_as_of_date
   group by p.id,p.payment_number,p.payment_type,p.contact_id,c.name,p.payment_date,p.amount
   having p.amount-coalesce(sum(pa.allocated_amount),0)>0
