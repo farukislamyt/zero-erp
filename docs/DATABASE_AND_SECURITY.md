@@ -270,7 +270,7 @@ Status note: this table distinguishes functions implemented in the current canon
 | Implemented | `create_organization_with_admin(p_name, ...)` | Create organization, protected Administrator role, role-permission links, and creator membership | Single transaction; derive creator from `auth.uid()`; never accept arbitrary creator user ID from an untrusted client |
 | Implemented | `add_organization_user_by_email(p_organization_id, p_email, p_role_id)` | Add an existing email-verified Auth user | Administrator-only; no invitation or account creation; enforce one active company membership |
 | Implemented | `set_organization_user_active(p_organization_id, p_membership_id, p_is_active)` | Deactivate/reactivate a membership | Administrator-only; retain history; partial unique index prevents multiple active company memberships |
-| Implemented | `transfer_organization_administrator(p_organization_id, p_new_administrator_membership_id)` | Transfer the single active Administrator | Administrator-only; target must be an existing active custom-role member; previous Administrator is deactivated atomically |
+| Removed | `transfer_organization_administrator(...)` | No Administrator transfer is supported | The RPC is dropped; only the original creator membership can hold the system Administrator role for the organization's lifetime |
 | Implemented | `update_organization_user_role(p_organization_id, p_membership_id, p_role_id)` | Assign a role to an organization membership | Active system Administrator only; target must be an active member and role must be an active custom role |
 | Implemented | `create_custom_role(p_organization_id, p_name, p_permission_keys)` | Create organization-scoped custom role | Active system Administrator only; custom roles cannot receive `users.manage` or `roles.manage` |
 | Implemented | `replace_custom_role_permissions(p_organization_id, p_role_id, p_permission_keys)` | Replace/update permissions on a custom role | Active system Administrator only; system roles and control-plane permissions are protected |
@@ -319,7 +319,7 @@ The policies below define the required access-control behavior for Supabase-expo
 | Table/group | SELECT | INSERT | UPDATE | DELETE |
 | --- | --- | --- | --- | --- |
 | `organizations` | Active member of that organization | Through trusted organization-creation RPC | Active system Administrator only | Normally blocked; use controlled archival/deactivation |
-| `organization_users` | Self membership and/or authorized organization Administrator | Existing verified account only; Administrator-only RPC | Only the active Administrator may add members, change roles, deactivate/reactivate members, or transfer Administrator authority; row identity fields are immutable | Preserve the permanent creator record; retain inactive membership history |
+| `organization_users` | Self membership and/or authorized organization Administrator | Existing verified account only; Administrator-only RPC | Only the original creator Administrator may add members, change ordinary member roles, and activate/deactivate ordinary memberships; the creator membership is wholly immutable and cannot be transferred | Preserve the permanent creator record; retain inactive membership history |
 | `roles` | Active organization member with role-read permission | Active system Administrator only; no client-created system role | Active system Administrator only; protect system roles | Block system role deletion; custom role only if safe and unassigned |
 | `permissions` | Authenticated users only if the global catalog is intended to be visible | No client writes; system migration/maintainer only | No client writes; system migration/maintainer only | No client writes |
 | `role_permissions` | Active organization member with role-read permission, scoped through role's organization | Active system Administrator only; validate role organization | Active system Administrator only via controlled RPC | System Administrator permissions are immutable; reserved control-plane keys are blocked on custom roles |
@@ -447,17 +447,17 @@ The opening balance workflow intentionally introduces no staging or sub-ledger t
 - Exactly one active Administrator remains after every committed membership/role operation.
 
 ### Company ownership and membership invariants
-- Two concurrent `create_organization_with_admin` calls for the same Auth user cannot create two companies; after one succeeds, every later attempt remains rejected even after Administrator handover or creator deactivation.
+- Two concurrent `create_organization_with_admin` calls for the same Auth user cannot create two companies; after one succeeds, every later attempt remains rejected for the lifetime of the creator account.
 - The creator membership is identified by its initial timestamp matching `organizations.created_at`; attempts to delete it, change its organization/user/creation timestamp/role, or rewrite the organization's creation timestamp are rejected.
 - A later membership insert cannot reuse the company's creation timestamp to forge or duplicate the creator marker; outside the company-creation RPC, the trigger moves a colliding transaction-stable `now()` value off the reserved timestamp.
 - A second membership cannot retain or be rewritten to the creator timestamp; every company must have exactly one creator anchor.
 - No membership row can be reassigned to a different Auth user/company or have its `created_at` rewritten; historical membership identity is immutable.
-- Administrator handover deactivates (but retains) the outgoing creator membership and promotes one existing active custom-role member; exactly one active Administrator exists after commit.
+- The original creator membership remains active and retains the Administrator role for the organization's lifetime. Every UPDATE or DELETE against that membership is rejected, including active-state, role, timestamp, identity, and metadata changes.
 - Two concurrent attempts to activate memberships in different companies for the same user cannot both commit. After deactivation, another company may add the user while the old inactive history remains.
 - Reactivation is rejected while the user is active in another company; the permanent creator record is never reactivated as an ordinary membership.
-- The original creator row remains permanently inactive after handover; the creator may join another company, but the original audit anchor is not reused as a regular membership.
+- The creator cannot deactivate or leave the original company through membership changes, and cannot create another company because the original creator anchor remains permanently present.
 - An unverified or unknown email cannot be added, and no invitation/account-creation side effect occurs.
-- If an Administrator handover races with a member/role/profile RPC, a request from the former Administrator must fail after it obtains the organization lock.
+- No second user can receive the Administrator role through INSERT or UPDATE. Administrator-role membership INSERTs are accepted only for the authenticated creator during the atomic organization-creation workflow; all later attempts fail.
 
 ### Accounting
 - Unbalanced journals cannot post.
@@ -513,17 +513,17 @@ All membership and role-administration RPCs require the caller to be the active 
 ### Company ownership and membership policy (current)
 
 - One account may create one company for its lifetime. The initial `organization_users` row is the permanent creator record: its `created_at` equals the company's immutable `organizations.created_at`. The record cannot be deleted, moved to another user/company, or have its identity timestamp rewritten.
-- The original creator row remains present after Administrator handover. When the creator is the outgoing Administrator, the transfer RPC deactivates (but does not delete or rewrite) that row. This preserves the creation record while allowing the creator to join another company.
-- A company has exactly one active system Administrator. Only the company-creation RPC can establish the initial Administrator; only `transfer_organization_administrator` can transfer that authority to a different existing active member.
+- The original creator membership remains active, immutable, and bound to the Administrator role for the organization's entire lifetime. No user—including the current Administrator—can transfer, replace, deactivate, demote, delete, or otherwise update it.
+- A company has exactly one active system Administrator: the original creator. Only `create_organization_with_admin` can establish this membership. The transfer RPC has been dropped, and database triggers reject any later attempt to assign or alter Administrator authority.
 - A user may have only one active `organization_users` row across all companies. Deactivation preserves the historical row and permits joining another company. Reactivation is rejected if another active company membership exists.
-- An inactive former Administrator cannot be reactivated directly. They may be re-added with a custom role, except for the permanent creator row, which remains an immutable historical record.
+- The creator's Auth account cannot be hard-deleted while the organization exists because the `auth.users` cascade would attempt to delete the protected creator membership; disable/ban the account instead.
 - The Administrator alone can add existing verified users, change member roles, activate/deactivate members, and create/update custom roles or their permissions. Ordinary custom-role permissions never override these database checks.
 - No schema columns or tables were added. The policy uses existing `organizations`, `organization_users`, and `roles` data, plus indexes, triggers, and RPCs.
 - Deleting the original creator's `auth.users` row is intentionally blocked because its FK cascade would erase the permanent creator membership; disable/ban the account instead of hard-deleting it.
 
 ### Verification boundary
 
-The initial SQL file remains a one-time bootstrap for a new, empty Supabase database. The incremental migration `20261103010000_organization_membership_security.sql` applies the updated company-ownership and membership policies to databases that have already applied the bootstrap. The migration deliberately fails closed if existing rows already violate the new active-membership/Administrator invariants or if a company's original creator membership cannot be identified; resolve those records before retrying. This review was static; PostgreSQL execution, Supabase deployment, concurrency testing, and end-to-end application testing have not been performed.
+The initial SQL file remains a one-time bootstrap for a new, empty Supabase database. Apply `20261103010000_organization_membership_security.sql` followed by `20261103020000_permanent_organization_administrator.sql` to an existing database. The latter fails closed unless every organization's original creator is already its active sole Administrator; it will not guess or silently reverse a previous handover. It drops the transfer RPC, hardens membership and system-role triggers, and redefines the creation RPC without a transfer bypass. This review was static; PostgreSQL execution, Supabase deployment, concurrency testing, and end-to-end application testing have not been performed.
 
 ## 10. Current audit fixes and remaining scope
 
