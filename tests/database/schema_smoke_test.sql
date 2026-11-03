@@ -13,6 +13,9 @@ DECLARE
   v_missing_rpc_grants integer;
   v_direct_write_grants integer;
   v_test_organization_id uuid;
+  v_test_draft_id uuid;
+  v_missing_posting_locks integer;
+  v_missing_contact_locks integer;
 BEGIN
   SELECT count(*)
     INTO v_table_count
@@ -280,6 +283,95 @@ BEGIN
     'EXECUTE'
   ) THEN
     RAISE EXCEPTION 'Legacy one-step journal posting RPC must remain unavailable';
+  END IF;
+
+  -- Organization-level shared locks serialize normal posting against the
+  -- exclusive one-time opening-balance initialization lock without serializing
+  -- ordinary postings with one another.
+  SELECT count(*)
+    INTO v_missing_posting_locks
+  FROM unnest(ARRAY[
+    'public.post_purchase(uuid,uuid)',
+    'public.post_contact_payment(uuid,uuid)',
+    'public.post_sales(uuid,uuid)',
+    'public.reverse_journal_entry(uuid,uuid,date,text)',
+    'public.post_expense(uuid,uuid)',
+    'public.post_purchase_return(uuid,uuid)',
+    'public.post_sales_return(uuid,uuid)',
+    'public.post_confirmed_journal_entry(uuid,uuid)'
+  ]::text[]) AS expected(signature)
+  WHERE position('for share' in lower((
+    SELECT p.prosrc
+    FROM pg_catalog.pg_proc p
+    WHERE p.oid = to_regprocedure(expected.signature)
+  ))) = 0;
+
+  IF v_missing_posting_locks <> 0 THEN
+    RAISE EXCEPTION '% posting RPCs do not serialize against opening-balance initialization',
+      v_missing_posting_locks;
+  END IF;
+
+  IF position('for update' in lower((
+    SELECT p.prosrc FROM pg_catalog.pg_proc p
+    WHERE p.oid = to_regprocedure('public.post_opening_balances(uuid,date,jsonb,jsonb,jsonb,text)')
+  ))) = 0 THEN
+    RAISE EXCEPTION 'Opening-balance posting must hold the exclusive organization lock';
+  END IF;
+
+  -- Every operation that changes contact-level AR/AP balances must lock contacts
+  -- in a consistent order, preventing concurrent receipts/payments/refunds from
+  -- validating against stale party balances.
+  SELECT count(*)
+    INTO v_missing_contact_locks
+  FROM unnest(ARRAY[
+    'public.post_purchase(uuid,uuid)',
+    'public.post_sales(uuid,uuid)',
+    'public.post_contact_payment(uuid,uuid)',
+    'public.post_expense(uuid,uuid)',
+    'public.post_purchase_return(uuid,uuid)',
+    'public.post_sales_return(uuid,uuid)',
+    'public.reverse_journal_entry(uuid,uuid,date,text)',
+    'public.post_confirmed_journal_entry(uuid,uuid)'
+  ]::text[]) AS expected(signature)
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_proc p
+    WHERE p.oid = to_regprocedure(expected.signature)
+      AND p.prosrc ILIKE '%public.contacts%'
+      AND position('for update' in lower(p.prosrc)) > 0
+  );
+
+  IF v_missing_contact_locks <> 0 THEN
+    RAISE EXCEPTION '% party-ledger posting RPCs do not lock contact rows',
+      v_missing_contact_locks;
+  END IF;
+
+  -- Exercise the draft-save path that previously called a nonexistent
+  -- PostgreSQL function when an empty header was submitted.
+  BEGIN
+    PERFORM public.save_draft_transaction_document(
+      v_test_organization_id, 'expense', '{}'::jsonb
+    );
+    RAISE EXCEPTION 'An empty new draft header must be rejected';
+  EXCEPTION
+    WHEN SQLSTATE '22023' THEN NULL;
+  END;
+
+  v_test_draft_id := public.save_draft_transaction_document(
+    v_test_organization_id,
+    'journal_entry',
+    '{"entry_number":"SMOKE-JE-001","entry_date":"2026-11-03"}'::jsonb,
+    '[]'::jsonb
+  );
+
+  IF NOT EXISTS (
+    SELECT 1 FROM public.journal_entries
+    WHERE organization_id = v_test_organization_id
+      AND id = v_test_draft_id
+      AND status = 'draft'
+      AND entry_type = 'manual'
+  ) THEN
+    RAISE EXCEPTION 'A valid manual journal draft could not be saved';
   END IF;
 
   RAISE NOTICE
