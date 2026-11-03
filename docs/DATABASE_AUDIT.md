@@ -38,11 +38,11 @@ The schema is a substantial tenant-scoped PostgreSQL foundation, but it is **not
 
 ## Fixes applied in this audit
 
-### 7. Membership and creator-history regression coverage
+### 7. Permanent creator / Administrator invariant
 
-**Coverage added:** the PostgreSQL smoke suite now checks verified-email-only membership addition, non-Administrator denial for role/member administration, rejection of reserved permission grants to custom roles (including direct SQL writes), creator-anchor immutability and anti-forgery, one active company membership, Administrator handover, and the lifetime one-company restriction after the original creator has been deactivated.
+The incremental migration `20261103020000_permanent_organization_administrator.sql` makes the original creator membership the sole, permanent Administrator. It rejects every update or deletion of that membership, rejects Administrator assignment to any other user, protects the system Administrator role from modification/deletion, and drops `transfer_organization_administrator`. Its preflight intentionally aborts if a company has already been handed over or its original creator is not the active Administrator; data must be reconciled explicitly rather than silently selecting a replacement.
 
-**Verification boundary:** CI now applies the bootstrap and the incremental migration in sequence before running these cases. The workflow has not yet returned a confirmed result in this review; real Supabase Auth/JWT and concurrent-session testing remain separate release gates.
+**Verification boundary:** this is a static SQL review only. The database smoke test and GitHub Actions workflow were removed at the user's earlier request, so no automated PostgreSQL execution, Supabase deployment, concurrency test, or end-to-end application test has been run for this change.
 
 
 ### 1. Invalid organization timezones could be stored
