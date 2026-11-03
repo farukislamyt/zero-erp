@@ -316,7 +316,7 @@ The policies below define the required access-control behavior for Supabase-expo
 | Table/group | SELECT | INSERT | UPDATE | DELETE |
 | --- | --- | --- | --- | --- |
 | `organizations` | Active member of that organization | Through trusted organization-creation RPC | Active member with organization-settings permission | Normally blocked; use controlled archival/deactivation |
-| `organization_users` | Self membership and/or authorized organization Administrator | Trusted invite/join/admin flow only | Authorized Administrator; protect last Administrator and role assignment rules | Controlled removal flow; protect last Administrator |
+| `organization_users` | Self membership and/or authorized organization Administrator | Existing verified account only; Administrator-only RPC | Only the active Administrator may add members, change roles, deactivate/reactivate members, or transfer Administrator authority | Preserve the permanent creator record; retain inactive membership history |
 | `roles` | Active organization member with role-read permission | Authorized Administrator/role manager; no client-created system role | Authorized role manager; protect system Administrator | Block system role deletion; custom role only if safe and unassigned |
 | `permissions` | Authenticated users only if the global catalog is intended to be visible | No client writes; system migration/maintainer only | No client writes; system migration/maintainer only | No client writes |
 | `role_permissions` | Active organization member with role-read permission, scoped through role's organization | Authorized role manager; validate role organization | Usually replace rows via a controlled RPC | Authorized role manager; never remove required admin access |
@@ -476,26 +476,36 @@ Treat `supabase/initial_database_schema.sql` and this architecture contract as a
 
 ## Final database review and implementation boundaries
 
-- Membership changes are serialized per organization to protect the invariant that at least one active Administrator remains.
+- Membership and Administrator changes are serialized per organization. Exactly one active Administrator is enforced; each Auth user may have at most one active company membership globally.
 - `add_organization_user_by_email` adds an existing, email-verified Supabase Auth user to an organization using an active organization role.
 - `update_organization_user_role` changes a membership's role.
 - `set_organization_user_active` deactivates or reactivates a membership. Reactivation requires an active assigned role.
 
 ### Authentication and members
 
-`auth.users` remains the identity source. No separate `profiles` table is created. `organization_users.user_id` references `auth.users.id`; organization-specific roles and membership status remain in `organization_users`. The SQL add-member RPC only supports a verified Auth account that already exists. It does not create Auth users or send invitations. Inviting an unregistered email requires a trusted server or Edge Function using Supabase Auth Admin functionality. The service-role credential must remain server-side.
+`auth.users` remains the identity source. No separate `profiles` table is created. `organization_users.user_id` references `auth.users.id`; organization-specific roles and membership status remain in `organization_users`. The add-member RPC accepts only an existing Auth account with a confirmed email. If no verified account exists, the user must sign up and verify their email before the Administrator can add them. No invitation email is sent and no account is created on behalf of a company.
 
-All three membership RPCs require active organization membership and `users.manage`. Direct browser-role writes to membership and RBAC tables remain revoked.
+All membership and role-administration RPCs require the caller to be the active system Administrator of that company. Possessing `users.manage` or `roles.manage` in a custom role does not grant administrative authority. Custom roles cannot be assigned those two control-plane permissions. Direct browser-role writes to membership and RBAC tables remain revoked.
 
 ### Deferred scope
 
 - `organization_settings`, `profiles`, `audit_logs`, and warehouse management remain excluded by current project decisions.
 - `payment_allocations` remains a future extension point. Invoice-level payment allocation is not implemented; current payment posting is contact-level.
-- No frontend, API route, or Edge Function was changed. The application must integrate the membership RPCs and trusted invitation workflow.
+- The invitation Edge Function and invitation documentation were removed. The frontend must call the authenticated membership RPCs directly and display the returned sign-up/email-verification, active-membership, and role-validation errors.
+
+### Company ownership and membership policy (current)
+
+- One account may create one company for its lifetime. The initial `organization_users` row is the permanent creator record: its `created_at` equals the company's immutable `organizations.created_at`. The record cannot be deleted, moved to another user/company, or have its identity timestamp rewritten.
+- The original creator row remains present after Administrator handover. When the creator is the outgoing Administrator, the transfer RPC deactivates (but does not delete or rewrite) that row. This preserves the creation record while allowing the creator to join another company.
+- A company has exactly one active system Administrator. Only the company-creation RPC can establish the initial Administrator; only `transfer_organization_administrator` can transfer that authority to a different existing active member.
+- A user may have only one active `organization_users` row across all companies. Deactivation preserves the historical row and permits joining another company. Reactivation is rejected if another active company membership exists.
+- An inactive former Administrator cannot be reactivated directly. They may be re-added with a custom role, except for the permanent creator row, which remains an immutable historical record.
+- The Administrator alone can add existing verified users, change member roles, activate/deactivate members, and create/update custom roles or their permissions. Ordinary custom-role permissions never override these database checks.
+- No schema columns or tables were added. The policy uses existing `organizations`, `organization_users`, and `roles` data, plus indexes, triggers, and RPCs.
 
 ### Verification boundary
 
-The SQL file remains a one-time bootstrap for a new, empty Supabase database. Do not execute it against a populated project. This review was static; PostgreSQL execution, Supabase deployment, concurrency testing, and end-to-end application testing have not been performed.
+The initial SQL file remains a one-time bootstrap for a new, empty Supabase database. The incremental migration `20261103010000_organization_membership_security.sql` applies the updated company-ownership and membership policies to databases that have already applied the bootstrap. The migration deliberately fails closed if existing rows already violate the new active-membership/Administrator invariants or if a company's original creator membership cannot be identified; resolve those records before retrying. This review was static; PostgreSQL execution, Supabase deployment, concurrency testing, and end-to-end application testing have not been performed.
 
 ## 10. Current audit fixes and remaining scope
 
