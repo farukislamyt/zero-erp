@@ -702,6 +702,12 @@ BEGIN
   EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
   END;
   BEGIN
+    DELETE FROM auth.users
+    WHERE id='00000000-0000-0000-0000-000000000001';
+    RAISE EXCEPTION 'The original creator Auth account was deleted despite its permanent audit anchor';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+  BEGIN
     UPDATE public.organization_users
     SET created_at=pg_catalog.clock_timestamp()
     WHERE id=v_creator_membership_id;
