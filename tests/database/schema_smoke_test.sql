@@ -141,7 +141,7 @@ BEGIN
        WHERE n.nspname = 'public'
          AND (
            coalesce(array_to_string(p.proargnames, ','), '') ~* 'period'
-           OR p.prosrc ~* '\\mperiod(s)?\\M'
+           OR p.prosrc ILIKE '%period%'
          )
      )
      OR EXISTS (
