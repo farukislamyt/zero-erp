@@ -54,6 +54,28 @@ begin
 end;
 $preflight$;
 
+-- Refuse to silently bootstrap a company that has lost its active admin.
+do $admin_preflight$
+begin
+  if exists (
+    select 1 from public.organizations o
+    where not exists (
+      select 1
+      from public.organization_users ou
+      join public.roles r
+        on r.id = ou.role_id and r.organization_id = ou.organization_id
+      where ou.organization_id = o.id
+        and ou.is_active
+        and r.is_system_role
+        and r.name = 'Administrator'
+        and r.status = 'active'
+    )
+  ) then
+    raise exception 'Migration blocked: at least one company has no active Administrator. Restore or designate its intended Administrator before retrying.';
+  end if;
+end;
+$admin_preflight$;
+
 -- One active company membership per Auth user. Inactive historical rows remain.
 create unique index if not exists organization_users_one_active_company_per_user
   on public.organization_users (user_id)
@@ -419,6 +441,16 @@ $$;
 revoke all on function public.create_organization_with_admin(text,text,text) from public, anon;
 grant execute on function public.create_organization_with_admin(text,text,text) to authenticated;
 
+-- Keep the global permission catalogue description aligned with the
+-- Administrator-only control-plane policy.
+update public.permissions
+set description = case permission_key
+  when 'users.manage' then 'Administrator-only control-plane permission for organization membership.'
+  when 'roles.manage' then 'Administrator-only control-plane permission for organization roles.'
+  else description
+end
+where permission_key in ('users.manage', 'roles.manage');
+
 -- Retire legacy custom-role grants for control-plane permissions. These keys
 -- no longer confer any administrative authority to ordinary custom roles.
 delete from public.role_permissions rp
@@ -689,6 +721,9 @@ begin
   update public.organization_users
   set is_active = p_is_active, updated_at = pg_catalog.now()
   where organization_id = p_organization_id and id = p_membership_id;
+exception when unique_violation then
+  raise exception using errcode = '23505',
+    message = 'This user already has an active membership in another company. Their current company Administrator must deactivate that membership first.';
 end;
 $function$;
 revoke all on function public.set_organization_user_active(uuid,uuid,boolean) from public, anon;
@@ -747,6 +782,7 @@ begin
   where ou.organization_id = p_organization_id
     and ou.id = p_new_administrator_membership_id
     and ou.is_active
+    and r.status = 'active'
     and ou.id <> v_old_admin_membership_id
     and not r.is_system_role
   for update of ou;
