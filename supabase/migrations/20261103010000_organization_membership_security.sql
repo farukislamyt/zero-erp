@@ -363,6 +363,11 @@ begin
   return new;
 end;
 $$;
+drop trigger if exists organization_users_guard_last_admin on public.organization_users;
+create trigger organization_users_guard_last_admin
+before insert or update or delete on public.organization_users
+for each row execute function public.guard_administrator_membership();
+
 revoke all on function public.guard_organization_creator_membership() from public, anon, authenticated;
 revoke all on function public.guard_administrator_membership() from public, anon, authenticated;
 
