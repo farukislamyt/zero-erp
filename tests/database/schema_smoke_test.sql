@@ -40,6 +40,10 @@ DECLARE
   v_unapplied_total numeric(20,4);
   v_inventory_total numeric(20,4);
   v_second_user_id uuid := '00000000-0000-0000-0000-000000000002';
+  v_custom_sales_account_id uuid;
+  v_balance_sheet_assets numeric(20,4);
+  v_balance_sheet_equity_liabilities numeric(20,4);
+  v_contact_balance_total numeric(20,4);
   v_second_organization_id uuid;
   v_second_contact_id uuid;
 BEGIN
@@ -472,6 +476,26 @@ BEGIN
       'product_code','P-SMOKE-001','name','Smoke Test Product','unit_id',v_unit_id
     )
   );
+  v_custom_sales_account_id := public.save_master_data(
+    v_test_organization_id,'account',
+    pg_catalog.jsonb_build_object(
+      'account_code','4110','account_name','Custom Sales Revenue','account_type','revenue',
+      'parent_account_id',(SELECT id FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='4000'),
+      'normal_balance','credit','is_control_account',false,'is_postable',true,'is_active',true
+    )
+  );
+  PERFORM public.save_master_data(
+    v_test_organization_id,'product',
+    pg_catalog.jsonb_build_object('sales_account_id',v_custom_sales_account_id),v_product_id
+  );
+  PERFORM public.save_master_data(
+    v_test_organization_id,'product',
+    '{"name":"Smoke Test Product Renamed"}'::jsonb,v_product_id
+  );
+  IF (SELECT sales_account_id FROM public.products WHERE organization_id=v_test_organization_id AND id=v_product_id)
+     IS DISTINCT FROM v_custom_sales_account_id THEN
+    RAISE EXCEPTION 'Updating a product name unexpectedly overwrote its custom account mapping';
+  END IF;
   IF NOT EXISTS (
     SELECT 1 FROM public.products p
     JOIN public.accounts inv ON inv.organization_id=p.organization_id AND inv.id=p.inventory_account_id
@@ -624,6 +648,16 @@ BEGIN
       'description','Smoke test partially allocated receipt'
     )
   );
+  BEGIN
+    PERFORM public.set_payment_allocations(
+      v_test_organization_id,v_partial_payment_id,
+      pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+        'document_type','sales','document_id',v_second_sales_id,'allocated_amount',101
+      ))
+    );
+    RAISE EXCEPTION 'Over-allocation above payment amount was accepted';
+  EXCEPTION WHEN SQLSTATE '23514' THEN NULL;
+  END;
   PERFORM public.set_payment_allocations(
     v_test_organization_id,v_partial_payment_id,
     pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
@@ -702,6 +736,20 @@ BEGIN
   IF v_receivable_aging<>40 OR v_unapplied_total<>40 THEN
     RAISE EXCEPTION 'Partial receipt aging/unapplied balances do not reconcile: open invoices %, unapplied credits %',
       v_receivable_aging,v_unapplied_total;
+  END IF;
+  SELECT
+    coalesce(sum(balance) filter(where account_type='asset'),0),
+    coalesce(sum(balance) filter(where account_type in ('liability','equity')),0)
+  INTO v_balance_sheet_assets,v_balance_sheet_equity_liabilities
+  FROM public.report_balance_sheet(v_test_organization_id,'2026-12-31');
+  IF v_balance_sheet_assets<>v_balance_sheet_equity_liabilities THEN
+    RAISE EXCEPTION 'Balance sheet does not balance: assets %, liabilities plus equity %',
+      v_balance_sheet_assets,v_balance_sheet_equity_liabilities;
+  END IF;
+  SELECT coalesce(sum(abs(balance)),0) INTO v_contact_balance_total
+  FROM public.report_contact_balances(v_test_organization_id,'2026-12-31');
+  IF v_contact_balance_total<>0 THEN
+    RAISE EXCEPTION 'Fully settled contact subledgers do not reconcile to zero: %',v_contact_balance_total;
   END IF;
   IF EXISTS (SELECT 1 FROM public.report_payables_aging(v_test_organization_id,'2026-12-31')) THEN
     RAISE EXCEPTION 'Fully allocated supplier payment left an open payable balance';
