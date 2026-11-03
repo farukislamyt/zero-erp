@@ -2,8 +2,8 @@
 
 **Audit date:** 2026-11-03  
 **Branch:** `feat/database-migrations`  
-**Scope:** Static, line-by-line review of `supabase/initial_database_schema.sql` (4,870 lines before the latest small fixes), the database smoke test, workflow, README, and database blueprint.  
-**Verification boundary:** This is a source audit. It is not a live Supabase audit and does not establish that the SQL has executed successfully on a real Supabase project. PostgreSQL runtime, Auth API, concurrency, and full-year accounting tests remain required.
+**Scope:** Static, line-by-line review of `supabase/initial_database_schema.sql` (4,645 lines at the current revision), the database smoke test, workflow, README, and database blueprint.  
+**Verification boundary:** This is a source audit. It is not a live Supabase audit and does not establish that the SQL has executed successfully on a real Supabase project. PostgreSQL runtime, Auth API, concurrency, and full-year transaction and reconciliation tests remain required.
 
 ## Executive summary
 
@@ -13,12 +13,12 @@ The schema is a substantial tenant-scoped PostgreSQL foundation, but it is **not
 
 | Object | Count | Audit result |
 |---|---:|---|
-| Public tables | 27 | Present |
-| Public RLS policies | 27 | One SELECT policy per table; write policies intentionally absent |
-| Public functions | 28 | Includes helpers, trigger functions, and business RPCs |
-| Triggers | 28 | Includes timestamp, role/admin protection, hierarchy, and period-overlap guards |
-| Explicit indexes | 26 | Core tenant/date/source lookups covered; review query plans at scale |
-| Permission keys | 45 | Seeded global permission catalog |
+| Public tables | 26 | Present |
+| Public RLS policies | 26 | One SELECT policy per table; write policies intentionally absent |
+| Public functions | 27 | Includes helpers, trigger functions, and business RPCs |
+| Triggers | 26 | Includes timestamp, role/admin protection, and hierarchy guards |
+| Explicit indexes | 28 | 24 non-unique and 4 unique indexes; review query plans at scale |
+| Permission keys | 43 | Seeded global permission catalog; no period permissions |
 | Browser write access | 0 direct table writes intended | Mutations must use RPCs |
 
 ## Implemented and structurally sound
@@ -62,7 +62,6 @@ These are genuine blockers for a complete end-to-end ERP workflow. They are not 
 
 | Priority | Gap | Current state / consequence | Required implementation |
 |---|---|---|---|
-| P0 | Financial-year closing | Period status supports `closed`, but there is no close RPC, P&L close journal, retained-earnings transfer, close validation, or close idempotency. | Full close workflow: pre-close checks, P&L calculation, balanced closing journal, period lock, and next-year carry-forward. |
 | P0 | Master-data CRUD | No permission-checked create/update RPCs for accounts, contacts, products, units, or expense categories. Direct client writes are revoked. | Add validated create/update/activation RPCs for each master-data domain. |
 | P0 | Chart-of-accounts initialization | Organization creation creates only the tenant and Administrator. It does not seed a usable chart of accounts, cash/bank, AR/AP control, revenue, COGS, inventory, or expense accounts. | Define a reviewed default COA template and an idempotent organization setup routine; allow controlled customization. |
 | P0 | Full Auth lifecycle tests | Current CI uses plain PostgreSQL and a minimal `auth.uid()` shim. It does not test real Supabase signup, email verification, login, JWT claims, refresh, or logout. | Run Supabase local stack and test Auth HTTP endpoints with real local JWTs. |
@@ -99,12 +98,12 @@ These are genuine blockers for a complete end-to-end ERP workflow. They are not 
 | Tenant isolation with multiple real users | Cross-organization read/write/RPC denial | Not implemented |
 | Business transaction integration | Purchase/sales/returns/expenses/payments/journals with reconciliation | Not implemented |
 | Concurrency/idempotency | Double posting, simultaneous sequence allocation, last-admin race, close-vs-post race | Not implemented |
-| Full financial-year close | Close journal, retained earnings, carry-forward, next-year trial balance | Not implemented |
+| Full financial-year close | Not part of the selected accounting-period-free design; no period close or lock exists | Out of scope by explicit decision |
 
 ## Recommended implementation order
 
 1. Finish and run the updated schema smoke test in CI.
-2. Implement accounting-period creation and full financial-year closing/carry-forward.
+2. Implement the default chart of accounts and company setup workflow.
 3. Implement default COA and complete master-data CRUD RPCs.
 4. Implement inventory adjustment and automatic document numbering.
 5. Implement invoice-level payment allocations and financial report queries.
