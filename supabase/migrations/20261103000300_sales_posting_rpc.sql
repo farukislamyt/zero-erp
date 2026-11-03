@@ -244,7 +244,7 @@ begin
         description, debit, credit, contact_id
       )
       values (
-        p_organization_id, v_journal_id, v_line.sales_account_id, 1,
+        p_organization_id, v_journal_id, v_line.sales_account_id, v_line_number + 1,
         'Sales revenue - ' || v_sales.invoice_id, 0, v_line_revenue, null
       );
       v_line_number := v_line_number + 1;
@@ -257,10 +257,11 @@ begin
         description, debit, credit, contact_id
       )
       values
-        (p_organization_id, v_journal_id, v_line.cogs_account_id, 100000 + v_line.line_number,
+        (p_organization_id, v_journal_id, v_line.cogs_account_id, v_line_number + 1,
          'Cost of goods sold - ' || v_sales.invoice_id, v_line_cost, 0, null),
-        (p_organization_id, v_journal_id, v_line.inventory_account_id, 200000 + v_line.line_number,
+        (p_organization_id, v_journal_id, v_line.inventory_account_id, v_line_number + 2,
          'Inventory issued - ' || v_sales.invoice_id, 0, v_line_cost, null);
+      v_line_number := v_line_number + 2;
     end if;
   end loop;
 
@@ -271,7 +272,7 @@ begin
   )
   values (
     p_organization_id, v_journal_id, v_sales.receivable_account_id,
-    999999, 'Accounts receivable - ' || v_sales.invoice_id,
+    v_line_number + 1, 'Accounts receivable - ' || v_sales.invoice_id,
     v_sales.total_amount, 0, v_sales.customer_id
   );
 
