@@ -110,23 +110,58 @@ BEGIN
     RAISE EXCEPTION 'Account hierarchy cycle trigger is missing';
   END IF;
 
-  -- Accounting periods are intentionally absent from the database model.
-  IF pg_catalog.to_regclass('public.accounting_periods') IS NOT NULL
+  -- The accounting-period subsystem must remain completely absent:
+  -- no period relations, columns, permissions, function arguments, or function logic.
+  IF EXISTS (
+       SELECT 1
+       FROM pg_catalog.pg_class c
+       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public'
+         AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+         AND c.relname ~* 'period'
+     )
      OR EXISTS (
        SELECT 1
        FROM pg_catalog.pg_attribute a
        JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
        WHERE n.nspname = 'public'
-         AND a.attname = 'accounting_period_id'
          AND a.attnum > 0
          AND NOT a.attisdropped
+         AND a.attname ~* 'period'
      )
      OR EXISTS (
        SELECT 1 FROM public.permissions
-       WHERE permission_key LIKE 'accounting_periods.%'
+       WHERE permission_key ~* 'period'
+     )
+     OR EXISTS (
+       SELECT 1
+       FROM pg_catalog.pg_proc p
+       JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'public'
+         AND (
+           coalesce(array_to_string(p.proargnames, ','), '') ~* 'period'
+           OR p.prosrc ~* '\\mperiod(s)?\\M'
+         )
+     )
+     OR EXISTS (
+       SELECT 1
+       FROM pg_catalog.pg_trigger t
+       JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public'
+         AND NOT t.tgisinternal
+         AND t.tgname ~* 'period'
+     )
+     OR EXISTS (
+       SELECT 1
+       FROM pg_catalog.pg_policy p
+       JOIN pg_catalog.pg_class c ON c.oid = p.polrelid
+       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public'
+         AND p.polname ~* 'period'
      ) THEN
-    RAISE EXCEPTION 'Accounting period table, columns, or permissions must not exist';
+    RAISE EXCEPTION 'Accounting-period relations, columns, permissions, functions, triggers, or policies must not exist';
   END IF;
 
   -- Confirm the Supabase auth.uid() compatibility shim and exercise organization setup.
