@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(29);
+select plan(28);
 
 -- Deterministic, disposable Auth fixture. No external Supabase project or secret is used.
 insert into auth.users(
