@@ -578,6 +578,13 @@ BEGIN
      IS DISTINCT FROM v_custom_sales_account_id THEN
     RAISE EXCEPTION 'Updating a product name unexpectedly overwrote its custom account mapping';
   END IF;
+  BEGIN
+    PERFORM public.save_master_data(
+      v_test_organization_id,'unit','{"is_active":false}'::jsonb,v_unit_id
+    );
+    RAISE EXCEPTION 'A unit used by an active product was deactivated';
+  EXCEPTION WHEN SQLSTATE '23514' THEN NULL;
+  END;
   IF NOT EXISTS (
     SELECT 1 FROM public.products p
     JOIN public.accounts inv ON inv.organization_id=p.organization_id AND inv.id=p.inventory_account_id
@@ -672,6 +679,23 @@ BEGIN
   IF v_balance_quantity <> 10 THEN
     RAISE EXCEPTION 'Inventory adjustment did not increase stock as expected';
   END IF;
+  BEGIN
+    PERFORM public.save_master_data(
+      v_test_organization_id,'product','{"is_active":false}'::jsonb,v_product_id
+    );
+    RAISE EXCEPTION 'A product with positive stock was deactivated';
+  EXCEPTION WHEN SQLSTATE '23514' THEN NULL;
+  END;
+  BEGIN
+    PERFORM public.save_master_data(
+      v_test_organization_id,'product',
+      pg_catalog.jsonb_build_object('sales_account_id',(SELECT id FROM public.accounts
+        WHERE organization_id=v_test_organization_id AND account_code='4100')),
+      v_product_id
+    );
+    RAISE EXCEPTION 'Product account mapping changed after stock movement';
+  EXCEPTION WHEN SQLSTATE '23514' THEN NULL;
+  END;
 
   v_reversal_journal_id := public.reverse_journal_entry(
     v_test_organization_id,v_adjustment_journal_id,'2026-11-03','Smoke test adjustment reversal'
@@ -713,6 +737,20 @@ BEGIN
   );
   PERFORM public.confirm_transaction_document(v_test_organization_id,'sales',v_sales_id);
   PERFORM public.post_sales(v_test_organization_id,v_sales_id);
+  BEGIN
+    PERFORM public.save_master_data(
+      v_test_organization_id,'contact','{"is_active":false}'::jsonb,v_contact_id
+    );
+    RAISE EXCEPTION 'A contact with an outstanding receivable was deactivated';
+  EXCEPTION WHEN SQLSTATE '23514' THEN NULL;
+  END;
+  BEGIN
+    PERFORM public.save_master_data(
+      v_test_organization_id,'account','{"is_active":false}'::jsonb,v_custom_sales_account_id
+    );
+    RAISE EXCEPTION 'An account used by posted ledger entries was deactivated';
+  EXCEPTION WHEN SQLSTATE '23514' THEN NULL;
+  END;
 
   v_payment_id := public.save_draft_transaction_document(
     v_test_organization_id,'payment',
@@ -835,6 +873,11 @@ BEGIN
     RAISE EXCEPTION 'Trial balance does not reconcile: debits %, credits %',v_trial_debits,v_trial_credits;
   END IF;
   PERFORM * FROM public.report_profit_and_loss(v_test_organization_id,'2026-01-01','2026-12-31');
+  PERFORM * FROM public.report_general_ledger(
+    v_test_organization_id,
+    (SELECT id FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='1120'),
+    '2026-01-01','2026-12-31'
+  );
   PERFORM * FROM public.report_balance_sheet(v_test_organization_id,'2026-12-31');
   PERFORM * FROM public.report_inventory_valuation(v_test_organization_id,'2026-12-31');
   PERFORM * FROM public.report_contact_balances(v_test_organization_id,'2026-12-31');
@@ -870,6 +913,12 @@ BEGIN
   IF v_contact_balance_total<>0 THEN
     RAISE EXCEPTION 'Fully settled contact subledgers do not reconcile to zero: %',v_contact_balance_total;
   END IF;
+  PERFORM public.save_master_data(
+    v_test_organization_id,'contact','{"is_active":false}'::jsonb,v_contact_id
+  );
+  PERFORM public.save_master_data(
+    v_test_organization_id,'contact','{"is_active":true}'::jsonb,v_contact_id
+  );
   IF EXISTS (SELECT 1 FROM public.report_payables_aging(v_test_organization_id,'2026-12-31')) THEN
     RAISE EXCEPTION 'Fully allocated supplier payment left an open payable balance';
   END IF;
