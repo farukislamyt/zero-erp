@@ -44,6 +44,7 @@ DECLARE
   v_balance_sheet_assets numeric(20,4);
   v_balance_sheet_equity_liabilities numeric(20,4);
   v_contact_balance_total numeric(20,4);
+  v_balance_sheet_detail text;
   v_third_user_id uuid := '00000000-0000-0000-0000-000000000003';
   v_manager_role_id uuid;
   v_third_membership_id uuid;
@@ -778,8 +779,11 @@ BEGIN
   INTO v_balance_sheet_assets,v_balance_sheet_equity_liabilities
   FROM public.report_balance_sheet(v_test_organization_id,'2026-12-31');
   IF v_balance_sheet_assets<>v_balance_sheet_equity_liabilities THEN
-    RAISE EXCEPTION 'Balance sheet does not balance: assets %, liabilities plus equity %',
-      v_balance_sheet_assets,v_balance_sheet_equity_liabilities;
+    SELECT pg_catalog.string_agg(account_code||'='||balance::text,', ' ORDER BY account_code)
+    INTO v_balance_sheet_detail
+    FROM public.report_balance_sheet(v_test_organization_id,'2026-12-31');
+    RAISE EXCEPTION 'Balance sheet does not balance: assets %, liabilities plus equity %; rows: %',
+      v_balance_sheet_assets,v_balance_sheet_equity_liabilities,v_balance_sheet_detail;
   END IF;
   SELECT coalesce(sum(abs(balance)),0) INTO v_contact_balance_total
   FROM public.report_contact_balances(v_test_organization_id,'2026-12-31');
