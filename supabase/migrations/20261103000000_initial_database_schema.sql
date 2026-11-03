@@ -4893,7 +4893,7 @@ begin
   if p_name is null or pg_catalog.length(pg_catalog.btrim(p_name)) not between 1 and 160 then
     raise exception using errcode = '22023', message = 'Organization name must contain between 1 and 160 characters.';
   end if;
-  if p_currency is null or p_currency !~ '^[A-Z]{3} then
+  if p_currency is null or p_currency !~ '^[A-Z]{3}$' then
     raise exception using errcode = '22023', message = 'Currency must be a three-letter uppercase ISO currency code.';
   end if;
   if p_timezone is null or not exists (
