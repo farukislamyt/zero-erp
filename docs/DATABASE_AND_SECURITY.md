@@ -1,21 +1,17 @@
 # Zero ERP — Database Architecture and Security
 
-> This document describes the database that is actually defined by the repository's migration chain. It is not a product roadmap, target schema, or statement that an application screen exists.
+> This document describes the database that is actually defined by the repository's single canonical bootstrap SQL file. It is not a product roadmap, target schema, or statement that an application screen exists.
 
 **Canonical detailed reference:** [Complete Database Reference](DATABASE_REFERENCE.md)  
 **Static findings and limitations:** [Database Audit](DATABASE_AUDIT.md)
 
 ## 1. Canonical database source
 
-The effective database is the result of applying all three migrations in timestamp order:
+The complete effective database is defined by one SQL file: `supabase/migrations/20261103000000_initial_database_schema.sql`. It contains the original bootstrap plus the membership/RBAC security and permanent original-Creator Administrator protections, in their required execution order, within one transaction.
 
-1. `supabase/migrations/20261103000000_initial_database_schema.sql` — bootstrap schema for a new/empty database.
-2. `supabase/migrations/20261103010000_organization_membership_security.sql` — membership, creator-anchor, RBAC and profile security updates.
-3. `supabase/migrations/20261103020000_permanent_organization_administrator.sql` — permanent original-Creator Administrator invariant; drops Administrator transfer.
+This file is intended only for a new/empty Supabase database; it is not an upgrade script for an already populated database. The creator/Admin preflight checks from the former incremental file are retained in the consolidated SQL.
 
-Do not apply the initial bootstrap to an already populated database as an upgrade. Use the incremental migrations in order. The final migration includes a preflight that intentionally stops if existing organization creator/Admin data cannot be verified.
-
-A later `CREATE OR REPLACE FUNCTION` is authoritative for that function. The historical `transfer_organization_administrator(uuid, uuid)` RPC is dropped by migration 0200 and is absent from the final schema.
+The historical `transfer_organization_administrator(uuid, uuid)` RPC is not part of the effective schema: the consolidated SQL drops it before commit.
 
 ## 2. Effective schema inventory
 
