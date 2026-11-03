@@ -49,6 +49,14 @@ DECLARE
   v_manager_role_id uuid;
   v_third_membership_id uuid;
   v_admin_role_id uuid;
+  v_second_unit_id uuid;
+  v_second_product_id uuid;
+  v_second_opening_journal_id uuid;
+  v_second_ar_balance numeric(20,4);
+  v_second_ap_balance numeric(20,4);
+  v_second_inventory_value numeric(20,4);
+  v_second_trial_debits numeric(20,4);
+  v_second_trial_credits numeric(20,4);
   v_second_organization_id uuid;
   v_second_contact_id uuid;
 BEGIN
@@ -257,6 +265,66 @@ BEGIN
     v_second_organization_id,'contact',
     '{"contact_number":"C-SECOND-001","name":"Second Tenant Contact"}'::jsonb
   );
+  v_second_unit_id := public.save_master_data(
+    v_second_organization_id,'unit','{"name":"Each"}'::jsonb
+  );
+  v_second_product_id := public.save_master_data(
+    v_second_organization_id,'product',
+    pg_catalog.jsonb_build_object(
+      'product_code','P-OPEN-001','name','Opening Stock Product','unit_id',v_second_unit_id
+    )
+  );
+  v_second_opening_journal_id := public.post_opening_balances(
+    v_second_organization_id,'2026-11-03',
+    pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+      'account_id',(SELECT id FROM public.accounts WHERE organization_id=v_second_organization_id AND account_code='1110'),
+      'debit',70,'credit',0,'description','Opening cash'
+    )),
+    pg_catalog.jsonb_build_array(
+      pg_catalog.jsonb_build_object(
+        'contact_id',v_second_contact_id,'party_type','customer',
+        'account_id',(SELECT id FROM public.accounts WHERE organization_id=v_second_organization_id AND account_code='1120'),
+        'amount',100,'balance_side','debit'
+      ),
+      pg_catalog.jsonb_build_object(
+        'contact_id',v_second_contact_id,'party_type','customer',
+        'account_id',(SELECT id FROM public.accounts WHERE organization_id=v_second_organization_id AND account_code='1120'),
+        'amount',50,'balance_side','credit'
+      ),
+      pg_catalog.jsonb_build_object(
+        'contact_id',v_second_contact_id,'party_type','supplier',
+        'account_id',(SELECT id FROM public.accounts WHERE organization_id=v_second_organization_id AND account_code='2110'),
+        'amount',200,'balance_side','credit'
+      ),
+      pg_catalog.jsonb_build_object(
+        'contact_id',v_second_contact_id,'party_type','supplier',
+        'account_id',(SELECT id FROM public.accounts WHERE organization_id=v_second_organization_id AND account_code='2110'),
+        'amount',30,'balance_side','debit'
+      )
+    ),
+    pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+      'product_id',v_second_product_id,'quantity',5,'unit_cost',10
+    )),
+    'Opening balances with customer and supplier debit/credit balances'
+  );
+  SELECT sum(movement_debit),sum(movement_credit)
+  INTO v_second_trial_debits,v_second_trial_credits
+  FROM public.report_trial_balance(v_second_organization_id,'2026-01-01','2026-12-31');
+  IF v_second_trial_debits IS DISTINCT FROM v_second_trial_credits THEN
+    RAISE EXCEPTION 'Mixed-sign opening balances did not produce a balanced trial balance';
+  END IF;
+  SELECT balance INTO v_second_ar_balance
+  FROM public.report_contact_balances(v_second_organization_id,'2026-12-31')
+  WHERE account_code='1120';
+  SELECT balance INTO v_second_ap_balance
+  FROM public.report_contact_balances(v_second_organization_id,'2026-12-31')
+  WHERE account_code='2110';
+  SELECT sum(inventory_value) INTO v_second_inventory_value
+  FROM public.report_inventory_valuation(v_second_organization_id,'2026-12-31');
+  IF v_second_ar_balance<>50 OR v_second_ap_balance<>170 OR v_second_inventory_value<>50 THEN
+    RAISE EXCEPTION 'Mixed-sign opening subledgers incorrect: AR %, AP %, inventory %',
+      v_second_ar_balance,v_second_ap_balance,v_second_inventory_value;
+  END IF;
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true
   );
