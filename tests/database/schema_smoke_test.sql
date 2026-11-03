@@ -10,6 +10,9 @@ DECLARE
   v_policy_count integer;
   v_ungated_policy_count integer;
   v_unsafe_definer_count integer;
+  v_missing_rpc_grants integer;
+  v_direct_write_grants integer;
+  v_test_organization_id uuid;
 BEGIN
   SELECT count(*)
     INTO v_table_count
@@ -120,7 +123,7 @@ BEGIN
     RAISE EXCEPTION 'Accounting period overlap trigger is missing';
   END IF;
 
-  -- Confirm the Supabase auth.uid() compatibility shim is callable.
+  -- Confirm the Supabase auth.uid() compatibility shim and exercise organization setup.
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub',
     '00000000-0000-0000-0000-000000000001',
@@ -131,8 +134,100 @@ BEGIN
     RAISE EXCEPTION 'auth.uid() compatibility shim did not return the JWT subject';
   END IF;
 
+  INSERT INTO auth.users (id)
+  VALUES ('00000000-0000-0000-0000-000000000001')
+  ON CONFLICT (id) DO NOTHING;
+
+  BEGIN
+    PERFORM public.create_organization_with_admin(
+      'Invalid timezone test', 'BDT', 'Invalid/ZeroERP'
+    );
+    RAISE EXCEPTION 'Organization creation accepted an invalid timezone';
+  EXCEPTION
+    WHEN SQLSTATE '22023' THEN NULL;
+  END;
+
+  v_test_organization_id := public.create_organization_with_admin(
+    'Database smoke test organization', 'BDT', 'Asia/Dhaka'
+  );
+
+  -- An inactive number sequence must not silently allocate document numbers.
+  INSERT INTO public.number_sequences (
+    organization_id, document_type, prefix, next_number, padding, is_active
+  )
+  VALUES (v_test_organization_id, 'purchase', 'PUR-', 1, 5, false);
+
+  BEGIN
+    PERFORM public.next_document_number(v_test_organization_id, 'purchase');
+    RAISE EXCEPTION 'Document numbering allocated from a disabled sequence';
+  EXCEPTION
+    WHEN SQLSTATE '55000' THEN NULL;
+  END;
+
+  -- All application business writes must pass through explicit RPCs.
+  SELECT count(*)
+    INTO v_direct_write_grants
+  FROM pg_catalog.pg_tables t
+  WHERE t.schemaname = 'public'
+    AND (
+      has_table_privilege('authenticated', format('%I.%I', t.schemaname, t.tablename), 'INSERT')
+      OR has_table_privilege('authenticated', format('%I.%I', t.schemaname, t.tablename), 'UPDATE')
+      OR has_table_privilege('authenticated', format('%I.%I', t.schemaname, t.tablename), 'DELETE')
+      OR has_table_privilege('anon', format('%I.%I', t.schemaname, t.tablename), 'SELECT')
+      OR has_table_privilege('anon', format('%I.%I', t.schemaname, t.tablename), 'INSERT')
+      OR has_table_privilege('anon', format('%I.%I', t.schemaname, t.tablename), 'UPDATE')
+      OR has_table_privilege('anon', format('%I.%I', t.schemaname, t.tablename), 'DELETE')
+    );
+
+  IF v_direct_write_grants <> 0 THEN
+    RAISE EXCEPTION '% public tables expose direct writes to authenticated or table access to anon', v_direct_write_grants;
+  END IF;
+
+  -- Every intended application RPC must be callable by authenticated users and
+  -- unavailable to anon. The legacy one-step journal RPC remains intentionally disabled.
+  SELECT count(*)
+    INTO v_missing_rpc_grants
+  FROM unnest(ARRAY[
+    'public.is_active_org_member(uuid)',
+    'public.has_org_permission(uuid,text)',
+    'public.next_document_number(uuid,text)',
+    'public.create_organization_with_admin(text,text,text)',
+    'public.add_organization_user_by_email(uuid,text,uuid)',
+    'public.update_organization_user_role(uuid,uuid,uuid)',
+    'public.set_organization_user_active(uuid,uuid,boolean)',
+    'public.post_purchase(uuid,uuid)',
+    'public.post_opening_balances(uuid,uuid,date,jsonb,jsonb,jsonb,text)',
+    'public.post_contact_payment(uuid,uuid,uuid)',
+    'public.post_sales(uuid,uuid)',
+    'public.reverse_journal_entry(uuid,uuid,date,text)',
+    'public.post_expense(uuid,uuid)',
+    'public.post_purchase_return(uuid,uuid)',
+    'public.post_sales_return(uuid,uuid)',
+    'public.post_confirmed_journal_entry(uuid,uuid)',
+    'public.save_draft_transaction_document(uuid,text,jsonb,jsonb,uuid)',
+    'public.confirm_transaction_document(uuid,text,uuid)',
+    'public.revert_transaction_document_to_draft(uuid,text,uuid)',
+    'public.void_transaction_document(uuid,text,uuid,text)',
+    'public.delete_draft_transaction_document(uuid,text,uuid)'
+  ]::text[]) AS expected(signature)
+  WHERE to_regprocedure(expected.signature) IS NULL
+     OR NOT has_function_privilege('authenticated', to_regprocedure(expected.signature), 'EXECUTE')
+     OR has_function_privilege('anon', to_regprocedure(expected.signature), 'EXECUTE');
+
+  IF v_missing_rpc_grants <> 0 THEN
+    RAISE EXCEPTION '% expected RPCs are missing or have incorrect execute grants', v_missing_rpc_grants;
+  END IF;
+
+  IF has_function_privilege(
+    'authenticated',
+    'public.post_manual_journal_entry(uuid,text,uuid,date,text,jsonb)',
+    'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION 'Legacy one-step journal posting RPC must remain unavailable';
+  END IF;
+
   RAISE NOTICE
-    'PASS: % tables, % RLS policies, critical RPC grants, SECURITY DEFINER search_path, and integrity triggers verified',
+    'PASS: % tables, % RLS policies, RPC grants, no direct table writes, organization setup, sequence controls, SECURITY DEFINER search_path, and integrity triggers verified',
     v_table_count, v_policy_count;
 END;
 $tests$;
