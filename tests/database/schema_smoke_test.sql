@@ -40,6 +40,7 @@ DECLARE
   v_unapplied_total numeric(20,4);
   v_inventory_total numeric(20,4);
   v_second_user_id uuid := '00000000-0000-0000-0000-000000000002';
+  v_invited_user_id uuid := '00000000-0000-0000-0000-000000000004';
   v_custom_sales_account_id uuid;
   v_balance_sheet_assets numeric(20,4);
   v_balance_sheet_equity_liabilities numeric(20,4);
@@ -334,10 +335,16 @@ BEGIN
     second_organization_id uuid NOT NULL,
     first_contact_id uuid,
     second_contact_id uuid,
-    second_user_id uuid NOT NULL
+    second_user_id uuid NOT NULL,
+    invited_user_id uuid,
+    invitation_role_id uuid,
+    inviter_user_id uuid
   ) ON COMMIT PRESERVE ROWS;
-  GRANT SELECT ON zeroerp_smoke_context TO authenticated;
-  INSERT INTO zeroerp_smoke_context VALUES (
+  GRANT SELECT ON zeroerp_smoke_context TO authenticated,service_role;
+  INSERT INTO zeroerp_smoke_context (
+    first_organization_id,second_organization_id,first_contact_id,
+    second_contact_id,second_user_id
+  ) VALUES (
     v_test_organization_id,v_second_organization_id,null,v_second_contact_id,v_second_user_id
   );
 
@@ -621,6 +628,11 @@ BEGIN
   PERFORM pg_catalog.set_config(
     'request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true
   );
+  INSERT INTO auth.users(id) VALUES(v_invited_user_id) ON CONFLICT(id) DO NOTHING;
+  UPDATE zeroerp_smoke_context
+  SET invited_user_id=v_invited_user_id,
+      invitation_role_id=v_manager_role_id,
+      inviter_user_id='00000000-0000-0000-0000-000000000001';
 
   PERFORM public.update_organization_profile(
     v_test_organization_id,'Database smoke test organization','+8801000000000',
@@ -878,8 +890,10 @@ BEGIN
      OR has_function_privilege('authenticated',
        'public.complete_organization_invitation(uuid,uuid,uuid,uuid)','EXECUTE')
      OR has_function_privilege('anon',
+       'public.complete_organization_invitation(uuid,uuid,uuid,uuid)','EXECUTE')
+     OR NOT has_function_privilege('service_role',
        'public.complete_organization_invitation(uuid,uuid,uuid,uuid)','EXECUTE') THEN
-    RAISE EXCEPTION 'Auth invitation finalization must exist and remain service-role-only';
+    RAISE EXCEPTION 'Auth invitation finalization must be service-role-only';
   END IF;
 
   RAISE NOTICE
@@ -888,6 +902,31 @@ BEGIN
 END;
 $tests$;
 
+
+-- Exercise the invitation finalizer with the service-role grant.
+SET ROLE service_role;
+DO $invite$
+DECLARE
+  v_org uuid;
+  v_user uuid;
+  v_role uuid;
+  v_inviter uuid;
+  v_membership_id uuid;
+BEGIN
+  SELECT first_organization_id,invited_user_id,invitation_role_id,inviter_user_id
+  INTO v_org,v_user,v_role,v_inviter
+  FROM zeroerp_smoke_context;
+  v_membership_id := public.complete_organization_invitation(v_org,v_user,v_role,v_inviter);
+  IF NOT EXISTS (
+    SELECT 1 FROM public.organization_users
+    WHERE id=v_membership_id AND organization_id=v_org AND user_id=v_user
+      AND role_id=v_role AND is_active
+  ) THEN
+    RAISE EXCEPTION 'Service-role invitation finalization did not create the intended membership';
+  END IF;
+END;
+$invite$;
+RESET ROLE;
 
 -- Run read and RPC isolation checks as the authenticated role, not as the
 -- PostgreSQL owner that executes the bootstrap smoke block.
