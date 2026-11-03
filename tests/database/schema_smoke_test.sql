@@ -275,6 +275,9 @@ BEGIN
   EXCEPTION
     WHEN SQLSTATE '55000' THEN NULL;
   END;
+  UPDATE public.number_sequences
+  SET is_active = true
+  WHERE organization_id = v_test_organization_id AND document_type = 'purchase';
 
   -- All application business writes must pass through explicit RPCs.
   SELECT count(*)
