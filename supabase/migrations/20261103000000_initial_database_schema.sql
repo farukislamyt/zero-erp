@@ -2129,7 +2129,7 @@ begin
   if exists (
     select 1
     from pg_catalog.jsonb_to_recordset(p_party_balances) as x(
-      contact_id uuid, party_type text, account_id uuid, amount numeric, description text
+      contact_id uuid, party_type text, account_id uuid, amount numeric, description text, balance_side text
     )
     where x.contact_id is null
        or x.party_type is null
@@ -2138,6 +2138,7 @@ begin
        or x.amount is null
        or x.amount <= 0
        or x.amount <> round(x.amount, 4)
+       or (x.balance_side is not null and x.balance_side not in ('debit','credit'))
   ) then
     raise exception using errcode = '22023',
       message = 'Each party balance must include a contact, customer/supplier type, control account, and positive amount.';
@@ -2146,7 +2147,7 @@ begin
   if exists (
     select 1
     from pg_catalog.jsonb_to_recordset(p_party_balances) as x(
-      contact_id uuid, party_type text, account_id uuid, amount numeric, description text
+      contact_id uuid, party_type text, account_id uuid, amount numeric, description text, balance_side text
     )
     left join public.contacts c
       on c.organization_id = p_organization_id
@@ -2217,7 +2218,7 @@ begin
   if exists (
     select 1
     from pg_catalog.jsonb_to_recordset(p_party_balances) as party(
-      contact_id uuid, party_type text, account_id uuid, amount numeric, description text
+      contact_id uuid, party_type text, account_id uuid, amount numeric, description text, balance_side text
     )
     join pg_catalog.jsonb_to_recordset(p_inventory_lines) as inv(
       product_id uuid, quantity numeric, unit_cost numeric
@@ -2250,7 +2251,7 @@ begin
     where gl.account_id in (
       select party.account_id
       from pg_catalog.jsonb_to_recordset(p_party_balances) as party(
-        contact_id uuid, party_type text, account_id uuid, amount numeric, description text
+        contact_id uuid, party_type text, account_id uuid, amount numeric, description text, balance_side text
       )
       union
       select pr.inventory_account_id
@@ -2275,13 +2276,15 @@ begin
   );
 
   select
-    v_debit_total
-      + coalesce(pg_catalog.sum(case when x.party_type = 'customer' then x.amount else 0 end), 0),
-    v_credit_total
-      + coalesce(pg_catalog.sum(case when x.party_type = 'supplier' then x.amount else 0 end), 0)
-  into v_debit_total, v_credit_total
+    v_debit_total + coalesce(pg_catalog.sum(case
+      when coalesce(x.balance_side,case when x.party_type='customer' then 'debit' else 'credit' end)='debit'
+      then x.amount else 0 end),0),
+    v_credit_total + coalesce(pg_catalog.sum(case
+      when coalesce(x.balance_side,case when x.party_type='customer' then 'debit' else 'credit' end)='credit'
+      then x.amount else 0 end),0)
+  into v_debit_total,v_credit_total
   from pg_catalog.jsonb_to_recordset(p_party_balances) as x(
-    contact_id uuid, party_type text, account_id uuid, amount numeric, description text
+    contact_id uuid,party_type text,account_id uuid,amount numeric,description text,balance_side text
   );
 
   select coalesce(pg_catalog.sum(round(x.quantity * x.unit_cost, 4)), 0)
@@ -2362,7 +2365,7 @@ begin
       x.credit,
       null::uuid as contact_id
     from pg_catalog.jsonb_to_recordset(p_account_lines) with ordinality as x(
-      account_id uuid, debit numeric, credit numeric, description text, ordinality bigint
+      account_id uuid, debit numeric, credit numeric, description text, balance_side text, ordinality bigint
     )
 
     union all
@@ -2373,12 +2376,12 @@ begin
       x.account_id,
       coalesce(nullif(pg_catalog.btrim(coalesce(x.description, '')), ''),
         case when x.party_type = 'customer' then 'Opening receivable' else 'Opening payable' end),
-      case when x.party_type = 'customer' then x.amount else 0 end,
-      case when x.party_type = 'supplier' then x.amount else 0 end,
+      case when coalesce(x.balance_side,case when x.party_type='customer' then 'debit' else 'credit' end)='debit' then x.amount else 0 end,
+      case when coalesce(x.balance_side,case when x.party_type='customer' then 'debit' else 'credit' end)='credit' then x.amount else 0 end,
       x.contact_id
     from pg_catalog.jsonb_to_recordset(p_party_balances) with ordinality as x(
       contact_id uuid, party_type text, account_id uuid, amount numeric,
-      description text, ordinality bigint
+      description text, balance_side text, ordinality bigint
     )
 
     union all
