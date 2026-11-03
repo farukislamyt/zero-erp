@@ -118,6 +118,8 @@ select throws_ok(
   '23503','The selected role must be active and belong to this organization.',
   'inactive custom role cannot be assigned');
 reset role;
+select ok(public.is_org_administrator(current_setting('test.org_id')::uuid),
+  'original Creator retains permanent Administrator authority');
 select throws_ok(
   format('update public.organization_users set is_active=false where organization_id=%L::uuid and created_at=(select created_at from public.organizations where id=%L::uuid)',
     current_setting('test.org_id'),current_setting('test.org_id')),
