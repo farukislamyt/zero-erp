@@ -16,6 +16,17 @@ DECLARE
   v_test_draft_id uuid;
   v_missing_posting_locks integer;
   v_missing_contact_locks integer;
+  v_unit_id uuid;
+  v_product_id uuid;
+  v_contact_id uuid;
+  v_role_id uuid;
+  v_expense_category_id uuid;
+  v_expense_draft_id uuid;
+  v_adjustment_journal_id uuid;
+  v_reversal_journal_id uuid;
+  v_balance_quantity numeric(20,6);
+  v_trial_debits numeric(20,4);
+  v_trial_credits numeric(20,4);
 BEGIN
   SELECT count(*)
     INTO v_table_count
@@ -211,10 +222,9 @@ BEGIN
   );
 
   -- An inactive number sequence must not silently allocate document numbers.
-  INSERT INTO public.number_sequences (
-    organization_id, document_type, prefix, next_number, padding, is_active
-  )
-  VALUES (v_test_organization_id, 'purchase', 'PUR-', 1, 5, false);
+  UPDATE public.number_sequences
+  SET is_active = false
+  WHERE organization_id = v_test_organization_id AND document_type = 'purchase';
 
   BEGIN
     PERFORM public.next_document_number(v_test_organization_id, 'purchase');
@@ -370,8 +380,135 @@ BEGIN
       AND id = v_test_draft_id
       AND status = 'draft'
       AND entry_type = 'manual'
+      AND entry_number <> 'SMOKE-JE-001'
   ) THEN
     RAISE EXCEPTION 'A valid manual journal draft could not be saved';
+  END IF;
+
+
+  -- Organization bootstrap must install a usable default chart and document sequences.
+  IF (SELECT count(*) FROM public.accounts WHERE organization_id=v_test_organization_id AND is_system_account) <> 22 THEN
+    RAISE EXCEPTION 'Default chart of accounts was not seeded completely';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='1120' AND is_control_account)
+     OR NOT EXISTS (SELECT 1 FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='2110' AND is_control_account)
+     OR NOT EXISTS (SELECT 1 FROM public.expense_categories WHERE organization_id=v_test_organization_id AND category_code='GEN') THEN
+    RAISE EXCEPTION 'Default AR/AP control accounts or general expense category are missing';
+  END IF;
+
+  -- Secure master-data CRUD: create a unit, contact and product through RPC only.
+  v_unit_id := public.save_master_data(
+    v_test_organization_id,'unit','{"name":"Each"}'::jsonb
+  );
+  v_contact_id := public.save_master_data(
+    v_test_organization_id,'contact',
+    '{"contact_number":"C-SMOKE-001","name":"Smoke Test Contact"}'::jsonb
+  );
+  v_product_id := public.save_master_data(
+    v_test_organization_id,'product',
+    pg_catalog.jsonb_build_object(
+      'product_code','P-SMOKE-001','name','Smoke Test Product','unit_id',v_unit_id
+    )
+  );
+  IF NOT EXISTS (
+    SELECT 1 FROM public.products p
+    JOIN public.accounts inv ON inv.organization_id=p.organization_id AND inv.id=p.inventory_account_id
+    JOIN public.accounts rev ON rev.organization_id=p.organization_id AND rev.id=p.sales_account_id
+    JOIN public.accounts cogs ON cogs.organization_id=p.organization_id AND cogs.id=p.cogs_account_id
+    WHERE p.organization_id=v_test_organization_id AND p.id=v_product_id
+      AND inv.account_code='1130' AND rev.account_code='4100' AND cogs.account_code='5100'
+  ) THEN
+    RAISE EXCEPTION 'Product default account mappings were not assigned';
+  END IF;
+
+  -- Custom roles may receive only permissions held by the caller and cannot mutate Administrator.
+  v_role_id := public.create_custom_role(
+    v_test_organization_id,'Smoke Sales Clerk',ARRAY['sales.read','products.read']
+  );
+  PERFORM public.replace_custom_role_permissions(
+    v_test_organization_id,v_role_id,ARRAY['sales.read']
+  );
+  IF (SELECT count(*) FROM public.role_permissions WHERE role_id=v_role_id) <> 1 THEN
+    RAISE EXCEPTION 'Custom role permission replacement failed';
+  END IF;
+
+  PERFORM public.update_organization_profile(
+    v_test_organization_id,'Database smoke test organization','+8801000000000',
+    'smoke@example.invalid','Test address','Dhaka','Bangladesh','BDT','Asia/Dhaka',null,null
+  );
+
+  -- Draft creation gets its document number from the database, not the caller.
+  SELECT id INTO v_expense_category_id
+  FROM public.expense_categories
+  WHERE organization_id=v_test_organization_id AND category_code='GEN';
+  v_expense_draft_id := public.save_draft_transaction_document(
+    v_test_organization_id,'expense',
+    pg_catalog.jsonb_build_object(
+      'expense_category_id',v_expense_category_id,
+      'payable_account_id',(SELECT id FROM public.accounts WHERE organization_id=v_test_organization_id AND account_code='2110'),
+      'expense_date','2026-11-03','amount',125.00,'description','Smoke test expense'
+    )
+  );
+  IF NOT EXISTS (
+    SELECT 1 FROM public.expenses
+    WHERE organization_id=v_test_organization_id AND id=v_expense_draft_id
+      AND expense_number LIKE 'EXP-%' AND status='draft'
+  ) THEN
+    RAISE EXCEPTION 'Expense draft did not receive a server-generated document number';
+  END IF;
+
+  -- Inventory adjustments post stock and balanced ledger entries atomically.
+  v_adjustment_journal_id := public.post_inventory_adjustment(
+    v_test_organization_id,'2026-11-03','Smoke test opening stock',
+    pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object(
+      'product_id',v_product_id,'direction','increase','quantity',10,'unit_cost',100
+    ))
+  );
+  SELECT quantity INTO v_balance_quantity
+  FROM public.inventory_balances
+  WHERE organization_id=v_test_organization_id AND product_id=v_product_id;
+  IF v_balance_quantity <> 10 THEN
+    RAISE EXCEPTION 'Inventory adjustment did not increase stock as expected';
+  END IF;
+
+  v_reversal_journal_id := public.reverse_journal_entry(
+    v_test_organization_id,v_adjustment_journal_id,'2026-11-03','Smoke test adjustment reversal'
+  );
+  SELECT quantity INTO v_balance_quantity
+  FROM public.inventory_balances
+  WHERE organization_id=v_test_organization_id AND product_id=v_product_id;
+  IF v_balance_quantity <> 0 THEN
+    RAISE EXCEPTION 'Inventory adjustment reversal did not restore the original stock balance';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM public.journal_entries
+    WHERE organization_id=v_test_organization_id AND id=v_reversal_journal_id
+      AND reversal_of_id=v_adjustment_journal_id AND status='posted'
+  ) THEN
+    RAISE EXCEPTION 'Inventory adjustment reversal journal was not recorded';
+  END IF;
+
+  -- Reporting RPCs must be exposed to authenticated users and return balanced totals.
+  SELECT sum(period_debit),sum(period_credit)
+  INTO v_trial_debits,v_trial_credits
+  FROM public.report_trial_balance(v_test_organization_id,'2026-01-01','2026-12-31');
+  IF v_trial_debits IS DISTINCT FROM v_trial_credits THEN
+    RAISE EXCEPTION 'Trial balance does not reconcile: debits %, credits %',v_trial_debits,v_trial_credits;
+  END IF;
+  PERFORM * FROM public.report_profit_and_loss(v_test_organization_id,'2026-01-01','2026-12-31');
+  PERFORM * FROM public.report_balance_sheet(v_test_organization_id,'2026-12-31');
+  PERFORM * FROM public.report_inventory_valuation(v_test_organization_id,'2026-12-31');
+  PERFORM * FROM public.report_contact_balances(v_test_organization_id,'2026-12-31');
+  PERFORM * FROM public.report_receivables_aging(v_test_organization_id,'2026-12-31');
+  PERFORM * FROM public.report_payables_aging(v_test_organization_id,'2026-12-31');
+  PERFORM * FROM public.report_unapplied_payments(v_test_organization_id,'2026-12-31');
+
+  IF to_regprocedure('public.set_payment_allocations(uuid,uuid,jsonb)') IS NULL
+     OR to_regprocedure('public.post_inventory_adjustment(uuid,date,text,jsonb,uuid,uuid)') IS NULL
+     OR to_regprocedure('public.save_master_data(uuid,text,jsonb,uuid)') IS NULL
+     OR to_regprocedure('public.create_custom_role(uuid,text,text[])') IS NULL
+     OR to_regprocedure('public.update_organization_profile(uuid,text,text,text,text,text,text,text,text,text,text)') IS NULL THEN
+    RAISE EXCEPTION 'One or more new ERP operational RPCs are missing';
   END IF;
 
   RAISE NOTICE
