@@ -6484,24 +6484,34 @@ begin
     where o.id = new.organization_id;
 
     if v_org_created_at is not null and new.created_at = v_org_created_at then
-      select coalesce(r.is_system_role and r.name = 'Administrator', false)
-        into v_is_admin_role
-      from public.roles r
-      where r.id = new.role_id
-        and r.organization_id = new.organization_id;
+      if v_company_creation_allowed then
+        select coalesce(r.is_system_role and r.name = 'Administrator', false)
+          into v_is_admin_role
+        from public.roles r
+        where r.id = new.role_id
+          and r.organization_id = new.organization_id;
 
-      if not v_company_creation_allowed or not v_is_admin_role then
-        raise exception using errcode = '42501',
-          message = 'Only the company-creation workflow may establish the permanent Administrator creator record.';
-      end if;
+        if not v_is_admin_role then
+          raise exception using errcode = '42501',
+            message = 'Only the company-creation workflow may establish the permanent Administrator creator record.';
+        end if;
 
-      if exists (
-        select 1 from public.organization_users ou
-        where ou.organization_id = new.organization_id
-          and ou.created_at = v_org_created_at
-      ) then
-        raise exception using errcode = '23505',
-          message = 'This company already has its permanent creator membership record.';
+        if exists (
+          select 1 from public.organization_users ou
+          where ou.organization_id = new.organization_id
+            and ou.created_at = v_org_created_at
+        ) then
+          raise exception using errcode = '23505',
+            message = 'This company already has its permanent creator membership record.';
+        end if;
+      else
+        -- now() is transaction-stable. A later RPC in the same transaction can
+        -- receive the same default timestamp as the company row; move it off
+        -- the reserved anchor rather than misclassifying it as the creator.
+        new.created_at := greatest(
+          pg_catalog.clock_timestamp(),
+          v_org_created_at + interval '1 microsecond'
+        );
       end if;
     end if;
     return new;
