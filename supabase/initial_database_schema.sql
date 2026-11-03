@@ -604,6 +604,7 @@ create table public.purchase_returns (
   discount_amount numeric(20, 4) not null default 0 check (discount_amount >= 0),
   total_amount numeric(20, 4) not null default 0 check (total_amount >= 0),
   payable_account_id uuid not null,
+  purchase_return_variance_account_id uuid,
   posted_journal_entry_id uuid,
   created_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default pg_catalog.now(),
@@ -620,6 +621,10 @@ create table public.purchase_returns (
     on delete restrict,
   constraint purchase_returns_account_same_org_fk
     foreign key (organization_id, payable_account_id)
+    references public.accounts (organization_id, id)
+    on delete restrict,
+  constraint purchase_returns_variance_account_same_org_fk
+    foreign key (organization_id, purchase_return_variance_account_id)
     references public.accounts (organization_id, id)
     on delete restrict,
   constraint purchase_returns_discount_limit_chk check (discount_amount <= subtotal),
@@ -1067,12 +1072,14 @@ values
   ('purchases.create', 'Create purchases', 'Create and update draft purchase documents.', 'purchases'),
   ('purchases.confirm', 'Confirm purchases', 'Confirm purchase documents before posting.', 'purchases'),
   ('purchases.post', 'Post purchases', 'Post purchases and related stock/accounting effects.', 'purchases'),
+  ('purchases.returns.create', 'Create purchase returns', 'Create and update draft purchase return documents.', 'purchases'),
   ('purchases.returns.post', 'Post purchase returns', 'Post purchase returns.', 'purchases'),
   ('purchases.returns.confirm', 'Confirm purchase returns', 'Confirm purchase return documents before posting.', 'purchases'),
   ('sales.read', 'View sales', 'View sales invoices and returns.', 'sales'),
   ('sales.create', 'Create sales', 'Create and update draft sales documents.', 'sales'),
   ('sales.confirm', 'Confirm sales', 'Confirm sales invoices before posting.', 'sales'),
   ('sales.post', 'Post sales', 'Post sales and related stock/accounting effects.', 'sales'),
+  ('sales.returns.create', 'Create sales returns', 'Create and update draft sales return documents.', 'sales'),
   ('sales.returns.post', 'Post sales returns', 'Post sales returns.', 'sales'),
   ('sales.returns.confirm', 'Confirm sales returns', 'Confirm sales return documents before posting.', 'sales'),
   ('expenses.read', 'View expenses', 'View expense records.', 'expenses'),
@@ -1512,9 +1519,7 @@ end;
 $$;
 
 revoke all on function public.post_manual_journal_entry(uuid, text, uuid, date, text, jsonb)
-  from public, anon;
-grant execute on function public.post_manual_journal_entry(uuid, text, uuid, date, text, jsonb)
-  to authenticated;
+  from public, anon, authenticated;
 
 
 -- ============================================================================
@@ -2888,6 +2893,183 @@ $$;
 revoke all on function public.post_confirmed_journal_entry(uuid, uuid) from public, anon;
 grant execute on function public.post_confirmed_journal_entry(uuid, uuid) to authenticated;
 
+
+create or replace function public.save_draft_transaction_document(
+  p_organization_id uuid,
+  p_document_type text,
+  p_header jsonb,
+  p_items jsonb default '[]'::jsonb,
+  p_document_id uuid default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_table text;
+  v_child_table text;
+  v_parent_column text;
+  v_permission text;
+  v_allowed_header text[];
+  v_child_columns text[];
+  v_document_id uuid := coalesce(p_document_id, pg_catalog.gen_random_uuid());
+  v_status text;
+  v_key text;
+  v_columns text;
+  v_values text;
+  v_set_clause text;
+  v_child_column_list text;
+  v_child_value_list text;
+  v_sql text;
+begin
+  if v_user_id is null or not public.is_active_org_member(p_organization_id) then
+    raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
+  end if;
+  if p_header is null or pg_catalog.jsonb_typeof(p_header) <> 'object'
+     or p_items is null or pg_catalog.jsonb_typeof(p_items) <> 'array' then
+    raise exception using errcode = '22023', message = 'Document header must be a JSON object and items must be a JSON array.';
+  end if;
+
+  case p_document_type
+    when 'purchase' then
+      v_table := 'purchase'; v_child_table := 'purchase_items'; v_parent_column := 'purchase_id';
+      v_permission := 'purchases.create';
+      v_allowed_header := array['invoice_id','supplier_id','invoice_date','subtotal','discount_amount','total_amount','payable_account_id'];
+      v_child_columns := array['line_number','product_id','quantity','unit_cost','line_total'];
+    when 'sales' then
+      v_table := 'sales'; v_child_table := 'sales_items'; v_parent_column := 'sales_id';
+      v_permission := 'sales.create';
+      v_allowed_header := array['invoice_id','customer_id','invoice_date','subtotal','discount_amount','total_amount','receivable_account_id'];
+      v_child_columns := array['line_number','product_id','quantity','unit_price','line_total'];
+    when 'expense' then
+      v_table := 'expenses'; v_permission := 'expenses.manage';
+      v_allowed_header := array['expense_number','expense_category_id','contact_id','payable_account_id','expense_date','amount','description'];
+      v_child_columns := array[]::text[];
+    when 'payment' then
+      v_table := 'payments'; v_child_table := 'payment_allocations'; v_parent_column := 'payment_id';
+      v_permission := 'payments.manage';
+      v_allowed_header := array['payment_number','payment_type','contact_id','payment_date','amount','account_id','settlement_account_id','description'];
+      v_child_columns := array['document_type','document_id','allocated_amount'];
+    when 'purchase_return' then
+      v_table := 'purchase_returns'; v_child_table := 'purchase_return_items'; v_parent_column := 'purchase_return_id';
+      v_permission := 'purchases.returns.create';
+      v_allowed_header := array['return_number','purchase_id','supplier_id','return_date','subtotal','discount_amount','total_amount','payable_account_id','purchase_return_variance_account_id'];
+      v_child_columns := array['line_number','purchase_item_id','product_id','quantity','unit_cost','line_total'];
+    when 'sales_return' then
+      v_table := 'sales_returns'; v_child_table := 'sales_return_items'; v_parent_column := 'sales_return_id';
+      v_permission := 'sales.returns.create';
+      v_allowed_header := array['return_number','sales_id','customer_id','return_date','subtotal','discount_amount','total_amount','receivable_account_id'];
+      v_child_columns := array['line_number','sales_item_id','product_id','quantity','unit_price','line_total'];
+    when 'journal_entry' then
+      v_table := 'journal_entries'; v_child_table := 'account_transactions'; v_parent_column := 'journal_entry_id';
+      v_permission := 'journal_entries.create';
+      v_allowed_header := array['entry_number','accounting_period_id','entry_date','entry_type','reference_type','reference_id','description'];
+      v_child_columns := array['account_id','line_number','description','debit','credit','contact_id'];
+    else
+      raise exception using errcode = '22023', message = 'Unsupported transaction document type.';
+  end case;
+
+  if not public.has_org_permission(p_organization_id, v_permission) then
+    raise exception using errcode = '42501', message = 'You do not have permission to create or update this draft document.';
+  end if;
+
+  if p_document_type = 'journal_entry' then
+    if p_header ? 'entry_type' and p_header->>'entry_type' <> 'manual' then
+      raise exception using errcode = '22023', message = 'User-created draft journal entries must have entry_type manual.';
+    end if;
+    p_header := p_header || pg_catalog.jsonb_build_object('entry_type', 'manual');
+  end if;
+
+  for v_key in select pg_catalog.jsonb_object_keys(p_header)
+  loop
+    if not (v_key = any(v_allowed_header)) then
+      raise exception using errcode = '22023', message = pg_catalog.format('Header field %s is not editable through this draft function.', v_key);
+    end if;
+  end loop;
+
+  if p_document_id is null then
+    if pg_catalog.jsonb_object_length(p_header) = 0 then
+      raise exception using errcode = '22023', message = 'A new draft requires header fields.';
+    end if;
+    select
+      pg_catalog.string_agg(pg_catalog.format('%I', k), ', ' order by k),
+      pg_catalog.string_agg(
+        pg_catalog.format('(pg_catalog.jsonb_populate_record(null::public.%I, $3)).%I', v_table, k),
+        ', ' order by k
+      )
+    into v_columns, v_values
+    from pg_catalog.jsonb_object_keys(p_header) as keys(k);
+
+    v_sql := pg_catalog.format(
+      'insert into public.%I (id, organization_id, created_by, %s) values ($1, $2, $4, %s)',
+      v_table, v_columns, v_values
+    );
+    execute v_sql using v_document_id, p_organization_id, p_header, v_user_id;
+  else
+    execute pg_catalog.format(
+      'select status from public.%I where organization_id = $1 and id = $2 for update', v_table
+    ) into v_status using p_organization_id, v_document_id;
+    if v_status is null then
+      raise exception using errcode = '23503', message = 'Draft document was not found in this organization.';
+    end if;
+    if v_status <> 'draft' then
+      raise exception using errcode = '23514', message = 'Only draft documents can be edited.';
+    end if;
+
+    select pg_catalog.string_agg(
+      pg_catalog.format('%I = (pg_catalog.jsonb_populate_record(null::public.%I, $3)).%I', k, v_table, k),
+      ', ' order by k
+    )
+    into v_set_clause
+    from pg_catalog.jsonb_object_keys(p_header) as keys(k);
+
+    if v_set_clause is null then
+      v_set_clause := 'updated_at = pg_catalog.now()';
+    else
+      v_set_clause := v_set_clause || ', updated_at = pg_catalog.now()';
+    end if;
+    execute pg_catalog.format(
+      'update public.%I set %s where organization_id = $1 and id = $2 and status = ''draft''',
+      v_table, v_set_clause
+    ) using p_organization_id, v_document_id, p_header;
+  end if;
+
+  if v_child_table is null then
+    if pg_catalog.jsonb_array_length(p_items) > 0 then
+      raise exception using errcode = '22023', message = 'This document type does not accept line items.';
+    end if;
+  else
+    execute pg_catalog.format(
+      'delete from public.%I where organization_id = $1 and %I = $2',
+      v_child_table, v_parent_column
+    ) using p_organization_id, v_document_id;
+
+    if pg_catalog.jsonb_array_length(p_items) > 0 then
+      select
+        pg_catalog.string_agg(pg_catalog.format('%I', c), ', ' order by ord),
+        pg_catalog.string_agg(pg_catalog.format('x.%I', c), ', ' order by ord)
+      into v_child_column_list, v_child_value_list
+      from pg_catalog.unnest(v_child_columns) with ordinality as cols(c, ord);
+
+      v_sql := pg_catalog.format(
+        'insert into public.%I (id, organization_id, %I, %s) ' ||
+        'select pg_catalog.gen_random_uuid(), $1, $2, %s ' ||
+        'from pg_catalog.jsonb_populate_recordset(null::public.%I, $3) as x',
+        v_child_table, v_parent_column, v_child_column_list, v_child_value_list, v_child_table
+      );
+      execute v_sql using p_organization_id, v_document_id, p_items;
+    end if;
+  end if;
+
+  return v_document_id;
+end;
+$function$;
+
+revoke all on function public.save_draft_transaction_document(uuid, text, jsonb, jsonb, uuid) from public, anon;
+grant execute on function public.save_draft_transaction_document(uuid, text, jsonb, jsonb, uuid) to authenticated;
+
 create or replace function public.confirm_transaction_document(
   p_organization_id uuid,
   p_document_type text,
@@ -3113,8 +3295,8 @@ begin
     when 'sales' then v_table := 'sales'; v_permission := 'sales.create';
     when 'expense' then v_table := 'expenses'; v_permission := 'expenses.manage';
     when 'payment' then v_table := 'payments'; v_permission := 'payments.manage';
-    when 'purchase_return' then v_table := 'purchase_returns'; v_permission := 'purchases.returns.post';
-    when 'sales_return' then v_table := 'sales_returns'; v_permission := 'sales.returns.post';
+    when 'purchase_return' then v_table := 'purchase_returns'; v_permission := 'purchases.returns.create';
+    when 'sales_return' then v_table := 'sales_returns'; v_permission := 'sales.returns.create';
     when 'journal_entry' then v_table := 'journal_entries'; v_permission := 'journal_entries.create';
     else raise exception using errcode = '22023', message = 'Unsupported transaction document type.';
   end case;
@@ -3129,6 +3311,18 @@ begin
   end if;
   if v_status <> 'draft' then
     raise exception using errcode = '23514', message = 'Only draft documents can be deleted; confirmed documents must first be reverted to draft.';
+  end if;
+
+
+  if p_document_type in ('purchase', 'purchase_return', 'sales', 'sales_return', 'expense')
+     and exists (
+       select 1 from public.payment_allocations pa
+       where pa.organization_id = p_organization_id
+         and pa.document_type = p_document_type
+         and pa.document_id = p_document_id
+     ) then
+    raise exception using errcode = '23514',
+      message = 'This draft document has payment allocations; remove or reassign those allocations before deleting it.';
   end if;
 
   case p_document_type
