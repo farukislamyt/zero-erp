@@ -253,6 +253,8 @@ The database must enforce the following integrity rules using foreign keys, uniq
 
 ### Inventory integrity
 - Use positive quantities for movement magnitude and store direction separately, or define and enforce one consistent sign convention.
+- The `inventory_balances` table now rejects negative quantity and inventory value at the database constraint layer. Posting RPCs also consume the exact remaining inventory value when a movement exhausts the balance, preventing a rounding residue from remaining against zero quantity.
+- Opening inventory must be initialized before operational ledger or inventory posting; subsequent corrections must use controlled adjustments (an adjustment RPC remains planned).
 - Prevent accidental duplicate inventory movements for the same source document/line.
 - Reconcile inventory movement history with `inventory_balances`; update both atomically.
 - Decide and document costing method, rounding, negative-stock policy, return costing, and treatment of non-inventory products.
@@ -265,30 +267,30 @@ The database must enforce the following integrity rules using foreign keys, uniq
 
 ## 8. Required RPC contracts
 
-These RPC contracts define the database operations exposed to the application. Each function must be implemented in PostgreSQL, secured with explicit grants, and tested before the corresponding application workflow is enabled. Call a function through `supabase.rpc(...)` using its implemented signature.
+Status note: this table distinguishes functions implemented in the current canonical bootstrap from planned contracts. Only rows marked **Implemented** are callable today; planned rows must not be wired into the application until their SQL implementation, grants, and tests are added. Call implemented functions through `supabase.rpc(...)` using their actual signatures.
 
-| RPC contract | Purpose | Required guarantees |
+| Status | RPC contract | Purpose | Required guarantees |
 | --- | --- | --- |
-| `create_organization_with_admin(p_name, ...)` | Create organization, protected Administrator role, role-permission links, and creator membership | Single transaction; derive creator from `auth.uid()`; never accept arbitrary creator user ID from an untrusted client |
-| `assign_member_role(p_membership_id, p_role_id)` | Assign a role to an organization membership | Caller must be authorized Administrator; role and membership must belong to the same organization |
-| `create_custom_role(p_organization_id, p_name, p_status)` | Create organization-scoped custom role | Verify caller membership and role-management permission; enforce unique organization/name |
-| `set_role_permissions(p_role_id, p_permission_ids)` | Replace/update permissions on a custom role | Validate each permission against global catalog; block unsafe modification of protected Administrator role |
-| `save_draft_transaction_document(p_organization_id, p_document_type, p_header, p_items, p_document_id)` | Create or update Draft purchase, sales, expense, payment, return, or manual journal documents | Whitelisted fields and child rows only; organization membership and create/manage permission required; only Draft records can be edited; omitting `p_items` preserves existing lines |
-| `confirm_transaction_document(p_organization_id, p_document_type, p_document_id)` | Confirm a supported draft transaction document | Enforce per-type permission, tenant scope, draft-only transition, document totals, return source/quantity limits, expense mappings, and payment account configuration; no ledger or inventory impact |
-| `revert_transaction_document_to_draft(p_organization_id, p_document_type, p_document_id)` | Unlock a confirmed document for correction | Confirmed-only transition; retain the last confirmation timestamp/actor for audit; no ledger or inventory impact |
-| `void_transaction_document(p_organization_id, p_document_type, p_document_id, p_reason)` | Cancel an unposted document | Draft/confirmed only; require a reason; retain audit metadata; never void posted documents |
-| `delete_draft_transaction_document(p_organization_id, p_document_type, p_document_id)` | Hard-delete a draft and its draft-only child rows | Draft-only; permission checked; posted/confirmed/void records cannot be deleted |
-| `post_confirmed_journal_entry(p_organization_id, p_journal_entry_id)` | Post a confirmed manual journal entry | Confirmed-only; validates open period, date, active/postable accounts and contacts, balanced lines, and posting permission; marks posted atomically |
-| `reverse_journal_entry(p_organization_id, p_journal_entry_id, p_reversal_date, p_reason)` | Reverse a posted manual journal, expense, payment, or posted return | Creates a balanced reversal journal, retains both entries, records reversal audit metadata, and reverses return inventory movements atomically; sales-return reversal is blocked if returned stock has already been consumed |
-| `post_opening_balances(p_organization_id, p_accounting_period_id, p_entry_date, p_account_lines, p_party_balances, p_inventory_lines, p_description)` | One-time organization opening balance initialization using existing tables only | Derive customer receivables and supplier payables from contact-tagged control-account lines; derive inventory value from product opening quantities/costs; balance the journal; lock the organization/period; initialize stock; reject duplicate opening posts; commit all effects atomically |
-| `post_contact_payment(p_organization_id, p_payment_id, p_accounting_period_id)` | Post customer receipts, supplier payments, bank transfers, and customer/supplier refunds | Validates active cash/bank and control accounts, contact balances for receipts/payments/refunds, open period, and permissions; posts balanced journal lines atomically. The current ledger is contact-wise, not invoice-wise; invoice allocations are deliberately rejected until an invoice-level subledger is implemented |
-| `post_sales(p_organization_id, p_sales_id)` | Post a confirmed sales invoice to customer receivables, revenue, COGS and inventory | Confirmed-only; debit the receivable asset control account with the customer contact; credit product revenue accounts; calculate COGS from locked weighted-average stock cost; reduce inventory and write stock movements atomically |
-| `post_purchase(p_organization_id, p_purchase_id)` | Post a confirmed purchase and associated inventory/accounting effects | Confirmed-only; validate supplier, lines, accounts and open period; atomically create weighted-average stock and ledger effects |
-| `post_expense(p_organization_id, p_expense_id)` | Post a confirmed expense | Debit the active expense-category account and credit the configured liability/payable account; validate optional contact, open period, and posting permission |
-| `post_purchase_return(p_organization_id, p_purchase_return_id)` | Post a confirmed purchase return | Validate original purchase and unreturned item quantities; reduce stock at current weighted-average carrying value; debit supplier payable; post the price difference to a configured revenue/expense variance account; update source purchase return status atomically |
-| `post_sales_return(p_organization_id, p_sales_return_id)` | Post a confirmed sales return | Validate original sale and unreturned item quantities; debit sales revenue and inventory, credit customer receivable and COGS; restore stock at original sale COGS atomically |
-| `close_accounting_period(p_period_id)` | Close a period | Require permission; validate unresolved/posting rules; record who/when closed |
-| `next_document_number(p_organization_id, p_document_type)` | Allocate the next document number | Use row locking or an atomic sequence operation to avoid duplicates under concurrency |
+| Implemented | `create_organization_with_admin(p_name, ...)` | Create organization, protected Administrator role, role-permission links, and creator membership | Single transaction; derive creator from `auth.uid()`; never accept arbitrary creator user ID from an untrusted client |
+| Planned | `assign_member_role(p_membership_id, p_role_id)` | Assign a role to an organization membership | Caller must be authorized Administrator; role and membership must belong to the same organization |
+| Planned | `create_custom_role(p_organization_id, p_name, p_status)` | Create organization-scoped custom role | Verify caller membership and role-management permission; enforce unique organization/name |
+| Planned | `set_role_permissions(p_role_id, p_permission_ids)` | Replace/update permissions on a custom role | Validate each permission against global catalog; block unsafe modification of protected Administrator role |
+| Implemented | `save_draft_transaction_document(p_organization_id, p_document_type, p_header, p_items, p_document_id)` | Create or update Draft purchase, sales, expense, payment, return, or manual journal documents | Whitelisted fields and child rows only; organization membership and create/manage permission required; only Draft records can be edited; omitting `p_items` preserves existing lines |
+| Implemented | `confirm_transaction_document(p_organization_id, p_document_type, p_document_id)` | Confirm a supported draft transaction document | Enforce per-type permission, tenant scope, draft-only transition, document totals, return source/quantity limits, expense mappings, and payment account configuration; no ledger or inventory impact |
+| Implemented | `revert_transaction_document_to_draft(p_organization_id, p_document_type, p_document_id)` | Unlock a confirmed document for correction | Confirmed-only transition; retain the last confirmation timestamp/actor for audit; no ledger or inventory impact |
+| Implemented | `void_transaction_document(p_organization_id, p_document_type, p_document_id, p_reason)` | Cancel an unposted document | Draft/confirmed only; require a reason; retain audit metadata; never void posted documents |
+| Implemented | `delete_draft_transaction_document(p_organization_id, p_document_type, p_document_id)` | Hard-delete a draft and its draft-only child rows | Draft-only; permission checked; posted/confirmed/void records cannot be deleted |
+| Implemented | `post_confirmed_journal_entry(p_organization_id, p_journal_entry_id)` | Post a confirmed manual journal entry | Confirmed-only; validates open period, date, active/postable accounts and contacts, balanced lines, and posting permission; marks posted atomically |
+| Implemented | `reverse_journal_entry(p_organization_id, p_journal_entry_id, p_reversal_date, p_reason)` | Reverse a posted manual journal, expense, payment, or posted return | Creates a balanced reversal journal, retains both entries, records reversal audit metadata, and reverses return inventory movements atomically; sales-return reversal is blocked if returned stock has already been consumed |
+| Implemented | `post_opening_balances(p_organization_id, p_accounting_period_id, p_entry_date, p_account_lines, p_party_balances, p_inventory_lines, p_description)` | One-time organization opening balance initialization using existing tables only | Derive customer receivables and supplier payables from contact-tagged control-account lines; derive inventory value from product opening quantities/costs; balance the journal; lock the organization/period; initialize stock; reject duplicate opening posts; commit all effects atomically |
+| Implemented | `post_contact_payment(p_organization_id, p_payment_id, p_accounting_period_id)` | Post customer receipts, supplier payments, bank transfers, and customer/supplier refunds | Validates active cash/bank and control accounts, contact balances for receipts/payments/refunds, open period, and permissions; posts balanced journal lines atomically. The current ledger is contact-wise, not invoice-wise; invoice allocations are deliberately rejected until an invoice-level subledger is implemented |
+| Implemented | `post_sales(p_organization_id, p_sales_id)` | Post a confirmed sales invoice to customer receivables, revenue, COGS and inventory | Confirmed-only; debit the receivable asset control account with the customer contact; credit product revenue accounts; calculate COGS from locked weighted-average stock cost; reduce inventory and write stock movements atomically |
+| Implemented | `post_purchase(p_organization_id, p_purchase_id)` | Post a confirmed purchase and associated inventory/accounting effects | Confirmed-only; validate supplier, lines, accounts and open period; atomically create weighted-average stock and ledger effects |
+| Implemented | `post_expense(p_organization_id, p_expense_id)` | Post a confirmed expense | Debit the active expense-category account and credit the configured liability/payable account; validate optional contact, open period, and posting permission |
+| Implemented | `post_purchase_return(p_organization_id, p_purchase_return_id)` | Post a confirmed purchase return | Validate original purchase and unreturned item quantities; reduce stock at current weighted-average carrying value; debit supplier payable; post the price difference to a configured revenue/expense variance account; update source purchase return status atomically |
+| Implemented | `post_sales_return(p_organization_id, p_sales_return_id)` | Post a confirmed sales return | Validate original sale and unreturned item quantities; debit sales revenue and inventory, credit customer receivable and COGS; restore stock at original sale COGS atomically |
+| Planned | `close_accounting_period(p_period_id)` | Close a period | Require permission; validate unresolved/posting rules; record who/when closed |
+| Implemented (not yet wired into document save/posting flows) | `next_document_number(p_organization_id, p_document_type)` | Allocate the next document number | Use row locking or an atomic sequence operation to avoid duplicates under concurrency |
 
 ### RPC security rules
 1. For user-facing operations, derive the actor from `auth.uid()` and resolve active membership server-side; do not trust a client-provided user ID.
@@ -299,14 +301,15 @@ These RPC contracts define the database operations exposed to the application. E
 6. Avoid accepting arbitrary `organization_id` as authority. If it is an input, prove the caller is an active member with the required permission in that organization.
 7. Test unauthorized callers, cross-tenant IDs, duplicate calls, concurrent calls, and rollback behavior.
 
-## 9. Required Row-Level Security (RLS) policies
+## 9. Row-Level Security (RLS) policy contract and current implementation
 
 The policies below define the required access-control behavior for Supabase-exposed tables. Enable RLS on every tenant-owned table and verify the resulting policies in PostgreSQL as part of deployment and regression testing.
 
 ### Baseline approach
 
 - Enable RLS on every organization-owned table exposed through the Supabase Data API.
-- For ordinary business tables, authorize access only when the request user has an active `organization_users` membership for the row's `organization_id`.
+- For ordinary business tables, require both active membership and the table/module's corresponding `.read` permission. The bootstrap policies now enforce this for organization, users, roles, accounting periods, accounts, contacts, products/units, purchases, sales, expenses, payments, journals, and inventory.
+- A member can read their own `organization_users` membership row; reading other memberships requires `users.read`. Reading roles and role-permission links requires `roles.read`.
 - For writes, also validate the requested action's permission and ensure referenced rows belong to the same organization.
 - Use both `USING` and `WITH CHECK` where appropriate. `USING` controls which existing rows can be read/updated/deleted; `WITH CHECK` validates inserted or updated row values.
 - Deny by default. Do not add broad `TO authenticated USING (true)` policies to tenant data.
@@ -326,7 +329,7 @@ The policies below define the required access-control behavior for Supabase-expo
 | `payment_allocations` | Membership in allocation's organization | Authorized payment workflow; validate payment and target document tenant | Controlled payment workflow | Controlled unallocation only if accounting rules allow |
 | Polymorphic references | Read through parent row's organization | Validate `document_type`, target existence, and organization in trusted code/RPC | Controlled workflow | Controlled workflow |
 
-Implement each matrix row as explicit PostgreSQL policies and secure helper functions using the project's actual auth and membership columns. Keep the policy predicates consistent across parent tables, child tables, and join tables.
+Implementation note: the canonical bootstrap now implements the read-permission predicates described above. Browser-role writes remain revoked and must go through the existing permission-checked RPCs. The matrix's INSERT/UPDATE/DELETE entries are policy requirements for any future direct-write design, not grants currently exposed to browser roles. Keep parent/child policy predicates consistent and add regression tests for each permission key.
 
 ### Membership predicate pattern
 
@@ -500,3 +503,26 @@ All three membership RPCs require active organization membership and `users.mana
 ### Verification boundary
 
 The SQL file remains a one-time bootstrap for a new, empty Supabase database. Do not execute it against a populated project. This review was static; PostgreSQL execution, Supabase deployment, concurrency testing, and end-to-end application testing have not been performed.
+
+## 10. Current audit fixes and remaining scope
+
+### Implemented in the canonical bootstrap
+
+- RLS SELECT policies now require the relevant module `.read` permission in addition to tenant membership (self-membership remains readable); child rows inherit the parent module's read permission.
+- Payment/refund balance calculations include only posted or reversed journal entries, excluding draft and confirmed manual journal lines.
+- Opening balances are rejected after operational ledger or inventory activity and cannot use receivable/payable control accounts as ordinary untagged GL lines.
+- Payment posting locks the contact before the accounting period, matching the contact-then-period order used by sales/expense posting.
+- Sales stock depletion and purchase-return depletion consume the exact remaining inventory value when the movement takes the product quantity to zero; inventory balance constraints prohibit negative quantity/value.
+- Account hierarchy cycle checks and explicit revokes for trigger-only SECURITY DEFINER functions are installed.
+- `next_document_number` allocates a number atomically under the organization's sequence row and checks the relevant document-create/manage permission. It is not yet integrated into existing draft-save/posting RPCs; current callers must not assume automatic numbering.
+
+### Explicitly deferred (not implemented)
+
+- Invoice-level payment allocations and invoice-wise outstanding balances.
+- Custom role creation/permission editing and role assignment RPCs beyond the existing membership role-update workflow.
+- Accounting-period close RPC and inventory-adjustment posting RPC.
+- Automatic number allocation inside document creation flows.
+- A formal line-level allocation of invoice-wide sales discounts for partial sales returns. Until this policy is implemented, partial-return discount behavior requires product/accounting acceptance testing before production use.
+- Opening customer-credit and supplier-debit balances in the contact subledger; the current opening-balance contract represents customer receivables and supplier payables only.
+
+The SQL remains a one-time bootstrap for an empty database, not a migration to apply over an existing populated database. No live Supabase project has been changed by this repository edit.
