@@ -34,7 +34,7 @@ All SECURITY DEFINER functions in the effective migration set specify an empty s
 
 1. **Tenant model:** organization-scoped records and composite organization-scoped foreign keys protect many cross-table references.
 2. **Membership/RBAC:** Supabase Auth identities are linked through `organization_users`; each membership has one role; `roles`, `permissions` and `role_permissions` implement RBAC.
-3. **Permanent Creator Administrator:** the original creator membership is anchored by matching its `created_at` to `organizations.created_at`. Migration 0200 rejects every UPDATE/DELETE of that membership, rejects later Administrator assignments, protects the system Administrator role, and drops the transfer RPC.
+3. **Permanent Creator Administrator:** the original creator membership is anchored by matching its `created_at` to `organizations.created_at`. The consolidated SQL rejects every UPDATE/DELETE of that membership, rejects later Administrator assignments, protects the system Administrator role, and drops the transfer RPC.
 4. **Single active company membership:** a partial unique index limits each Auth user to one active organization membership.
 5. **Master data:** `save_master_data` supports account, unit, contact, product and expense-category entities with per-entity permission and field validation.
 6. **Organization profile:** `update_organization_profile` exists and validates supported profile values, including currency/timezone.
