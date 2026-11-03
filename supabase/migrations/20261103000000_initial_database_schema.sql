@@ -6815,6 +6815,13 @@ begin
     raise exception using errcode = '23503', message = 'Active organization was not found.';
   end if;
 
+  -- Re-check after acquiring the organization row lock. A concurrent handover
+  -- may have revoked the caller's Administrator status while this RPC waited.
+  if not public.is_org_administrator(p_organization_id) then
+    raise exception using errcode = '42501',
+      message = 'Only the active organization Administrator can perform administrative operations.';
+  end if;
+
   if not exists (
     select 1 from public.roles r
     where r.organization_id = p_organization_id
@@ -6865,6 +6872,13 @@ begin
   for update;
   if not found then
     raise exception using errcode = '23503', message = 'Active organization was not found.';
+  end if;
+
+  -- Re-check after acquiring the organization row lock. A concurrent handover
+  -- may have revoked the caller's Administrator status while this RPC waited.
+  if not public.is_org_administrator(p_organization_id) then
+    raise exception using errcode = '42501',
+      message = 'Only the active organization Administrator can perform administrative operations.';
   end if;
 
   if not exists (
@@ -6970,6 +6984,13 @@ begin
     raise exception using errcode = '23503', message = 'Active organization was not found.';
   end if;
 
+  -- Re-check after acquiring the organization row lock. A concurrent handover
+  -- may have revoked the caller's Administrator status while this RPC waited.
+  if not public.is_org_administrator(p_organization_id) then
+    raise exception using errcode = '42501',
+      message = 'Only the active organization Administrator can perform administrative operations.';
+  end if;
+
   if not exists (
     select 1 from public.roles r
     where r.organization_id = p_organization_id
@@ -7021,6 +7042,13 @@ begin
   for update;
   if not found then
     raise exception using errcode = '23503', message = 'Active organization was not found.';
+  end if;
+
+  -- Re-check after acquiring the organization row lock. A concurrent handover
+  -- may have revoked the caller's Administrator status while this RPC waited.
+  if not public.is_org_administrator(p_organization_id) then
+    raise exception using errcode = '42501',
+      message = 'Only the active organization Administrator can perform administrative operations.';
   end if;
 
   select ou.role_id, r.is_system_role
@@ -7088,6 +7116,13 @@ begin
   for update;
   if not found then
     raise exception using errcode = '23503', message = 'Active organization was not found.';
+  end if;
+
+  -- Re-check after acquiring the organization row lock. A concurrent handover
+  -- may have revoked the caller's Administrator status while this RPC waited.
+  if not public.is_org_administrator(p_organization_id) then
+    raise exception using errcode = '42501',
+      message = 'Only the active organization Administrator can perform administrative operations.';
   end if;
 
   select ou.id, ou.role_id
@@ -7173,6 +7208,13 @@ begin
     raise exception using errcode = '23503', message = 'Active organization was not found.';
   end if;
 
+  -- Re-check after acquiring the organization row lock. A concurrent handover
+  -- may have revoked the caller's Administrator status while this RPC waited.
+  if not public.is_org_administrator(p_organization_id) then
+    raise exception using errcode = '42501',
+      message = 'Only the active organization Administrator can perform administrative operations.';
+  end if;
+
   if exists (
     select 1 from unnest(p_permission_keys) as x(permission_key)
     where x.permission_key in ('users.manage', 'roles.manage')
@@ -7244,6 +7286,13 @@ begin
     raise exception using errcode = '23503', message = 'Active organization was not found.';
   end if;
 
+  -- Re-check after acquiring the organization row lock. A concurrent handover
+  -- may have revoked the caller's Administrator status while this RPC waited.
+  if not public.is_org_administrator(p_organization_id) then
+    raise exception using errcode = '42501',
+      message = 'Only the active organization Administrator can perform administrative operations.';
+  end if;
+
   select r.is_system_role into v_system
   from public.roles r
   where r.organization_id = p_organization_id
@@ -7310,6 +7359,13 @@ begin
     raise exception using errcode = '23503', message = 'Active organization was not found.';
   end if;
 
+  -- Re-check after acquiring the organization row lock. A concurrent handover
+  -- may have revoked the caller's Administrator status while this RPC waited.
+  if not public.is_org_administrator(p_organization_id) then
+    raise exception using errcode = '42501',
+      message = 'Only the active organization Administrator can perform administrative operations.';
+  end if;
+
   select r.is_system_role into v_system
   from public.roles r
   where r.organization_id = p_organization_id and r.id = p_role_id
@@ -7365,6 +7421,20 @@ begin
      or not public.is_org_administrator(p_organization_id) then
     raise exception using errcode = '42501',
       message = 'Only the organization Administrator can update company details.';
+  end if;
+  
+  -- Serialize profile writes with Administrator handover and re-check authority
+  -- after acquiring the organization row lock.
+  perform 1 from public.organizations o
+  where o.id = p_organization_id and o.is_active
+  for update;
+  if not found then
+    raise exception using errcode = '23503',
+      message = 'Active organization was not found.';
+  end if;
+  if not public.is_org_administrator(p_organization_id) then
+    raise exception using errcode = '42501',
+      message = 'Only the active organization Administrator can update company details.';
   end if;
 
   if p_name is null
