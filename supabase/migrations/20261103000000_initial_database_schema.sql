@@ -1096,7 +1096,7 @@ values
   ('organization.read', 'View organization', 'View organization profile and settings.', 'organization'),
   ('organization.update', 'Update organization', 'Update organization profile and settings.', 'organization'),
   ('users.read', 'View members', 'View organization memberships.', 'users'),
-  ('users.manage', 'Manage members', 'Invite, deactivate, and assign roles to members.', 'users'),
+  ('users.manage', 'Manage members', 'Add existing verified users, deactivate members, and assign organization roles.', 'users'),
   ('roles.read', 'View roles', 'View organization roles and their permissions.', 'roles'),
   ('roles.manage', 'Manage roles', 'Create and update organization-specific custom roles.', 'roles'),
   ('opening_balances.post', 'Post opening balances', 'Post an organization''s one-time general ledger, party, and inventory opening balances.', 'accounting'),
