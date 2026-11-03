@@ -95,61 +95,6 @@ create table public.role_permissions (
   constraint role_permissions_role_permission_uq unique (role_id, permission_id)
 );
 
-create table public.accounting_periods (
-  id uuid primary key default pg_catalog.gen_random_uuid(),
-  organization_id uuid not null references public.organizations(id) on delete restrict,
-  name text not null check (pg_catalog.length(pg_catalog.btrim(name)) between 1 and 100),
-  start_date date not null,
-  end_date date not null,
-  status text not null default 'open' check (status in ('open', 'closed')),
-  closed_at timestamptz,
-  closed_by uuid references auth.users(id) on delete set null,
-  created_at timestamptz not null default pg_catalog.now(),
-  updated_at timestamptz not null default pg_catalog.now(),
-  constraint accounting_periods_date_range_chk check (end_date >= start_date),
-  constraint accounting_periods_org_id_id_uq unique (organization_id, id),
-  constraint accounting_periods_org_name_uq unique (organization_id, name),
-  constraint accounting_periods_closed_state_chk
-    check ((status = 'open' and closed_at is null and closed_by is null)
-      or (status = 'closed' and closed_at is not null))
-);
-
--- Prevent overlapping accounting periods within an organization. Locking the
--- organization row serializes concurrent inserts/updates for the same tenant.
-create or replace function public.prevent_overlapping_accounting_periods()
-returns trigger
-language plpgsql
-security definer
-set search_path = ''
-as $function$
-begin
-  perform 1
-  from public.organizations o
-  where o.id = new.organization_id
-  for update;
-
-  if exists (
-    select 1 from public.accounting_periods ap
-    where ap.organization_id = new.organization_id
-      and ap.id is distinct from new.id
-      and new.start_date <= ap.end_date
-      and new.end_date >= ap.start_date
-  ) then
-    raise exception using
-      errcode = '23514',
-      message = 'Accounting periods in the same organization cannot overlap.';
-  end if;
-
-  return new;
-end;
-$function$;
-
-revoke all on function public.prevent_overlapping_accounting_periods() from public, anon, authenticated;
-
-create trigger accounting_periods_prevent_overlap
-before insert or update of organization_id, start_date, end_date
-on public.accounting_periods
-for each row execute function public.prevent_overlapping_accounting_periods();
 create table public.accounts (
   id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete restrict,
@@ -302,8 +247,6 @@ create index organization_users_role_idx
   on public.organization_users (role_id);
 create index roles_org_status_idx on public.roles (organization_id, status);
 create index role_permissions_permission_idx on public.role_permissions (permission_id);
-create index accounting_periods_org_dates_idx
-  on public.accounting_periods (organization_id, start_date, end_date);
 create index accounts_org_parent_idx on public.accounts (organization_id, parent_account_id);
 create index contacts_org_name_idx on public.contacts (organization_id, name);
 create index products_org_name_idx on public.products (organization_id, name);
@@ -317,8 +260,6 @@ for each row execute function public.set_updated_at();
 create trigger permissions_set_updated_at before update on public.permissions
 for each row execute function public.set_updated_at();
 create trigger organization_users_set_updated_at before update on public.organization_users
-for each row execute function public.set_updated_at();
-create trigger accounting_periods_set_updated_at before update on public.accounting_periods
 for each row execute function public.set_updated_at();
 create trigger accounts_set_updated_at before update on public.accounts
 for each row execute function public.set_updated_at();
@@ -392,7 +333,6 @@ alter table public.organization_users enable row level security;
 alter table public.roles enable row level security;
 alter table public.permissions enable row level security;
 alter table public.role_permissions enable row level security;
-alter table public.accounting_periods enable row level security;
 alter table public.accounts enable row level security;
 alter table public.units_of_measure enable row level security;
 alter table public.contacts enable row level security;
@@ -429,9 +369,6 @@ create policy role_permissions_select_member
     )
   );
 
-create policy accounting_periods_select_member
-  on public.accounting_periods for select to authenticated
-  using (public.has_org_permission(organization_id, 'accounting_periods.read'));
 
 create policy accounts_select_member
   on public.accounts for select to authenticated
@@ -460,13 +397,13 @@ create policy number_sequences_select_member
 -- Remove default privileges from anon and keep writes unavailable to browser roles
 -- until permission-checked RPC contracts are implemented.
 revoke all on public.organizations, public.organization_users, public.roles,
-  public.permissions, public.role_permissions, public.accounting_periods,
+  public.permissions, public.role_permissions,
   public.accounts, public.units_of_measure, public.contacts, public.products,
   public.expense_categories, public.number_sequences
 from anon, authenticated;
 
 grant select on public.organizations, public.organization_users, public.roles,
-  public.permissions, public.role_permissions, public.accounting_periods,
+  public.permissions, public.role_permissions,
   public.accounts, public.units_of_measure, public.contacts, public.products,
   public.expense_categories, public.number_sequences
 to authenticated;
@@ -484,7 +421,6 @@ create table public.journal_entries (
   id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete restrict,
   entry_number text not null check (pg_catalog.length(pg_catalog.btrim(entry_number)) between 1 and 80),
-  accounting_period_id uuid not null,
   entry_date date not null,
   entry_type text not null
     check (entry_type in ('manual', 'purchase', 'purchase_return', 'sale', 'sales_return', 'expense', 'payment', 'reversal', 'opening_balance', 'adjustment')),
@@ -509,10 +445,6 @@ create table public.journal_entries (
   updated_at timestamptz not null default pg_catalog.now(),
   constraint journal_entries_org_id_id_uq unique (organization_id, id),
   constraint journal_entries_org_number_uq unique (organization_id, entry_number),
-  constraint journal_entries_period_same_org_fk
-    foreign key (organization_id, accounting_period_id)
-    references public.accounting_periods (organization_id, id)
-    on delete restrict,
   constraint journal_entries_reversal_same_org_fk
     foreign key (organization_id, reversal_of_id)
     references public.journal_entries (organization_id, id)
@@ -1045,7 +977,6 @@ alter table public.payments
 -- Index FK columns and common tenant/date/status access paths.
 create index journal_entries_org_date_idx on public.journal_entries (organization_id, entry_date desc);
 create index journal_entries_org_status_idx on public.journal_entries (organization_id, status);
-create index journal_entries_period_idx on public.journal_entries (organization_id, accounting_period_id);
 create unique index journal_entries_one_reversal_per_entry_uq
   on public.journal_entries (organization_id, reversal_of_id) where reversal_of_id is not null;
 create index account_transactions_account_idx on public.account_transactions (organization_id, account_id);
@@ -1168,8 +1099,6 @@ values
   ('users.manage', 'Manage members', 'Invite, deactivate, and assign roles to members.', 'users'),
   ('roles.read', 'View roles', 'View organization roles and their permissions.', 'roles'),
   ('roles.manage', 'Manage roles', 'Create and update organization-specific custom roles.', 'roles'),
-  ('accounting_periods.read', 'View accounting periods', 'View accounting periods.', 'accounting'),
-  ('accounting_periods.manage', 'Manage accounting periods', 'Create and close accounting periods.', 'accounting'),
   ('opening_balances.post', 'Post opening balances', 'Post an organization''s one-time general ledger, party, and inventory opening balances.', 'accounting'),
   ('accounts.read', 'View chart of accounts', 'View accounts and account hierarchy.', 'accounting'),
   ('accounts.manage', 'Manage chart of accounts', 'Create and update chart of accounts.', 'accounting'),
@@ -1608,7 +1537,6 @@ grant execute on function public.set_organization_user_active(uuid, uuid, boolea
 create or replace function public.post_manual_journal_entry(
   p_organization_id uuid,
   p_entry_number text,
-  p_accounting_period_id uuid,
   p_entry_date date,
   p_description text,
   p_lines jsonb
@@ -1621,9 +1549,6 @@ as $$
 declare
   v_user_id uuid;
   v_journal_entry_id uuid;
-  v_period_status text;
-  v_period_start date;
-  v_period_end date;
   v_line_count integer;
   v_invalid_line_count integer;
   v_debit_total numeric(20, 4);
@@ -1662,29 +1587,6 @@ begin
   if pg_catalog.jsonb_array_length(p_lines) < 2 then
     raise exception using errcode = '22023',
       message = 'At least two journal lines are required.';
-  end if;
-
-  -- Lock the period row to serialize posting against a concurrent period close.
-  select ap.status, ap.start_date, ap.end_date
-    into v_period_status, v_period_start, v_period_end
-  from public.accounting_periods ap
-  where ap.organization_id = p_organization_id
-    and ap.id = p_accounting_period_id
-  for update;
-
-  if not found then
-    raise exception using errcode = '23503',
-      message = 'Accounting period does not exist in this organization.';
-  end if;
-
-  if v_period_status <> 'open' then
-    raise exception using errcode = '23514',
-      message = 'Journal entries can only be posted to an open accounting period.';
-  end if;
-
-  if p_entry_date < v_period_start or p_entry_date > v_period_end then
-    raise exception using errcode = '23514',
-      message = 'Entry date must fall within the selected accounting period.';
   end if;
 
   select
@@ -1762,7 +1664,6 @@ begin
   insert into public.journal_entries (
     organization_id,
     entry_number,
-    accounting_period_id,
     entry_date,
     entry_type,
     status,
@@ -1776,8 +1677,7 @@ begin
   values (
     p_organization_id,
     pg_catalog.btrim(p_entry_number),
-    p_accounting_period_id,
-    p_entry_date,
+    p_p_entry_date,
     'manual',
     'posted',
     nullif(pg_catalog.btrim(coalesce(p_description, '')), ''),
@@ -1821,7 +1721,7 @@ begin
 end;
 $$;
 
-revoke all on function public.post_manual_journal_entry(uuid, text, uuid, date, text, jsonb)
+revoke all on function public.post_manual_journal_entry(uuid, text, date, text, jsonb)
   from public, anon, authenticated;
 
 
@@ -1845,8 +1745,6 @@ as $$
 declare
   v_user_id uuid;
   v_purchase public.purchase%rowtype;
-  v_period_id uuid;
-  v_period_status text;
   v_supplier_active boolean;
   v_line_count integer;
   v_subtotal numeric(20,4);
@@ -1907,21 +1805,6 @@ begin
     raise exception using errcode = '23514', message = 'Purchase totals are inconsistent or net total is not positive.';
   end if;
 
-  select ap.id, ap.status into v_period_id, v_period_status
-  from public.accounting_periods ap
-  where ap.organization_id = p_organization_id
-    and v_purchase.invoice_date between ap.start_date and ap.end_date
-  order by ap.start_date desc
-  limit 1
-  for update;
-
-  if not found then
-    raise exception using errcode = '23503', message = 'No accounting period covers the purchase invoice date.';
-  end if;
-  if v_period_status <> 'open' then
-    raise exception using errcode = '23514', message = 'Purchase can only be posted to an open accounting period.';
-  end if;
-
   if not exists (
     select 1 from public.accounts a
     where a.organization_id = p_organization_id
@@ -1969,13 +1852,13 @@ begin
   end loop;
 
   insert into public.journal_entries (
-    organization_id, entry_number, accounting_period_id, entry_date,
+    organization_id, entry_number, entry_date,
     entry_type, status, reference_type, reference_id, description, posted_at, posted_by, created_by
   )
   values (
     p_organization_id,
     'PUR-' || pg_catalog.replace(p_purchase_id::text, '-', ''),
-    v_period_id, v_purchase.invoice_date, 'purchase', 'posted',
+    v_purchase.invoice_date, 'purchase', 'posted',
     'purchase', p_purchase_id, 'Purchase invoice ' || v_purchase.invoice_id,
     pg_catalog.now(), v_user_id, v_user_id
   )
@@ -2095,7 +1978,6 @@ create unique index journal_entries_one_org_opening_balance_uq
 
 create or replace function public.post_opening_balances(
   p_organization_id uuid,
-  p_accounting_period_id uuid,
   p_entry_date date,
   p_account_lines jsonb,
   p_party_balances jsonb,
@@ -2110,9 +1992,6 @@ as $$
 declare
   v_user_id uuid;
   v_journal_entry_id uuid;
-  v_period_status text;
-  v_period_start date;
-  v_period_end date;
   v_debit_total numeric(20,4) := 0;
   v_credit_total numeric(20,4) := 0;
   v_inventory_value numeric(20,4) := 0;
@@ -2178,29 +2057,6 @@ begin
   ) then
     raise exception using errcode = '23514',
       message = 'Opening balances must be initialized before operational ledger or inventory posting. Use controlled adjustments after operations begin.';
-  end if;
-
-  -- Lock the accounting period so a concurrent close cannot race this posting.
-  select ap.status, ap.start_date, ap.end_date
-    into v_period_status, v_period_start, v_period_end
-  from public.accounting_periods ap
-  where ap.organization_id = p_organization_id
-    and ap.id = p_accounting_period_id
-  for update;
-
-  if not found then
-    raise exception using errcode = '23503',
-      message = 'Accounting period does not exist in this organization.';
-  end if;
-
-  if v_period_status <> 'open' then
-    raise exception using errcode = '23514',
-      message = 'Opening balances can only be posted to an open accounting period.';
-  end if;
-
-  if p_entry_date < v_period_start or p_entry_date > v_period_end then
-    raise exception using errcode = '23514',
-      message = 'Opening balance date must fall within the selected accounting period.';
   end if;
 
   -- Validate ordinary GL lines. Accounts also used by party/inventory detail
@@ -2454,12 +2310,12 @@ begin
   );
 
   insert into public.journal_entries (
-    organization_id, entry_number, accounting_period_id, entry_date,
+    organization_id, entry_number, entry_date,
     entry_type, status, reference_type, reference_id, description,
     posted_at, posted_by, created_by
   )
   values (
-    p_organization_id, v_entry_number, p_accounting_period_id, p_entry_date,
+    p_organization_id, v_entry_number, p_p_entry_date,
     'opening_balance', 'posted', 'organization_opening_balance',
     p_organization_id, nullif(pg_catalog.btrim(coalesce(p_description, '')), ''),
     pg_catalog.now(), v_user_id, v_user_id
@@ -2584,9 +2440,9 @@ begin
 end;
 $$;
 
-revoke all on function public.post_opening_balances(uuid, uuid, date, jsonb, jsonb, jsonb, text)
+revoke all on function public.post_opening_balances(uuid, date, jsonb, jsonb, jsonb, text)
   from public, anon;
-grant execute on function public.post_opening_balances(uuid, uuid, date, jsonb, jsonb, jsonb, text)
+grant execute on function public.post_opening_balances(uuid, date, jsonb, jsonb, jsonb, text)
   to authenticated;
 
 
@@ -2607,7 +2463,6 @@ create unique index journal_entries_payment_reference_uq
 create or replace function public.post_contact_payment(
   p_organization_id uuid,
   p_payment_id uuid,
-  p_accounting_period_id uuid
 )
 returns uuid
 language plpgsql
@@ -2617,9 +2472,6 @@ as $function$
 declare
   v_user_id uuid := (select auth.uid());
   v_payment public.payments%rowtype;
-  v_period_status text;
-  v_period_start date;
-  v_period_end date;
   v_cash_account public.accounts%rowtype;
   v_settlement_account public.accounts%rowtype;
   v_outstanding numeric(20,4);
@@ -2659,18 +2511,6 @@ begin
     end if;
   end if;
 
-  select ap.status, ap.start_date, ap.end_date
-    into v_period_status, v_period_start, v_period_end
-  from public.accounting_periods ap
-  where ap.organization_id = p_organization_id and ap.id = p_accounting_period_id
-  for update;
-  if not found or v_period_status <> 'open' then
-    raise exception using errcode = '23514', message = 'Payments can only be posted to an existing open accounting period.';
-  end if;
-  if v_payment.payment_date < v_period_start or v_payment.payment_date > v_period_end then
-    raise exception using errcode = '23514', message = 'Payment date must fall within the selected accounting period.';
-  end if;
-
   v_entry_number := 'PMT-' || pg_catalog.replace(v_payment.id::text, '-', '');
 
   if v_payment.payment_type = 'transfer' then
@@ -2687,12 +2527,12 @@ begin
     end if;
 
     insert into public.journal_entries (
-      organization_id, entry_number, accounting_period_id, entry_date,
+      organization_id, entry_number, entry_date,
       entry_type, status, reference_type, reference_id, description,
       posted_at, posted_by, created_by
     )
     values (
-      p_organization_id, v_entry_number, p_accounting_period_id, v_payment.payment_date,
+      p_organization_id, v_entry_number, p_v_payment.payment_date,
       'payment', 'posted', 'payment', v_payment.id,
       coalesce(nullif(pg_catalog.btrim(v_payment.description), ''), 'Bank transfer ' || v_payment.payment_number),
       pg_catalog.now(), v_user_id, v_user_id
@@ -2774,12 +2614,12 @@ begin
     end if;
 
     insert into public.journal_entries (
-      organization_id, entry_number, accounting_period_id, entry_date,
+      organization_id, entry_number, entry_date,
       entry_type, status, reference_type, reference_id, description,
       posted_at, posted_by, created_by
     )
     values (
-      p_organization_id, v_entry_number, p_accounting_period_id, v_payment.payment_date,
+      p_organization_id, v_entry_number, p_v_payment.payment_date,
       'payment', 'posted', 'payment', v_payment.id,
       coalesce(nullif(pg_catalog.btrim(v_payment.description), ''),
         case v_payment.payment_type
@@ -2842,9 +2682,9 @@ begin
 end;
 $function$;
 
-revoke all on function public.post_contact_payment(uuid, uuid, uuid)
+revoke all on function public.post_contact_payment(uuid, uuid)
   from public, anon;
-grant execute on function public.post_contact_payment(uuid, uuid, uuid)
+grant execute on function public.post_contact_payment(uuid, uuid)
   to authenticated;
 
 
@@ -2872,8 +2712,6 @@ as $$
 declare
   v_user_id uuid;
   v_sales public.sales%rowtype;
-  v_period_id uuid;
-  v_period_status text;
   v_customer_active boolean;
   v_receivable public.accounts%rowtype;
   v_line_count integer;
@@ -2947,21 +2785,6 @@ begin
     raise exception using errcode = '23514', message = 'Sales totals are inconsistent or net total is not positive.';
   end if;
 
-  select ap.id, ap.status into v_period_id, v_period_status
-  from public.accounting_periods ap
-  where ap.organization_id = p_organization_id
-    and v_sales.invoice_date between ap.start_date and ap.end_date
-  order by ap.start_date desc
-  limit 1
-  for update;
-
-  if not found then
-    raise exception using errcode = '23503', message = 'No accounting period covers the sales invoice date.';
-  end if;
-  if v_period_status <> 'open' then
-    raise exception using errcode = '23514', message = 'Sales can only be posted to an open accounting period.';
-  end if;
-
   if exists (
     select 1
     from public.sales_items si
@@ -3016,13 +2839,13 @@ begin
   end loop;
 
   insert into public.journal_entries (
-    organization_id, entry_number, accounting_period_id, entry_date,
+    organization_id, entry_number, entry_date,
     entry_type, status, reference_type, reference_id, description, posted_at, posted_by, created_by
   )
   values (
     p_organization_id,
     'SAL-' || pg_catalog.replace(p_sales_id::text, '-', ''),
-    v_period_id, v_sales.invoice_date, 'sale', 'posted',
+    v_sales.invoice_date, 'sale', 'posted',
     'sale', p_sales_id, 'Sales invoice ' || v_sales.invoice_id,
     pg_catalog.now(), v_user_id, v_user_id
   )
@@ -3160,10 +2983,6 @@ as $function$
 declare
   v_user_id uuid := (select auth.uid());
   v_original public.journal_entries%rowtype;
-  v_period_id uuid;
-  v_period_status text;
-  v_period_start date;
-  v_period_end date;
   v_reversal_id uuid;
   v_source_status text;
   v_source_purchase_id uuid;
@@ -3255,25 +3074,15 @@ begin
     end if;
   end if;
 
-  select ap.id, ap.status, ap.start_date, ap.end_date
-    into v_period_id, v_period_status, v_period_start, v_period_end
-  from public.accounting_periods ap
-  where ap.organization_id = p_organization_id
-    and p_reversal_date between ap.start_date and ap.end_date
-  order by ap.start_date desc limit 1 for update;
-  if not found or v_period_status <> 'open' then
-    raise exception using errcode = '23514', message = 'Reversal date must fall within an open accounting period.';
-  end if;
-
   insert into public.journal_entries (
-    organization_id, entry_number, accounting_period_id, entry_date,
+    organization_id, entry_number, entry_date,
     entry_type, status, reference_type, reference_id, description,
     posted_at, posted_by, reversal_of_id, created_by
   )
   values (
     p_organization_id,
     'REV-' || pg_catalog.replace(p_journal_entry_id::text,'-',''),
-    v_period_id, p_reversal_date, 'reversal', 'posted',
+    p_reversal_date, 'reversal', 'posted',
     'journal_entry_reversal', p_journal_entry_id,
     'Reversal of ' || v_original.entry_number || ': ' || pg_catalog.btrim(p_reason),
     pg_catalog.now(), v_user_id, p_journal_entry_id, v_user_id
@@ -3475,8 +3284,6 @@ as $function$
 declare
   v_user_id uuid := (select auth.uid());
   v_expense public.expenses%rowtype;
-  v_period_id uuid;
-  v_period_status text;
   v_expense_account_id uuid;
   v_category_active boolean;
   v_expense_account public.accounts%rowtype;
@@ -3540,23 +3347,14 @@ begin
     raise exception using errcode = '23514', message = 'A payable control account requires an expense contact.';
   end if;
 
-  select ap.id, ap.status into v_period_id, v_period_status
-  from public.accounting_periods ap
-  where ap.organization_id = p_organization_id
-    and v_expense.expense_date between ap.start_date and ap.end_date
-  order by ap.start_date desc limit 1 for update;
-  if not found or v_period_status <> 'open' then
-    raise exception using errcode = '23514', message = 'Expense date must fall within an open accounting period.';
-  end if;
-
   insert into public.journal_entries (
-    organization_id, entry_number, accounting_period_id, entry_date,
+    organization_id, entry_number, entry_date,
     entry_type, status, reference_type, reference_id, description,
     posted_at, posted_by, created_by
   )
   values (
     p_organization_id, 'EXP-' || pg_catalog.replace(p_expense_id::text, '-', ''),
-    v_period_id, v_expense.expense_date, 'expense', 'posted',
+    v_expense.expense_date, 'expense', 'posted',
     'expense', p_expense_id,
     coalesce(nullif(pg_catalog.btrim(v_expense.description), ''), 'Expense ' || v_expense.expense_number),
     pg_catalog.now(), v_user_id, v_user_id
@@ -3598,8 +3396,6 @@ declare
   v_user_id uuid := (select auth.uid());
   v_return public.purchase_returns%rowtype;
   v_purchase public.purchase%rowtype;
-  v_period_id uuid;
-  v_period_status text;
   v_line_count integer;
   v_subtotal numeric(20,4);
   v_inventory_value numeric(20,4) := 0;
@@ -3713,14 +3509,6 @@ begin
     raise exception using errcode = '23514', message = 'Every returned product must be active and mapped to an active, postable inventory asset account.';
   end if;
 
-  select ap.id, ap.status into v_period_id, v_period_status
-  from public.accounting_periods ap
-  where ap.organization_id = p_organization_id and v_return.return_date between ap.start_date and ap.end_date
-  order by ap.start_date desc limit 1 for update;
-  if not found or v_period_status <> 'open' then
-    raise exception using errcode = '23514', message = 'Purchase return date must fall within an open accounting period.';
-  end if;
-
   for v_product in
     select ri.product_id, sum(ri.quantity) as quantity
     from public.purchase_return_items ri
@@ -3778,13 +3566,13 @@ begin
   end if;
 
   insert into public.journal_entries (
-    organization_id, entry_number, accounting_period_id, entry_date,
+    organization_id, entry_number, entry_date,
     entry_type, status, reference_type, reference_id, description,
     posted_at, posted_by, created_by
   )
   values (
     p_organization_id, 'PR-' || pg_catalog.replace(p_purchase_return_id::text,'-',''),
-    v_period_id, v_return.return_date, 'purchase_return', 'posted',
+    v_return.return_date, 'purchase_return', 'posted',
     'purchase_return', p_purchase_return_id, 'Purchase return ' || v_return.return_number,
     pg_catalog.now(), v_user_id, v_user_id
   )
@@ -3872,8 +3660,6 @@ declare
   v_user_id uuid := (select auth.uid());
   v_return public.sales_returns%rowtype;
   v_sales public.sales%rowtype;
-  v_period_id uuid;
-  v_period_status text;
   v_line_count integer;
   v_subtotal numeric(20,4);
   v_allocated_revenue numeric(20,4) := 0;
@@ -4003,14 +3789,6 @@ begin
     raise exception using errcode = '23514', message = 'Returned products require active, postable revenue, inventory, and COGS account mappings.';
   end if;
 
-  select ap.id, ap.status into v_period_id, v_period_status
-  from public.accounting_periods ap
-  where ap.organization_id = p_organization_id and v_return.return_date between ap.start_date and ap.end_date
-  order by ap.start_date desc limit 1 for update;
-  if not found or v_period_status <> 'open' then
-    raise exception using errcode = '23514', message = 'Sales return date must fall within an open accounting period.';
-  end if;
-
   for v_line in
     select distinct ri.product_id
     from public.sales_return_items ri
@@ -4026,13 +3804,13 @@ begin
   end loop;
 
   insert into public.journal_entries (
-    organization_id, entry_number, accounting_period_id, entry_date,
+    organization_id, entry_number, entry_date,
     entry_type, status, reference_type, reference_id, description,
     posted_at, posted_by, created_by
   )
   values (
     p_organization_id, 'SR-' || pg_catalog.replace(p_sales_return_id::text,'-',''),
-    v_period_id, v_return.return_date, 'sales_return', 'posted',
+    v_return.return_date, 'sales_return', 'posted',
     'sales_return', p_sales_return_id, 'Sales return ' || v_return.return_number,
     pg_catalog.now(), v_user_id, v_user_id
   )
@@ -4175,9 +3953,6 @@ as $$
 declare
   v_user_id uuid := (select auth.uid());
   v_entry public.journal_entries%rowtype;
-  v_period_status text;
-  v_period_start date;
-  v_period_end date;
   v_line_count integer;
   v_debit numeric(20,4);
   v_credit numeric(20,4);
@@ -4196,18 +3971,6 @@ begin
   end if;
   if v_entry.entry_type <> 'manual' or v_entry.status <> 'confirmed' or v_entry.posted_at is not null then
     raise exception using errcode = '23514', message = 'Only a confirmed, unposted manual journal entry can be posted by this function.';
-  end if;
-
-  select ap.status, ap.start_date, ap.end_date
-    into v_period_status, v_period_start, v_period_end
-  from public.accounting_periods ap
-  where ap.organization_id = p_organization_id and ap.id = v_entry.accounting_period_id
-  for update;
-  if not found then
-    raise exception using errcode = '23503', message = 'Accounting period does not exist in this organization.';
-  end if;
-  if v_period_status <> 'open' or v_entry.entry_date < v_period_start or v_entry.entry_date > v_period_end then
-    raise exception using errcode = '23514', message = 'Journal entry date must fall within an open accounting period.';
   end if;
 
   select count(*)::integer, coalesce(sum(atx.debit), 0), coalesce(sum(atx.credit), 0)
@@ -4325,7 +4088,7 @@ begin
     when 'journal_entry' then
       v_table := 'journal_entries'; v_child_table := 'account_transactions'; v_parent_column := 'journal_entry_id';
       v_permission := 'journal_entries.create';
-      v_allowed_header := array['entry_number','accounting_period_id','entry_date','entry_type','reference_type','reference_id','description'];
+      v_allowed_header := array['entry_number','entry_date','entry_type','reference_type','reference_id','description'];
       v_child_columns := array['account_id','line_number','description','debit','credit','contact_id'];
     else
       raise exception using errcode = '22023', message = 'Unsupported transaction document type.';
