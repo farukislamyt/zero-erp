@@ -91,6 +91,14 @@ jobs:
           # The bootstrap file manages its own BEGIN/COMMIT transaction.
           psql -X -v ON_ERROR_STOP=1 -f supabase/initial_database_schema.sql
 
+      - name: Apply incremental database migrations
+        run: |
+          for migration in supabase/migrations/*.sql; do
+            [ -f "$migration" ] || continue
+            echo "Applying $migration"
+            psql -X -v ON_ERROR_STOP=1 --file "$migration"
+          done
+
       - name: Run database schema smoke tests
         run: |
           psql -X -v ON_ERROR_STOP=1 \
