@@ -50,6 +50,7 @@ select throws_ok(
   format('select public.save_master_data(%L::uuid,%L,%L::jsonb)',
     current_setting('test.org_b'),'contact','{"contact_number":"CROSS-TENANT","name":"Should Not Exist"}'),
   '42501',
+  'An authenticated active organization member is required.',
   'Tenant A cannot create master data inside Tenant B');
 select is((select count(*)::integer from public.contacts where organization_id=current_setting('test.org_b')::uuid),0,
   'failed cross-tenant write leaves Tenant B unchanged');
