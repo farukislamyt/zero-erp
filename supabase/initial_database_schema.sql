@@ -3414,7 +3414,7 @@ begin
     join public.products pr on pr.organization_id = ri.organization_id and pr.id = ri.product_id
     left join public.accounts ia on ia.organization_id = pr.organization_id and ia.id = pr.inventory_account_id
     where ri.organization_id = p_organization_id and ri.purchase_return_id = p_purchase_return_id
-      and (not pr.is_active or ia.id is null or not ia.is_active or not ia.is_postable or ia.account_type <> 'asset')
+      and (ia.id is null or not ia.is_active or not ia.is_postable or ia.account_type <> 'asset')
   ) then
     raise exception using errcode = '23514', message = 'Every returned product must be active and mapped to an active, postable inventory asset account.';
   end if;
