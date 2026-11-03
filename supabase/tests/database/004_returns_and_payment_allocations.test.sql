@@ -57,7 +57,7 @@ select set_config('test.purchase_return_id',public.save_draft_transaction_docume
     'supplier_id',current_setting('test.supplier_id')::uuid,'return_date','2026-03-03',
     'subtotal',120,'discount_amount',0,'total_amount',120,
     'payable_account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='2110'),
-    'purchase_return_variance_account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='5200')
+    'purchase_return_variance_account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='4100')
   ),
   jsonb_build_array(jsonb_build_object(
     'line_number',1,'purchase_item_id',current_setting('test.purchase_item_id')::uuid,
