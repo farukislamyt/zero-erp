@@ -88,8 +88,9 @@ jobs:
 
       - name: Apply canonical database bootstrap
         run: |
+          # The bootstrap file manages its own BEGIN/COMMIT transaction.
           psql -X -v ON_ERROR_STOP=1 \
-            --single-transaction \
+            --file supabase/initial_database_schema.sql
             --file supabase/initial_database_schema.sql
 
       - name: Run database schema smoke tests
