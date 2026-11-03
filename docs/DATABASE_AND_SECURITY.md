@@ -6,7 +6,7 @@
 
 - **Platform:** PostgreSQL through Supabase.
 - **Tenant model:** One organization owns each business record; users access organizations through membership.
-- **Core business model:** 27 physical tables total—24 business tables plus three RBAC tables—across organization setup, accounting, master data, inventory, purchasing, sales, expenses, and payments.
+- **Core business model:** 26 physical tables total—23 business tables plus three RBAC tables—across organization setup, accounting, master data, inventory, purchasing, sales, expenses, and payments.
 - **Access-control model:** Three RBAC tables—`roles`, `permissions`, and `role_permissions`—plus `organization_users.role_id`.
 - **Ledger model:** Journal headers and debit/credit lines are separate; posted financial activity is corrected through controlled reversals.
 - **Inventory model:** Immutable movement history is the audit trail; `inventory_balances` is the current stock/valuation snapshot.
