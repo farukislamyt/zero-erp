@@ -449,6 +449,7 @@ The opening balance workflow intentionally introduces no staging or sub-ledger t
 ### Company ownership and membership invariants
 - Two concurrent `create_organization_with_admin` calls for the same Auth user cannot create two companies; after one succeeds, every later attempt remains rejected even after Administrator handover or creator deactivation.
 - The creator membership is identified by its initial timestamp matching `organizations.created_at`; attempts to delete it, change its organization/user/creation timestamp/role, or rewrite the organization's creation timestamp are rejected.
+- A later membership insert cannot reuse the company's creation timestamp to forge or duplicate the creator marker; only the company-creation RPC temporarily enables that insert, then resets its transaction-local guard.
 - A second membership cannot be inserted or rewritten to impersonate the creator timestamp; every company must have exactly one creator anchor.
 - Administrator handover deactivates (but retains) the outgoing creator membership and promotes one existing active custom-role member; exactly one active Administrator exists after commit.
 - Two concurrent attempts to activate memberships in different companies for the same user cannot both commit. After deactivation, another company may add the user while the old inactive history remains.
