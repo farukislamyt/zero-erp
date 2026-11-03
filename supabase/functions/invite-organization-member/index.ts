@@ -43,7 +43,11 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
   let body: InviteBody;
   try {
-    body = await request.json() as InviteBody;
+    const parsed: unknown = await request.json();
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return json(400, { error: "Request body must be a JSON object." });
+    }
+    body = parsed as InviteBody;
   } catch {
     return json(400, { error: "Request body must be valid JSON." });
   }
