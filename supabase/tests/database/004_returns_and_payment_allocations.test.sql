@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(20);
+select plan(25);
 
 insert into auth.users(
   id,instance_id,aud,role,email,encrypted_password,email_confirmed_at,
@@ -224,6 +224,36 @@ select set_config('test.supplier_refund_journal_id',public.post_contact_payment(
 )::text,true);
 select is((select status from public.payments where id=current_setting('test.supplier_refund_id')::uuid),'posted',
   'supplier refund posts against AP');
+
+
+-- An unallocated supplier payment appears in the unapplied report. Its
+-- reversal is effective from the reversal journal date, not wall-clock time.
+select set_config('test.unapplied_payment_id',public.save_draft_transaction_document(
+  current_setting('test.org_id')::uuid,'payment',
+  jsonb_build_object(
+    'payment_number','PAY-UNAPPLIED-SUPPLIER','payment_type','payment',
+    'contact_id',current_setting('test.supplier_id')::uuid,'payment_date','2026-03-12',
+    'amount',10,'account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='1110'),
+    'settlement_account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='2110'),
+    'description','Unapplied supplier payment'
+  )
+)::text,true);
+select public.confirm_transaction_document(current_setting('test.org_id')::uuid,'payment',current_setting('test.unapplied_payment_id')::uuid);
+select set_config('test.unapplied_payment_journal_id',public.post_contact_payment(
+  current_setting('test.org_id')::uuid,current_setting('test.unapplied_payment_id')::uuid
+)::text,true);
+select is((select unapplied_amount from public.report_unapplied_payments(current_setting('test.org_id')::uuid,date '2026-03-13')
+  where payment_id=current_setting('test.unapplied_payment_id')::uuid),10::numeric,
+  'unallocated posted supplier payment is reported at its full amount');
+select set_config('test.unapplied_reversal_id',public.reverse_journal_entry(
+  current_setting('test.org_id')::uuid,current_setting('test.unapplied_payment_journal_id')::uuid,date '2026-03-14','Reverse unapplied payment'
+)::text,true);
+select is((select unapplied_amount from public.report_unapplied_payments(current_setting('test.org_id')::uuid,date '2026-03-13')
+  where payment_id=current_setting('test.unapplied_payment_id')::uuid),10::numeric,
+  'payment reversal does not rewrite the unapplied snapshot before reversal date');
+select is((select count(*)::integer from public.report_unapplied_payments(current_setting('test.org_id')::uuid,date '2026-03-14')
+  where payment_id=current_setting('test.unapplied_payment_id')::uuid),0,
+  'payment reversal removes the unapplied amount on and after reversal date');
 
 select * from finish();
 rollback;
