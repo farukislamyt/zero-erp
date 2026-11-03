@@ -3384,6 +3384,23 @@ begin
     raise exception using errcode = '23514', message = 'Return quantity or unit cost exceeds the unreturned quantity/cost of the original purchase item.';
   end if;
 
+
+  if exists (
+    select 1
+    from public.purchase_return_items ri
+    join public.purchase_items pi on pi.organization_id = ri.organization_id and pi.id = ri.purchase_item_id
+    where ri.organization_id = p_organization_id and ri.purchase_return_id = p_purchase_return_id
+    group by ri.purchase_item_id, pi.quantity
+    having sum(ri.quantity) + coalesce((
+      select sum(pri.quantity)
+      from public.purchase_return_items pri
+      join public.purchase_returns pr on pr.organization_id = pri.organization_id and pr.id = pri.purchase_return_id
+      where pri.organization_id = p_organization_id and pri.purchase_item_id = ri.purchase_item_id and pr.status = 'posted'
+    ),0) > pi.quantity
+  ) then
+    raise exception using errcode = '23514', message = 'Combined return lines cannot exceed the remaining quantity of an original purchase item.';
+  end if;
+
   if not exists (
     select 1 from public.accounts a
     where a.organization_id = p_organization_id and a.id = v_return.payable_account_id
@@ -3635,6 +3652,23 @@ begin
         ),0) > si.quantity)
   ) then
     raise exception using errcode = '23514', message = 'Return quantity or unit price exceeds the unreturned quantity/price of the original sales item.';
+  end if;
+
+
+  if exists (
+    select 1
+    from public.sales_return_items ri
+    join public.sales_items si on si.organization_id = ri.organization_id and si.id = ri.sales_item_id
+    where ri.organization_id = p_organization_id and ri.sales_return_id = p_sales_return_id
+    group by ri.sales_item_id, si.quantity
+    having sum(ri.quantity) + coalesce((
+      select sum(sri.quantity)
+      from public.sales_return_items sri
+      join public.sales_returns sr on sr.organization_id = sri.organization_id and sr.id = sri.sales_return_id
+      where sri.organization_id = p_organization_id and sri.sales_item_id = ri.sales_item_id and sr.status = 'posted'
+    ),0) > si.quantity
+  ) then
+    raise exception using errcode = '23514', message = 'Combined return lines cannot exceed the remaining quantity of an original sales item.';
   end if;
 
   if not exists (
@@ -4230,6 +4264,23 @@ begin
     ) then
       raise exception using errcode = '23514', message = 'Purchase return lines must match original items and cannot exceed remaining purchased quantities.';
     end if;
+  if exists (
+    select 1
+    from public.purchase_return_items ri
+    join public.purchase_items pi on pi.organization_id = ri.organization_id and pi.id = ri.purchase_item_id
+    where ri.organization_id = p_organization_id and ri.purchase_return_id = p_document_id
+    group by ri.purchase_item_id, pi.quantity
+    having sum(ri.quantity) + coalesce((
+      select sum(pri.quantity)
+      from public.purchase_return_items pri
+      join public.purchase_returns pr on pr.organization_id = pri.organization_id and pr.id = pri.purchase_return_id
+      where pri.organization_id = p_organization_id and pri.purchase_item_id = ri.purchase_item_id and pr.status = 'posted'
+    ),0) > pi.quantity
+  ) then
+    raise exception using errcode = '23514', message = 'Combined return lines cannot exceed the remaining quantity of an original purchase item.';
+  end if;
+
+
 
   elsif p_document_type = 'sales_return' then
     select count(*)::integer, coalesce(sum(ri.line_total),0)
@@ -4268,6 +4319,23 @@ begin
     ) then
       raise exception using errcode = '23514', message = 'Sales return lines must match original items and cannot exceed remaining sold quantities.';
     end if;
+  if exists (
+    select 1
+    from public.sales_return_items ri
+    join public.sales_items si on si.organization_id = ri.organization_id and si.id = ri.sales_item_id
+    where ri.organization_id = p_organization_id and ri.sales_return_id = p_document_id
+    group by ri.sales_item_id, si.quantity
+    having sum(ri.quantity) + coalesce((
+      select sum(sri.quantity)
+      from public.sales_return_items sri
+      join public.sales_returns sr on sr.organization_id = sri.organization_id and sr.id = sri.sales_return_id
+      where sri.organization_id = p_organization_id and sri.sales_item_id = ri.sales_item_id and sr.status = 'posted'
+    ),0) > si.quantity
+  ) then
+    raise exception using errcode = '23514', message = 'Combined return lines cannot exceed the remaining quantity of an original sales item.';
+  end if;
+
+
 
   elsif p_document_type = 'journal_entry' then
     select count(*)::integer, coalesce(sum(debit), 0), coalesce(sum(credit), 0)
