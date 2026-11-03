@@ -6188,6 +6188,8 @@ begin
 end;
 $function$;
 
+-- As-of reporting uses the linked reversal journal entry's entry_date as the
+-- accounting-effective reversal date. reversed_at remains audit metadata only.
 create or replace function public.report_receivables_aging(
   p_organization_id uuid,p_as_of_date date default current_date
 )
