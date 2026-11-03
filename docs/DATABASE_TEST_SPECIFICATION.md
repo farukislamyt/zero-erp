@@ -362,26 +362,38 @@ For every report, test authorized role, denied role, inactive member, inactive o
 - **TX-006** Reversal and new posting races preserve ledger/stock integrity.
 - **TX-007** Lock ordering across multi-product stock operations avoids avoidable deadlocks.
 
-## 10. CI implementation and current executable baseline
+## 10. CI implementation and executable coverage
 
 Workflow: `.github/workflows/database-ci.yml`
 
 Local Supabase config: `supabase/config.toml`
 
-Executable pgTAP baseline: `supabase/tests/database/001_schema_contract.test.sql`
+Executable pgTAP suites:
 
-The initial baseline checks catalog inventory, RLS/policies, seeded permissions, triggers/indexes, SECURITY DEFINER search_path, browser-role write privileges, callable grants, Creator Administrator bootstrap, default seeds, custom-role protection, document numbering and basic reporting RPC availability. It is deliberately a first runtime gate, not a claim that all specified business cases have been automated.
+| Test file | Executable coverage |
+|---|---|
+| `001_schema_contract.test.sql` | Catalog inventory, all-table RLS/policies, permission seeds, triggers/indexes, SECURITY DEFINER search_path, browser-role write revocation, exposed RPC grants, Creator Administrator bootstrap/invariants, default COA/category/sequences, custom-role restriction, numbering and basic report RPC access |
+| `002_core_workflows.test.sql` | Company bootstrap, account/contact/unit/product creation, opening GL and inventory balances, Cash–Bank transfer Draft/Confirm/Post, debit/credit ledger lines, source/destination/final balances, total asset preservation, duplicate posting rejection, repeated opening-balance rejection, same-account transfer rejection, custom role/member onboarding and least-privilege denial |
+| `003_commerce_accounting_workflows.test.sql` | Supplier/customer/product setup, opening inventory, purchase Draft/Confirm/Post, stock quantity and valuation, sales Draft/Confirm/Post, stock-out and balanced journal, expense Draft/Confirm/Post, inventory adjustment, manual journal Draft/Confirm/Post/Reversal, oversell rejection with no stock mutation, trial balance/GL/P&L/balance-sheet/inventory-valuation report availability and reconciliation |
+| `004_returns_and_payment_allocations.test.sql` | Purchase return lifecycle and source/stock effects, sales return lifecycle and source/stock effects, customer receipt allocation/posting, supplier payment allocation/posting |
+| `005_tenant_isolation.test.sql` | Two independent organizations, active membership and permission scoping, RLS tenant read isolation, cross-tenant master-data write denial and no-write-on-failure |
 
-### Required follow-up implementation order
+The first file is the schema/privilege gate. The additional files exercise real authenticated RPC calls against a fresh local Supabase database and assert persisted business state, ledger lines, stock balances and report results. Each file uses isolated deterministic Auth fixtures and rolls back its test data. No production project or secret is used.
 
-1. Build reusable Auth/tenant fixtures and negative-assertion helpers.
-2. Implement Master Data and role/membership runtime tests.
-3. Implement Opening Balance and full purchase/sales posting fixtures.
-4. Implement return/reversal and inventory valuation reconciliation.
-5. Implement payment type/allocation matrix and concurrency tests.
-6. Implement all nine report reconciliation fixtures.
-7. Add two-tenant adversarial tests and rollback fault injection.
-8. Publish CI test summary and retain logs/artifacts.
+### Coverage still required before calling the database fully tested
+
+The executable suite is a materially expanded integration baseline, not yet exhaustive. The following specification areas remain to be implemented as dedicated runtime assertions:
+
+1. Full field-by-field invalid-input matrix for every RPC and every JSON payload key, including all malformed/null/unknown-key combinations.
+2. Membership deactivation/reactivation, role replacement/update edge cases, inactive role restrictions and Creator/Administrator adversarial trigger attempts.
+3. All customer/supplier refund variants, payment reversal, unapplied payment snapshots and all allocation target types (purchase return, sales return and expense).
+4. Over-return, repeated-return, cross-tenant return/payment references and all source-document state permutations.
+5. Every report's exact historical cutoff boundaries, date inclusivity, aging buckets and contact/account reconciliation.
+6. RLS tests across every tenant-owned table, inactive memberships/organizations and every exposed RPC permission boundary.
+7. Rollback fault injection after partial writes, duplicate concurrent posting, concurrent allocation/over-return/oversell, number-sequence contention and reversal/posting races.
+8. CI artifact/log retention and a machine-readable test summary grouped by test ID.
+
+A test case is runtime-verified only when it is represented by an executable assertion and a successful GitHub Actions run for the relevant commit. Merely appearing in this specification does not make it tested.
 
 ## 11. Acceptance criteria
 
