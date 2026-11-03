@@ -1638,14 +1638,14 @@ begin
 
   insert into public.journal_entries (
     organization_id, entry_number, accounting_period_id, entry_date,
-    entry_type, status, reference_type, reference_id, description, posted_at, created_by
+    entry_type, status, reference_type, reference_id, description, posted_at, posted_by, created_by
   )
   values (
     p_organization_id,
     'PUR-' || pg_catalog.replace(p_purchase_id::text, '-', ''),
     v_period_id, v_purchase.invoice_date, 'purchase', 'posted',
     'purchase', p_purchase_id, 'Purchase invoice ' || v_purchase.invoice_id,
-    pg_catalog.now(), v_user_id
+    pg_catalog.now(), v_user_id, v_user_id
   )
   returning id into v_journal_id;
 
@@ -2099,13 +2099,13 @@ begin
   insert into public.journal_entries (
     organization_id, entry_number, accounting_period_id, entry_date,
     entry_type, status, reference_type, reference_id, description,
-    posted_at, created_by
+    posted_at, posted_by, created_by
   )
   values (
     p_organization_id, v_entry_number, p_accounting_period_id, p_entry_date,
     'opening_balance', 'posted', 'organization_opening_balance',
     p_organization_id, nullif(pg_catalog.btrim(coalesce(p_description, '')), ''),
-    pg_catalog.now(), v_user_id
+    pg_catalog.now(), v_user_id, v_user_id
   )
   returning id into v_journal_entry_id;
 
@@ -2417,7 +2417,7 @@ begin
   insert into public.journal_entries (
     organization_id, entry_number, accounting_period_id, entry_date,
     entry_type, status, reference_type, reference_id, description,
-    posted_at, created_by
+    posted_at, posted_by, created_by
   )
   values (
     p_organization_id,
@@ -2436,6 +2436,7 @@ begin
       end
     ),
     pg_catalog.now(),
+    v_user_id,
     v_user_id
   )
   returning id into v_journal_entry_id;
@@ -2661,14 +2662,14 @@ begin
 
   insert into public.journal_entries (
     organization_id, entry_number, accounting_period_id, entry_date,
-    entry_type, status, reference_type, reference_id, description, posted_at, created_by
+    entry_type, status, reference_type, reference_id, description, posted_at, posted_by, created_by
   )
   values (
     p_organization_id,
     'SAL-' || pg_catalog.replace(p_sales_id::text, '-', ''),
     v_period_id, v_sales.invoice_date, 'sale', 'posted',
     'sale', p_sales_id, 'Sales invoice ' || v_sales.invoice_id,
-    pg_catalog.now(), v_user_id
+    pg_catalog.now(), v_user_id, v_user_id
   )
   returning id into v_journal_id;
 
