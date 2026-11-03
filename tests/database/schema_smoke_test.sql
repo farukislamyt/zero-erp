@@ -39,6 +39,9 @@ DECLARE
   v_receivable_aging numeric(20,4);
   v_unapplied_total numeric(20,4);
   v_inventory_total numeric(20,4);
+  v_second_user_id uuid := '00000000-0000-0000-0000-000000000002';
+  v_second_organization_id uuid;
+  v_second_contact_id uuid;
 BEGIN
   SELECT count(*)
     INTO v_table_count
@@ -231,6 +234,34 @@ BEGIN
 
   v_test_organization_id := public.create_organization_with_admin(
     'Database smoke test organization', 'BDT', 'Asia/Dhaka'
+  );
+
+  -- Create a second tenant and user for cross-tenant RLS/RPC isolation checks.
+  INSERT INTO auth.users (id)
+  VALUES (v_second_user_id)
+  ON CONFLICT (id) DO NOTHING;
+  PERFORM pg_catalog.set_config('request.jwt.claim.sub',v_second_user_id::text,true);
+  v_second_organization_id := public.create_organization_with_admin(
+    'Second tenant isolation test','BDT','Asia/Dhaka'
+  );
+  v_second_contact_id := public.save_master_data(
+    v_second_organization_id,'contact',
+    '{"contact_number":"C-SECOND-001","name":"Second Tenant Contact"}'::jsonb
+  );
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',true
+  );
+
+  CREATE TEMPORARY TABLE zeroerp_smoke_context (
+    first_organization_id uuid NOT NULL,
+    second_organization_id uuid NOT NULL,
+    first_contact_id uuid,
+    second_contact_id uuid,
+    second_user_id uuid NOT NULL
+  ) ON COMMIT PRESERVE ROWS;
+  GRANT SELECT ON zeroerp_smoke_context TO authenticated;
+  INSERT INTO zeroerp_smoke_context VALUES (
+    v_test_organization_id,v_second_organization_id,null,v_second_contact_id,v_second_user_id
   );
 
   -- An inactive number sequence must not silently allocate document numbers.
@@ -431,6 +462,7 @@ BEGIN
     v_test_organization_id,'contact',
     '{"contact_number":"C-SMOKE-001","name":"Smoke Test Contact"}'::jsonb
   );
+  UPDATE zeroerp_smoke_context SET first_contact_id=v_contact_id;
   v_product_id := public.save_master_data(
     v_test_organization_id,'product',
     pg_catalog.jsonb_build_object(
@@ -689,3 +721,56 @@ BEGIN
     v_table_count, v_policy_count;
 END;
 $tests$;
+
+
+-- Run read and RPC isolation checks as the authenticated role, not as the
+-- PostgreSQL owner that executes the bootstrap smoke block.
+SELECT set_config('request.jwt.claim.sub',second_user_id::text,false)
+FROM zeroerp_smoke_context;
+SET ROLE authenticated;
+DO $rls$
+DECLARE
+  v_first_org uuid;
+  v_second_org uuid;
+  v_first_contact uuid;
+  v_second_contact uuid;
+  v_visible_orgs integer;
+  v_visible_contacts integer;
+BEGIN
+  SELECT first_organization_id,second_organization_id,first_contact_id,second_contact_id
+  INTO v_first_org,v_second_org,v_first_contact,v_second_contact
+  FROM zeroerp_smoke_context;
+
+  SELECT count(*) INTO v_visible_orgs FROM public.organizations;
+  IF v_visible_orgs<>1
+     OR NOT EXISTS(SELECT 1 FROM public.organizations WHERE id=v_second_org)
+     OR EXISTS(SELECT 1 FROM public.organizations WHERE id=v_first_org) THEN
+    RAISE EXCEPTION 'Organization RLS did not isolate the second tenant';
+  END IF;
+
+  SELECT count(*) INTO v_visible_contacts FROM public.contacts;
+  IF v_visible_contacts<>1
+     OR NOT EXISTS(SELECT 1 FROM public.contacts WHERE id=v_second_contact)
+     OR EXISTS(SELECT 1 FROM public.contacts WHERE id=v_first_contact) THEN
+    RAISE EXCEPTION 'Contact RLS did not isolate the second tenant';
+  END IF;
+
+  IF public.has_org_permission(v_first_org,'contacts.manage') THEN
+    RAISE EXCEPTION 'Cross-tenant permission check returned true';
+  END IF;
+
+  BEGIN
+    PERFORM public.save_master_data(
+      v_first_org,'contact',
+      '{"contact_number":"C-CROSS-TENANT","name":"Forbidden Cross Tenant"}'::jsonb
+    );
+    RAISE EXCEPTION 'Cross-tenant master-data RPC unexpectedly succeeded';
+  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
+  END;
+
+  IF has_table_privilege(current_user,'public.contacts','INSERT') THEN
+    RAISE EXCEPTION 'Authenticated role unexpectedly has direct contact INSERT privilege';
+  END IF;
+END;
+$rls$;
+RESET ROLE;
