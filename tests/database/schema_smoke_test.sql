@@ -557,7 +557,7 @@ BEGIN
   END IF;
 
   -- Reporting RPCs must be exposed to authenticated users and return balanced totals.
-  SELECT sum(period_debit),sum(period_credit)
+  SELECT sum(movement_debit),sum(movement_credit)
   INTO v_trial_debits,v_trial_credits
   FROM public.report_trial_balance(v_test_organization_id,'2026-01-01','2026-12-31');
   IF v_trial_debits IS DISTINCT FROM v_trial_credits THEN
