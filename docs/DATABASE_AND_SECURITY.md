@@ -25,10 +25,8 @@ erDiagram
   ROLES ||--o{ ORGANIZATION_USERS : assigned_to
   ROLES ||--o{ ROLE_PERMISSIONS : grants
   PERMISSIONS ||--o{ ROLE_PERMISSIONS : included_in
-  ORGANIZATIONS ||--o{ ACCOUNTING_PERIODS : owns
   ORGANIZATIONS ||--o{ ACCOUNTS : owns
   ACCOUNTS o|--o{ ACCOUNTS : parent_of
-  ACCOUNTING_PERIODS ||--o{ JOURNAL_ENTRIES : contains
   JOURNAL_ENTRIES ||--|{ ACCOUNT_TRANSACTIONS : has_lines
   ACCOUNTS ||--o{ ACCOUNT_TRANSACTIONS : posted_to
   ORGANIZATIONS ||--o{ CONTACTS : owns
@@ -83,11 +81,11 @@ The diagram is a logical overview, not executable DDL. Use the relationship matr
 | Class | Tables | Required boundary |
 | --- | --- | --- |
 | Tenant roots and membership | `organizations`, `organization_users` | Membership is organization-specific; organization creation and initial administrator assignment are atomic |
-| Tenant configuration | `accounting_periods`, `accounts`, `number_sequences`, `units_of_measure`, `expense_categories` | Every record belongs to one organization |
+| Tenant configuration | `accounts`, `number_sequences`, `units_of_measure`, `expense_categories` | Every record belongs to one organization |
 | Global access catalog | `permissions` | System-managed catalog; no tenant client writes |
 | Tenant access configuration | `roles`, `role_permissions` | Role and membership must belong to the same organization |
 | Master data | `contacts`, `products` | All linked records must share organization ownership |
-| Financial ledger | `journal_entries`, `account_transactions` | Balanced, period-valid, immutable after posting except controlled reversal |
+| Financial ledger | `journal_entries`, `account_transactions` | Balanced, date-based, immutable after posting except controlled reversal |
 | Inventory | `inventory_transactions`, `inventory_balances` | Movement history and balance snapshot updated atomically |
 | Commercial documents | `purchase`, `purchase_items`, `purchase_returns`, `purchase_return_items`, `sales`, `sales_items`, `sales_returns`, `sales_return_items` | Header, lines, counterparties, products, accounts, and posting entries must share the same organization |
 | Cash and expenses | `expenses`, `payments`, `payment_allocations` | Expense and contact-level payment posting are implemented; invoice-wise payment allocations remain disabled until an invoice-level subledger exists |
@@ -99,7 +97,7 @@ Create or migrate database objects in dependency order so foreign keys and polic
 1. **Platform prerequisites:** confirm the Supabase Auth user relation and the project's UUID/key conventions.
 2. **Tenant foundation:** `organizations`, then `organization_users`.
 3. **RBAC catalog:** `permissions`, `roles`, `role_permissions`; add and validate `organization_users.role_id`.
-4. **Organization setup:** `accounting_periods`, `accounts`, `units_of_measure`, `number_sequences`.
+4. **Organization setup:** `accounts`, `units_of_measure`, `number_sequences`.
 5. **Master data:** `contacts`, `products`, `expense_categories`.
 6. **Ledger foundation:** `journal_entries`, `account_transactions`; then add valid document-to-journal references.
 7. **Inventory:** `inventory_transactions`, `inventory_balances`.
@@ -108,20 +106,20 @@ Create or migrate database objects in dependency order so foreign keys and polic
 10. **Expenses and payments:** `expenses`, `payments`, `payment_allocations`.
 11. **Integrity and performance:** composite tenant foreign keys, unique/check constraints, indexes, triggers, and validation queries.
 12. **Authorization:** helper functions, RLS policies, explicit function grants, and cross-tenant regression tests.
-13. **Transactional operations:** posting, reversal, allocation, period closure, and number allocation RPCs.
+13. **Transactional operations:** posting, reversal, allocation, and number allocation RPCs.
 14. **Release validation:** apply to a clean test database, migrate representative existing data, run integrity/security tests, and verify rollback procedures before production deployment.
 
 Where references form a dependency cycle—for example, business documents pointing to journal entries while journal entries reference source documents—create the base tables first and add the later foreign keys in a subsequent migration.
 
 ## 4. Canonical table inventory
 
-The data model contains 24 business tables plus three RBAC tables (27 tables total). The complete column reference later in this document is the canonical inventory of documented fields. Use the bootstrap SQL to confirm SQL types, defaults, nullability, and constraints.
+The data model contains 23 business tables plus three RBAC tables (26 tables total). The complete column reference later in this document is the canonical inventory of documented fields. Use the bootstrap SQL to confirm SQL types, defaults, nullability, and constraints.
 
 | Domain | Tables | Main responsibility |
 | --- | --- | --- |
 | Organization | `organizations`, `organization_users` | Tenant identity and user membership |
 | RBAC | `roles`, `permissions`, `role_permissions` | Role definitions and granular permission assignment |
-| Accounting setup | `accounting_periods`, `accounts`, `number_sequences` | Period control, chart of accounts, document numbering |
+| Accounting configuration | `accounts`, `number_sequences` | Chart of accounts and document numbering |
 | Master data | `contacts`, `products`, `units_of_measure`, `expense_categories` | Shared business entities and classification |
 | General ledger | `journal_entries`, `account_transactions` | Journal headers and debit/credit lines |
 | Inventory | `inventory_transactions`, `inventory_balances` | Auditable stock movements and current balance |
@@ -146,7 +144,7 @@ Core domains:
 8. **Sales:** `sales`, `sales_items`, `sales_returns`, `sales_return_items`
 9. **Expenses and cash/bank activity:** `expenses`, `payments`, `payment_allocations`
 
-The core business schema contains 24 business tables. The complete Zero ERP data model consists of those tables plus the three RBAC tables `roles`, `permissions`, and `role_permissions` (27 tables total), with `organization_users.role_id` linking each membership to its role.
+The core business schema contains 23 business tables. The complete Zero ERP data model consists of those tables plus the three RBAC tables `roles`, `permissions`, and `role_permissions` (26 tables total), with `organization_users.role_id` linking each membership to its role.
 
 ## 6. Relationship map
 
@@ -164,14 +162,12 @@ The following relationship map is the canonical relational contract. Foreign key
 | `permissions.id` | `role_permissions.permission_id` | 1:N | Global system permission catalog |
 | `roles` ↔ `permissions` | `role_permissions` | M:N | Unique pair `(role_id, permission_id)` |
 
-### Accounting setup and ledger
+### Accounting configuration and ledger
 
 | Parent | Child / linking column | Cardinality | Notes |
 | --- | --- | --- | --- |
-| `organizations.id` | `accounting_periods.organization_id` | 1:N | Periods belong to one organization |
 | `organizations.id` | `accounts.organization_id` | 1:N | Chart of accounts per organization |
 | `accounts.id` | `accounts.parent_account_id` | Self-referencing 1:N | Account hierarchy; parent and child must share organization |
-| `accounting_periods.id` | `journal_entries.accounting_period_id` | 1:N | Entry must fall within the period's dates |
 | `journal_entries.id` | `account_transactions.journal_entry_id` | 1:N | Journal header and its debit/credit lines |
 | `accounts.id` | `account_transactions.account_id` | 1:N | Each line posts to an account |
 | `contacts.id` | `account_transactions.contact_id` | 1:N, optional | Contact dimension on a ledger line |
@@ -249,7 +245,7 @@ The database must enforce the following integrity rules using foreign keys, uniq
 - A posted journal entry must balance: sum(debit) = sum(credit), within the chosen currency precision.
 - Use a controlled posting function/transaction to prevent a header becoming posted before its lines and related document/inventory effects are committed.
 - Prevent duplicate posting, and use a reversal entry rather than editing posted ledger lines.
-- Prevent posting into closed accounting periods unless an explicit, authorized exception is recorded.
+- Use the source document's transaction date and retain posted entries as immutable history except controlled reversal/adjustment.
 
 ### Inventory integrity
 - Use positive quantities for movement magnitude and store direction separately, or define and enforce one consistent sign convention.
@@ -280,16 +276,15 @@ Status note: this table distinguishes functions implemented in the current canon
 | Implemented | `revert_transaction_document_to_draft(p_organization_id, p_document_type, p_document_id)` | Unlock a confirmed document for correction | Confirmed-only transition; retain the last confirmation timestamp/actor for audit; no ledger or inventory impact |
 | Implemented | `void_transaction_document(p_organization_id, p_document_type, p_document_id, p_reason)` | Cancel an unposted document | Draft/confirmed only; require a reason; retain audit metadata; never void posted documents |
 | Implemented | `delete_draft_transaction_document(p_organization_id, p_document_type, p_document_id)` | Hard-delete a draft and its draft-only child rows | Draft-only; permission checked; posted/confirmed/void records cannot be deleted |
-| Implemented | `post_confirmed_journal_entry(p_organization_id, p_journal_entry_id)` | Post a confirmed manual journal entry | Confirmed-only; validates open period, date, active/postable accounts and contacts, balanced lines, and posting permission; marks posted atomically |
+| Implemented | `post_confirmed_journal_entry(p_organization_id, p_journal_entry_id)` | Post a confirmed manual journal entry | Confirmed-only; validates date, active/postable accounts and contacts, balanced lines, and posting permission; marks posted atomically |
 | Implemented | `reverse_journal_entry(p_organization_id, p_journal_entry_id, p_reversal_date, p_reason)` | Reverse a posted manual journal, expense, payment, or posted return | Creates a balanced reversal journal, retains both entries, records reversal audit metadata, and reverses return inventory movements atomically; sales-return reversal is blocked if returned stock has already been consumed |
-| Implemented | `post_opening_balances(p_organization_id, p_accounting_period_id, p_entry_date, p_account_lines, p_party_balances, p_inventory_lines, p_description)` | One-time organization opening balance initialization using existing tables only | Derive customer receivables and supplier payables from contact-tagged control-account lines; derive inventory value from product opening quantities/costs; balance the journal; lock the organization/period; initialize stock; reject duplicate opening posts; commit all effects atomically |
-| Implemented | `post_contact_payment(p_organization_id, p_payment_id, p_accounting_period_id)` | Post customer receipts, supplier payments, bank transfers, and customer/supplier refunds | Validates active cash/bank and control accounts, contact balances for receipts/payments/refunds, open period, and permissions; posts balanced journal lines atomically. The current ledger is contact-wise, not invoice-wise; invoice allocations are deliberately rejected until an invoice-level subledger is implemented |
+| Implemented | `post_opening_balances(p_organization_id, p_entry_date, p_account_lines, p_party_balances, p_inventory_lines, p_description)` | One-time organization opening balance initialization using existing tables only | Derive customer receivables and supplier payables from contact-tagged control-account lines; derive inventory value from product opening quantities/costs; balance the journal; lock the organization; initialize stock; reject duplicate opening posts; commit all effects atomically |
+| Implemented | `post_contact_payment(p_organization_id, p_payment_id)` | Post customer receipts, supplier payments, bank transfers, and customer/supplier refunds | Validates active cash/bank and control accounts, contact balances for receipts/payments/refunds, transaction date and permissions; posts balanced journal lines atomically. The current ledger is contact-wise, not invoice-wise; invoice allocations are deliberately rejected until an invoice-level subledger is implemented |
 | Implemented | `post_sales(p_organization_id, p_sales_id)` | Post a confirmed sales invoice to customer receivables, revenue, COGS and inventory | Confirmed-only; debit the receivable asset control account with the customer contact; credit product revenue accounts; calculate COGS from locked weighted-average stock cost; reduce inventory and write stock movements atomically |
-| Implemented | `post_purchase(p_organization_id, p_purchase_id)` | Post a confirmed purchase and associated inventory/accounting effects | Confirmed-only; validate supplier, lines, accounts and open period; atomically create weighted-average stock and ledger effects |
-| Implemented | `post_expense(p_organization_id, p_expense_id)` | Post a confirmed expense | Debit the active expense-category account and credit the configured liability/payable account; validate optional contact, open period, and posting permission |
+| Implemented | `post_purchase(p_organization_id, p_purchase_id)` | Post a confirmed purchase and associated inventory/accounting effects | Confirmed-only; validate supplier, lines, accounts and transaction date; atomically create weighted-average stock and ledger effects |
+| Implemented | `post_expense(p_organization_id, p_expense_id)` | Post a confirmed expense | Debit the active expense-category account and credit the configured liability/payable account; validate optional contact, transaction date and posting permission |
 | Implemented | `post_purchase_return(p_organization_id, p_purchase_return_id)` | Post a confirmed purchase return | Validate original purchase and unreturned item quantities; reduce stock at current weighted-average carrying value; debit supplier payable; post the price difference to a configured revenue/expense variance account; update source purchase return status atomically |
 | Implemented | `post_sales_return(p_organization_id, p_sales_return_id)` | Post a confirmed sales return | Validate original sale and unreturned item quantities; debit sales revenue and inventory, credit customer receivable and COGS; restore stock at original sale COGS atomically |
-| Planned | `close_accounting_period(p_period_id)` | Close a period | Require permission; validate unresolved/posting rules; record who/when closed |
 | Implemented (not yet wired into document save/posting flows) | `next_document_number(p_organization_id, p_document_type)` | Allocate the next document number | Use row locking or an atomic sequence operation to avoid duplicates under concurrency |
 
 ### RPC security rules
@@ -308,7 +303,7 @@ The policies below define the required access-control behavior for Supabase-expo
 ### Baseline approach
 
 - Enable RLS on every organization-owned table exposed through the Supabase Data API.
-- For ordinary business tables, require both active membership and the table/module's corresponding `.read` permission. The bootstrap policies now enforce this for organization, users, roles, accounting periods, accounts, contacts, products/units, purchases, sales, expenses, payments, journals, and inventory.
+- For ordinary business tables, require both active membership and the table/module's corresponding `.read` permission. The bootstrap policies now enforce this for organization, users, roles, accounts, contacts, products/units, purchases, sales, expenses, payments, journals, and inventory.
 - A member can read their own `organization_users` membership row; reading other memberships requires `users.read`. Reading roles and role-permission links requires `roles.read`.
 - For writes, also validate the requested action's permission and ensure referenced rows belong to the same organization.
 - Use both `USING` and `WITH CHECK` where appropriate. `USING` controls which existing rows can be read/updated/deleted; `WITH CHECK` validates inserted or updated row values.
@@ -452,7 +447,7 @@ The opening balance workflow intentionally introduces no staging or sub-ledger t
 - Opening balances reject unbalanced totals, duplicate organization-level opening posts, cross-tenant contacts/products/accounts, invalid party control account types, and non-zero pre-existing stock for products being initialized.
 - Opening customer/supplier balances appear in contact-wise ledger queries through `account_transactions.contact_id`; receipts/payments reduce the same party balance when posted to the same control account. Posted sales invoices debit the same customer receivable control account with `contact_id = sales.customer_id`, and the customer receipt RPC reduces that balance.
 - Opening inventory movements reconcile to `inventory_balances` and the inventory asset control-account debit.
-- Posting to a closed period is rejected.
+- There is no closed-period state; posting is not restricted by period status.
 - Concurrent/double posting does not duplicate ledger or inventory effects.
 - Posted entries are corrected through reversals, not silent mutation.
 - Return quantities and payment allocations cannot exceed valid source balances.
@@ -481,8 +476,6 @@ Treat `supabase/initial_database_schema.sql` and this architecture contract as a
 
 ## Final database review and implementation boundaries
 
-- Accounting periods are prevented from overlapping within an organization. The trigger serializes concurrent period changes by locking the organization row.
-- Closed periods require `closed_at`; open periods must not contain close metadata.
 - Membership changes are serialized per organization to protect the invariant that at least one active Administrator remains.
 - `add_organization_user_by_email` adds an existing, email-verified Supabase Auth user to an organization using an active organization role.
 - `update_organization_user_role` changes a membership's role.
@@ -511,7 +504,7 @@ The SQL file remains a one-time bootstrap for a new, empty Supabase database. Do
 - RLS SELECT policies now require the relevant module `.read` permission in addition to tenant membership (self-membership remains readable); child rows inherit the parent module's read permission.
 - Payment/refund balance calculations include only posted or reversed journal entries, excluding draft and confirmed manual journal lines.
 - Opening balances are rejected after operational ledger or inventory activity and cannot use receivable/payable control accounts as ordinary untagged GL lines.
-- Payment posting locks the contact before the accounting period, matching the contact-then-period order used by sales/expense posting.
+- Payment posting locks the contact before calculating and applying its contact balance.
 - Sales stock depletion and purchase-return depletion consume the exact remaining inventory value when the movement takes the product quantity to zero; inventory balance constraints prohibit negative quantity/value.
 - Account hierarchy cycle checks and explicit revokes for trigger-only SECURITY DEFINER functions are installed.
 - Sales-return confirmation/posting caps each return at the proportional original net value of returned lines after allocating the source invoice-wide discount; return-specific discounts may reduce, but cannot increase, that cap.
@@ -522,8 +515,8 @@ The SQL file remains a one-time bootstrap for a new, empty Supabase database. Do
 - Invoice-level payment allocations and invoice-wise outstanding balances.
 - Custom role creation/permission editing and role assignment RPCs beyond the existing membership role-update workflow.
 - Master-data create/update RPCs for accounts, contacts, products, units of measure, and expense categories. Browser-role table writes remain revoked, so these CRUD workflows must use new permission-checked RPCs before the application exposes them.
-- Accounting-period close RPC and inventory-adjustment posting RPC.
+- Inventory-adjustment posting RPC.
 - Automatic number allocation inside document creation flows.
 - Opening customer-credit and supplier-debit balances in the contact subledger; the current opening-balance contract represents customer receivables and supplier payables only.
 
-The SQL remains a one-time bootstrap for an empty database, not a migration to apply over an existing populated database. No live Supabase project has been changed by this repository edit.
+The SQL remains a one-time bootstrap for an empty database, not a migration to apply over an existing populated database. No live Supabase project has been changed by this repository edit. The product owner explicitly removed the accounting-period subsystem: no period table, period ID, period lock, or period-closing workflow exists. Financial reports use explicit date ranges; historical posting restrictions must not silently recreate period entities.
