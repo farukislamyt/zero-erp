@@ -268,9 +268,12 @@ Status note: this table distinguishes functions implemented in the current canon
 | Status | RPC contract | Purpose | Required guarantees |
 | --- | --- | --- | --- |
 | Implemented | `create_organization_with_admin(p_name, ...)` | Create organization, protected Administrator role, role-permission links, and creator membership | Single transaction; derive creator from `auth.uid()`; never accept arbitrary creator user ID from an untrusted client |
-| Implemented | `update_organization_user_role(p_organization_id, p_membership_id, p_role_id)` | Assign a role to an organization membership | Caller must have member-management permission; role and membership must belong to the same organization |
-| Planned | `create_custom_role(p_organization_id, p_name, p_status)` | Create organization-scoped custom role | Verify caller membership and role-management permission; enforce unique organization/name |
-| Planned | `set_role_permissions(p_role_id, p_permission_ids)` | Replace/update permissions on a custom role | Validate each permission against global catalog; block unsafe modification of protected Administrator role |
+| Implemented | `add_organization_user_by_email(p_organization_id, p_email, p_role_id)` | Add an existing email-verified Auth user | Administrator-only; no invitation or account creation; enforce one active company membership |
+| Implemented | `set_organization_user_active(p_organization_id, p_membership_id, p_is_active)` | Deactivate/reactivate a membership | Administrator-only; retain history; partial unique index prevents multiple active company memberships |
+| Implemented | `transfer_organization_administrator(p_organization_id, p_new_administrator_membership_id)` | Transfer the single active Administrator | Administrator-only; target must be an existing active custom-role member; previous Administrator is deactivated atomically |
+| Implemented | `update_organization_user_role(p_organization_id, p_membership_id, p_role_id)` | Assign a role to an organization membership | Active system Administrator only; target must be an active member and role must be an active custom role |
+| Implemented | `create_custom_role(p_organization_id, p_name, p_permission_keys)` | Create organization-scoped custom role | Active system Administrator only; custom roles cannot receive `users.manage` or `roles.manage` |
+| Implemented | `replace_custom_role_permissions(p_organization_id, p_role_id, p_permission_keys)` | Replace/update permissions on a custom role | Active system Administrator only; system roles and control-plane permissions are protected |
 | Implemented | `save_draft_transaction_document(p_organization_id, p_document_type, p_header, p_items, p_document_id)` | Create or update Draft purchase, sales, expense, payment, return, or manual journal documents | Whitelisted fields and child rows only; organization membership and create/manage permission required; only Draft records can be edited; omitting `p_items` preserves existing lines |
 | Implemented | `confirm_transaction_document(p_organization_id, p_document_type, p_document_id)` | Confirm a supported draft transaction document | Enforce per-type permission, tenant scope, draft-only transition, document totals, return source/quantity limits, expense mappings, and payment account configuration; no ledger or inventory impact |
 | Implemented | `revert_transaction_document_to_draft(p_organization_id, p_document_type, p_document_id)` | Unlock a confirmed document for correction | Confirmed-only transition; retain the last confirmation timestamp/actor for audit; no ledger or inventory impact |
@@ -315,11 +318,11 @@ The policies below define the required access-control behavior for Supabase-expo
 
 | Table/group | SELECT | INSERT | UPDATE | DELETE |
 | --- | --- | --- | --- | --- |
-| `organizations` | Active member of that organization | Through trusted organization-creation RPC | Active member with organization-settings permission | Normally blocked; use controlled archival/deactivation |
+| `organizations` | Active member of that organization | Through trusted organization-creation RPC | Active system Administrator only | Normally blocked; use controlled archival/deactivation |
 | `organization_users` | Self membership and/or authorized organization Administrator | Existing verified account only; Administrator-only RPC | Only the active Administrator may add members, change roles, deactivate/reactivate members, or transfer Administrator authority | Preserve the permanent creator record; retain inactive membership history |
-| `roles` | Active organization member with role-read permission | Authorized Administrator/role manager; no client-created system role | Authorized role manager; protect system Administrator | Block system role deletion; custom role only if safe and unassigned |
+| `roles` | Active organization member with role-read permission | Active system Administrator only; no client-created system role | Active system Administrator only; protect system roles | Block system role deletion; custom role only if safe and unassigned |
 | `permissions` | Authenticated users only if the global catalog is intended to be visible | No client writes; system migration/maintainer only | No client writes; system migration/maintainer only | No client writes |
-| `role_permissions` | Active organization member with role-read permission, scoped through role's organization | Authorized role manager; validate role organization | Usually replace rows via a controlled RPC | Authorized role manager; never remove required admin access |
+| `role_permissions` | Active organization member with role-read permission, scoped through role's organization | Active system Administrator only; validate role organization | Active system Administrator only via controlled RPC | System Administrator permissions are immutable; reserved control-plane keys are blocked on custom roles |
 | All accounting/master/transaction tables | Active membership in row's organization plus read permission | Create permission and same-tenant checks | Update permission; posted financial records require controlled workflow | Deny for posted/financial history; use void/reversal/archival workflows |
 | `payment_allocations` | Membership in allocation's organization | Authorized payment workflow; validate payment and target document tenant | Controlled payment workflow | Controlled unallocation only if accounting rules allow |
 | Polymorphic references | Read through parent row's organization | Validate `document_type`, target existence, and organization in trusted code/RPC | Controlled workflow | Controlled workflow |
@@ -446,9 +449,11 @@ The opening balance workflow intentionally introduces no staging or sub-ledger t
 ### Company ownership and membership invariants
 - Two concurrent `create_organization_with_admin` calls for the same Auth user cannot create two companies; after one succeeds, every later attempt remains rejected even after Administrator handover or creator deactivation.
 - The creator membership is identified by its initial timestamp matching `organizations.created_at`; attempts to delete it, change its organization/user/creation timestamp/role, or rewrite the organization's creation timestamp are rejected.
+- A second membership cannot be inserted or rewritten to impersonate the creator timestamp; every company must have exactly one creator anchor.
 - Administrator handover deactivates (but retains) the outgoing creator membership and promotes one existing active custom-role member; exactly one active Administrator exists after commit.
 - Two concurrent attempts to activate memberships in different companies for the same user cannot both commit. After deactivation, another company may add the user while the old inactive history remains.
 - Reactivation is rejected while the user is active in another company; the permanent creator record is never reactivated as an ordinary membership.
+- The original creator row remains permanently inactive after handover; the creator may join another company, but the original audit anchor is not reused as a regular membership.
 - An unverified or unknown email cannot be added, and no invitation/account-creation side effect occurs.
 - If an Administrator handover races with a member/role/profile RPC, a request from the former Administrator must fail after it obtains the organization lock.
 
@@ -482,7 +487,7 @@ The opening balance workflow intentionally introduces no staging or sub-ledger t
 
 ## 14. Production governance
 
-Treat `supabase/initial_database_schema.sql` and this architecture contract as a single versioned unit. The SQL file is the canonical bootstrap for a new, empty Supabase PostgreSQL database; run it once through the Supabase SQL Editor after Supabase Auth is available. It is not an incremental upgrade script and must not be run against a database that already contains these objects. Future schema changes must update this canonical file, then be validated from a clean database and regression-tested before release. The live PostgreSQL catalog remains the operational source of truth; deployment checks must detect drift from this contract.
+Treat `supabase/migrations/20261103000000_initial_database_schema.sql`, the incremental membership-security migration, and this architecture contract as a single versioned unit. The initial migration is the canonical bootstrap for a new, empty Supabase PostgreSQL database; apply migrations in timestamp order after Supabase Auth is available. It is not an incremental upgrade script and must not be run against a database that already contains these objects. Future schema changes must update this canonical file, then be validated from a clean database and regression-tested before release. The live PostgreSQL catalog remains the operational source of truth; deployment checks must detect drift from this contract.
 
 ## Final database review and implementation boundaries
 
