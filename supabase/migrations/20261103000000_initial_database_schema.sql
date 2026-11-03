@@ -5102,6 +5102,13 @@ declare
   v_default_id uuid;
   v_parent_type text;
   v_parent_balance text;
+  v_current_account_type text;
+  v_current_normal_balance text;
+  v_parent_postable boolean;
+  v_inventory_account_id uuid;
+  v_sales_account_id uuid;
+  v_cogs_account_id uuid;
+  v_unit_id uuid;
 begin
   if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id) then
     raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
@@ -5133,6 +5140,9 @@ begin
   if not public.has_org_permission(p_organization_id, v_permission) then
     raise exception using errcode = '42501', message = 'You do not have permission to manage this master-data entity.';
   end if;
+  -- Serialize master-data changes against transaction posting, which takes FOR SHARE on the organization row.
+  perform 1 from public.organizations o where o.id=p_organization_id and o.is_active for update;
+  if not found then raise exception using errcode='23503',message='Active organization was not found.'; end if;
   for v_key in select pg_catalog.jsonb_object_keys(p_data) loop
     if not (v_key = any(v_allowed)) then
       raise exception using errcode = '22023',
@@ -5141,79 +5151,161 @@ begin
   end loop;
 
   if p_entity_type = 'account' then
-    perform 1 from public.organizations o where o.id = p_organization_id and o.is_active for update;
-    if not found then raise exception using errcode = '23503', message = 'Active organization was not found.'; end if;
     if p_data ? 'account_type' or p_data ? 'normal_balance' then
-      if (p_data->>'account_type') is not null and
-         (p_data->>'normal_balance') is distinct from
+      if p_data->>'account_type' is not null and
+         p_data->>'normal_balance' is distinct from
            (case p_data->>'account_type'
              when 'asset' then 'debit' when 'expense' then 'debit'
              when 'liability' then 'credit' when 'equity' then 'credit'
              when 'revenue' then 'credit' else null end) then
-        raise exception using errcode = '22023', message = 'Normal balance must match the account type.';
+        raise exception using errcode='22023',message='Normal balance must match the account type.';
+      end if;
+      if p_data->>'account_type' is not null and p_data->>'normal_balance' is null then
+        raise exception using errcode='22023',message='Account type and normal balance must be supplied together.';
       end if;
     end if;
     if p_record_id is not null then
-      select a.is_system_account into v_system
-      from public.accounts a where a.organization_id = p_organization_id and a.id = p_record_id for update;
-      if not found then raise exception using errcode = '23503', message = 'Account was not found in this organization.'; end if;
+      select a.is_system_account,a.account_type,a.normal_balance
+      into v_system,v_current_account_type,v_current_normal_balance
+      from public.accounts a
+      where a.organization_id=p_organization_id and a.id=p_record_id
+      for update;
+      if not found then raise exception using errcode='23503',message='Account was not found in this organization.'; end if;
       if v_system and (p_data ? 'account_code' or p_data ? 'account_type' or p_data ? 'normal_balance'
         or p_data ? 'is_control_account' or p_data ? 'is_postable' or p_data ? 'is_active'
         or p_data ? 'parent_account_id') then
-        raise exception using errcode = '42501', message = 'System chart accounts cannot be reclassified, moved, or deactivated.';
+        raise exception using errcode='42501',message='System chart accounts cannot be reclassified, moved, or deactivated.';
+      end if;
+      if p_data ? 'account_type' and (p_data->>'account_type') is distinct from v_current_account_type
+         and p_data->>'normal_balance' is null then
+        raise exception using errcode='22023',message='Changing account type requires a matching normal balance.';
+      end if;
+      if p_data ? 'normal_balance' and (p_data->>'normal_balance') is distinct from v_current_normal_balance
+         and not p_data ? 'account_type' then
+        if (p_data->>'normal_balance') is distinct from
+          (case v_current_account_type when 'asset' then 'debit' when 'expense' then 'debit'
+            when 'liability' then 'credit' when 'equity' then 'credit'
+            when 'revenue' then 'credit' else null end) then
+          raise exception using errcode='22023',message='Normal balance must match the account type.';
+        end if;
       end if;
       if exists (select 1 from public.account_transactions atx
-        where atx.organization_id = p_organization_id and atx.account_id = p_record_id)
-        and (p_data ? 'account_type' or p_data ? 'normal_balance' or p_data ? 'is_control_account'
-          or p_data ? 'is_postable' or p_data ? 'parent_account_id') then
-        raise exception using errcode = '23514', message = 'An account used by ledger entries cannot be structurally reclassified.';
+        where atx.organization_id=p_organization_id and atx.account_id=p_record_id)
+        and (p_data ? 'account_code' or p_data ? 'account_type' or p_data ? 'normal_balance'
+          or p_data ? 'is_control_account' or p_data ? 'is_postable' or p_data ? 'parent_account_id') then
+        raise exception using errcode='23514',message='An account used by ledger entries cannot be re-coded or structurally reclassified.';
+      end if;
+      if p_data->>'is_active'='false' and (
+        exists(select 1 from public.account_transactions atx where atx.organization_id=p_organization_id and atx.account_id=p_record_id)
+        or exists(select 1 from public.products pr where pr.organization_id=p_organization_id and p_record_id in (pr.inventory_account_id,pr.sales_account_id,pr.cogs_account_id) and pr.is_active)
+        or exists(select 1 from public.expense_categories ec where ec.organization_id=p_organization_id and ec.expense_account_id=p_record_id and ec.is_active)
+        or exists(select 1 from public.accounts child where child.organization_id=p_organization_id and child.parent_account_id=p_record_id)
+      ) then
+        raise exception using errcode='23514',message='An account with ledger activity, active mappings, or child accounts cannot be deactivated.';
       end if;
     end if;
+    if coalesce((p_data->>'is_control_account')::boolean,false)
+       and coalesce(p_data->>'account_type',v_current_account_type) not in ('asset','liability') then
+      raise exception using errcode='23514',message='Only asset or liability accounts can be control accounts.';
+    end if;
     if p_data ? 'parent_account_id' and p_data->>'parent_account_id' is not null then
-      select a.account_type, a.normal_balance into v_parent_type, v_parent_balance
+      select a.account_type,a.normal_balance,a.is_postable
+      into v_parent_type,v_parent_balance,v_parent_postable
       from public.accounts a
-      where a.organization_id = p_organization_id and a.id = (p_data->>'parent_account_id')::uuid;
-      if not found then raise exception using errcode = '23503', message = 'Parent account must belong to this organization.'; end if;
-      if p_data ? 'account_type' and p_data->>'account_type' <> v_parent_type then
-        raise exception using errcode = '23514', message = 'Parent and child accounts must have the same account type.';
+      where a.organization_id=p_organization_id and a.id=(p_data->>'parent_account_id')::uuid;
+      if not found then raise exception using errcode='23503',message='Parent account must belong to this organization.'; end if;
+      if v_parent_postable then
+        raise exception using errcode='23514',message='A postable account cannot be used as a parent account.';
+      end if;
+      if coalesce(p_data->>'account_type',v_current_account_type) is distinct from v_parent_type then
+        raise exception using errcode='23514',message='Parent and child accounts must have the same account type.';
       end if;
     end if;
   elsif p_entity_type = 'product' then
-    if not (p_data ? 'unit_id') and p_record_id is null then
-      raise exception using errcode = '22023', message = 'A unit of measure is required for a new product.';
+    if p_record_id is null then
+      if not (p_data ? 'unit_id') then
+        raise exception using errcode='22023',message='A unit of measure is required for a new product.';
+      end if;
+      v_inventory_account_id := (select id from public.accounts where organization_id=p_organization_id and account_code='1130');
+      v_sales_account_id := (select id from public.accounts where organization_id=p_organization_id and account_code='4100');
+      v_cogs_account_id := (select id from public.accounts where organization_id=p_organization_id and account_code='5100');
+      p_data := p_data || pg_catalog.jsonb_build_object(
+        'inventory_account_id',coalesce((p_data->>'inventory_account_id')::uuid,v_inventory_account_id),
+        'sales_account_id',coalesce((p_data->>'sales_account_id')::uuid,v_sales_account_id),
+        'cogs_account_id',coalesce((p_data->>'cogs_account_id')::uuid,v_cogs_account_id)
+      );
+      v_unit_id := (p_data->>'unit_id')::uuid;
+    else
+      select pr.unit_id,pr.inventory_account_id,pr.sales_account_id,pr.cogs_account_id
+      into v_unit_id,v_inventory_account_id,v_sales_account_id,v_cogs_account_id
+      from public.products pr
+      where pr.organization_id=p_organization_id and pr.id=p_record_id
+      for update;
+      if not found then raise exception using errcode='23503',message='Product was not found in this organization.'; end if;
+      if p_data ? 'unit_id' then v_unit_id := (p_data->>'unit_id')::uuid; end if;
+      if p_data ? 'inventory_account_id' then v_inventory_account_id := (p_data->>'inventory_account_id')::uuid; end if;
+      if p_data ? 'sales_account_id' then v_sales_account_id := (p_data->>'sales_account_id')::uuid; end if;
+      if p_data ? 'cogs_account_id' then v_cogs_account_id := (p_data->>'cogs_account_id')::uuid; end if;
+      if exists (
+        select 1 from public.inventory_transactions it
+        where it.organization_id=p_organization_id and it.product_id=p_record_id
+      ) and ((p_data ? 'inventory_account_id' and v_inventory_account_id is distinct from
+          (select inventory_account_id from public.products where organization_id=p_organization_id and id=p_record_id))
+        or (p_data ? 'sales_account_id' and v_sales_account_id is distinct from
+          (select sales_account_id from public.products where organization_id=p_organization_id and id=p_record_id))
+        or (p_data ? 'cogs_account_id' and v_cogs_account_id is distinct from
+          (select cogs_account_id from public.products where organization_id=p_organization_id and id=p_record_id))) then
+        raise exception using errcode='23514',message='Product account mappings cannot change after inventory movements exist.';
+      end if;
+      if p_data->>'is_active'='false' and exists (
+        select 1 from public.inventory_balances b
+        where b.organization_id=p_organization_id and b.product_id=p_record_id and b.quantity<>0
+      ) then
+        raise exception using errcode='23514',message='A product with non-zero stock cannot be deactivated.';
+      end if;
     end if;
-    select id into v_default_id from public.accounts where organization_id = p_organization_id and account_code = '1130';
-    if not p_data ? 'inventory_account_id' then p_data := p_data || pg_catalog.jsonb_build_object('inventory_account_id',v_default_id); end if;
-    select id into v_default_id from public.accounts where organization_id = p_organization_id and account_code = '4100';
-    if not p_data ? 'sales_account_id' then p_data := p_data || pg_catalog.jsonb_build_object('sales_account_id',v_default_id); end if;
-    select id into v_default_id from public.accounts where organization_id = p_organization_id and account_code = '5100';
-    if not p_data ? 'cogs_account_id' then p_data := p_data || pg_catalog.jsonb_build_object('cogs_account_id',v_default_id); end if;
-    if exists (
-      select 1 from public.accounts a
-      where a.organization_id = p_organization_id
-        and ((a.id = (p_data->>'inventory_account_id')::uuid and (a.account_type <> 'asset' or not a.is_postable or not a.is_active))
-          or (a.id = (p_data->>'sales_account_id')::uuid and (a.account_type <> 'revenue' or not a.is_postable or not a.is_active))
-          or (a.id = (p_data->>'cogs_account_id')::uuid and (a.account_type <> 'expense' or not a.is_postable or not a.is_active)))
-    ) then
-      raise exception using errcode = '23514', message = 'Product accounts must be postable inventory asset, revenue, and COGS expense accounts.';
+    if not exists(select 1 from public.units_of_measure u where u.organization_id=p_organization_id and u.id=v_unit_id and u.is_active) then
+      raise exception using errcode='23514',message='Product unit must be active and belong to this organization.';
     end if;
-    if p_record_id is not null and exists (
-      select 1 from public.inventory_transactions it
-      where it.organization_id = p_organization_id and it.product_id = p_record_id
-    ) and (p_data ? 'inventory_account_id' or p_data ? 'sales_account_id' or p_data ? 'cogs_account_id') then
-      raise exception using errcode = '23514', message = 'Product account mappings cannot change after inventory movements exist.';
+    if not exists(select 1 from public.accounts a where a.organization_id=p_organization_id and a.id=v_inventory_account_id
+      and a.account_type='asset' and a.is_postable and a.is_active)
+      or not exists(select 1 from public.accounts a where a.organization_id=p_organization_id and a.id=v_sales_account_id
+      and a.account_type='revenue' and a.is_postable and a.is_active)
+      or not exists(select 1 from public.accounts a where a.organization_id=p_organization_id and a.id=v_cogs_account_id
+      and a.account_type='expense' and a.is_postable and a.is_active) then
+      raise exception using errcode='23514',message='Product mappings require active, postable inventory asset, revenue, and COGS expense accounts.';
     end if;
   elsif p_entity_type = 'expense_category' then
-    if not p_data ? 'expense_account_id' then
-      select id into v_default_id from public.accounts where organization_id = p_organization_id and account_code = '5400';
-      p_data := p_data || pg_catalog.jsonb_build_object('expense_account_id',v_default_id);
+    if p_record_id is null then
+      if not (p_data ? 'expense_account_id') then
+        select id into v_default_id from public.accounts
+        where organization_id=p_organization_id and account_code='5400';
+        p_data := p_data || pg_catalog.jsonb_build_object('expense_account_id',v_default_id);
+      end if;
     end if;
-    if not exists (
+    if p_data ? 'expense_account_id' and not exists (
       select 1 from public.accounts a
-      where a.organization_id = p_organization_id and a.id = (p_data->>'expense_account_id')::uuid
-        and a.account_type = 'expense' and a.is_postable and a.is_active
+      where a.organization_id=p_organization_id and a.id=(p_data->>'expense_account_id')::uuid
+        and a.account_type='expense' and a.is_postable and a.is_active
     ) then
-      raise exception using errcode = '23514', message = 'Expense category must map to an active, postable expense account.';
+      raise exception using errcode='23514',message='Expense category must map to an active, postable expense account.';
+    end if;
+
+
+  if p_record_id is not null and p_entity_type='contact' and p_data->>'is_active'='false' then
+    if exists (
+      select 1 from public.account_transactions atx
+      join public.accounts a on a.organization_id=atx.organization_id and a.id=atx.account_id
+      join public.journal_entries je on je.organization_id=atx.organization_id and je.id=atx.journal_entry_id
+      where atx.organization_id=p_organization_id and atx.contact_id=p_record_id
+        and a.is_control_account and je.status in ('posted','reversed')
+      group by a.id having sum(atx.debit-atx.credit)<>0
+    ) then
+      raise exception using errcode='23514',message='A contact with an outstanding receivable or payable balance cannot be deactivated.';
+    end if;
+  elsif p_record_id is not null and p_entity_type='unit' and p_data->>'is_active'='false' then
+    if exists(select 1 from public.products pr where pr.organization_id=p_organization_id and pr.unit_id=p_record_id and pr.is_active) then
+      raise exception using errcode='23514',message='A unit used by active products cannot be deactivated.';
     end if;
   end if;
 
