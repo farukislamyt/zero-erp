@@ -2359,30 +2359,27 @@ begin
     select
       1 as sort_group,
       x.ordinality as sort_order,
-      x.account_id,
-      nullif(pg_catalog.btrim(coalesce(x.description, '')), '') as description,
-      x.debit,
-      x.credit,
+      (x.item->>'account_id')::uuid as account_id,
+      nullif(pg_catalog.btrim(coalesce(x.item->>'description', '')), '') as description,
+      (x.item->>'debit')::numeric as debit,
+      (x.item->>'credit')::numeric as credit,
       null::uuid as contact_id
-    from pg_catalog.jsonb_to_recordset(p_account_lines) with ordinality as x(
-      account_id uuid, debit numeric, credit numeric, description text, balance_side text, ordinality bigint
-    )
+    from pg_catalog.jsonb_array_elements(p_account_lines) with ordinality as x(item,ordinality)
 
     union all
 
     select
       2,
       x.ordinality,
-      x.account_id,
-      coalesce(nullif(pg_catalog.btrim(coalesce(x.description, '')), ''),
-        case when x.party_type = 'customer' then 'Opening receivable' else 'Opening payable' end),
-      case when coalesce(x.balance_side,case when x.party_type='customer' then 'debit' else 'credit' end)='debit' then x.amount else 0 end,
-      case when coalesce(x.balance_side,case when x.party_type='customer' then 'debit' else 'credit' end)='credit' then x.amount else 0 end,
-      x.contact_id
-    from pg_catalog.jsonb_to_recordset(p_party_balances) with ordinality as x(
-      contact_id uuid, party_type text, account_id uuid, amount numeric,
-      description text, balance_side text, ordinality bigint
-    )
+      (x.item->>'account_id')::uuid,
+      coalesce(nullif(pg_catalog.btrim(coalesce(x.item->>'description', '')), ''),
+        case when x.item->>'party_type' = 'customer' then 'Opening receivable' else 'Opening payable' end),
+      case when coalesce(x.item->>'balance_side',case when x.item->>'party_type'='customer' then 'debit' else 'credit' end)='debit'
+        then (x.item->>'amount')::numeric else 0 end,
+      case when coalesce(x.item->>'balance_side',case when x.item->>'party_type'='customer' then 'debit' else 'credit' end)='credit'
+        then (x.item->>'amount')::numeric else 0 end,
+      (x.item->>'contact_id')::uuid
+    from pg_catalog.jsonb_array_elements(p_party_balances) with ordinality as x(item,ordinality)
 
     union all
 
@@ -2451,21 +2448,19 @@ begin
     p_organization_id,
     'OB-' || pg_catalog.substr(pg_catalog.replace(p_organization_id::text, '-', ''), 1, 12)
       || '-' || x.ordinality::text,
-    x.product_id,
+    (x.item->>'product_id')::uuid,
     p_entry_date,
     'opening_balance',
     'in',
-    x.quantity,
-    x.unit_cost,
-    round(x.quantity * x.unit_cost, 4),
+    (x.item->>'quantity')::numeric,
+    (x.item->>'unit_cost')::numeric,
+    round((x.item->>'quantity')::numeric * (x.item->>'unit_cost')::numeric, 4),
     'organization_opening_balance',
     p_organization_id,
     null,
-    round(x.unit_cost, 6),
+    round((x.item->>'unit_cost')::numeric, 6),
     v_user_id
-  from pg_catalog.jsonb_to_recordset(p_inventory_lines) with ordinality as x(
-    product_id uuid, quantity numeric, unit_cost numeric, ordinality bigint
-  );
+  from pg_catalog.jsonb_array_elements(p_inventory_lines) with ordinality as x(item,ordinality);
 
   return v_journal_entry_id;
 end;
