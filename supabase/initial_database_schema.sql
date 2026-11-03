@@ -431,6 +431,10 @@ create table public.journal_entries (
   description text,
   posted_at timestamptz,
   reversal_of_id uuid,
+  reversal_journal_entry_id uuid,
+  reversed_at timestamptz,
+  reversed_by uuid references auth.users(id) on delete set null,
+  reversal_reason text,
   created_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default pg_catalog.now(),
   updated_at timestamptz not null default pg_catalog.now(),
@@ -445,6 +449,11 @@ create table public.journal_entries (
     references public.journal_entries (organization_id, id)
     on delete restrict,
   constraint journal_entries_not_self_reversal_chk check (reversal_of_id is distinct from id),
+  constraint journal_entries_reversal_entry_same_org_fk
+    foreign key (organization_id, reversal_journal_entry_id)
+    references public.journal_entries (organization_id, id) on delete restrict,
+  constraint journal_entries_reversed_audit_chk
+    check (status <> 'reversed' or (reversal_journal_entry_id is not null and reversed_at is not null and reversed_by is not null and nullif(pg_catalog.btrim(reversal_reason), '') is not null)),
   constraint journal_entries_posted_timestamp_chk
     check ((status in ('posted', 'reversed') and posted_at is not null) or status in ('draft', 'confirmed', 'void')),
   constraint journal_entries_confirmed_timestamp_chk
@@ -593,7 +602,7 @@ create table public.purchase_returns (
   purchase_id uuid not null,
   supplier_id uuid not null,
   return_date date not null,
-  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'void')),
+  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'void', 'reversed')),
   confirmed_at timestamptz,
   confirmed_by uuid references auth.users(id) on delete set null,
   posted_by uuid references auth.users(id) on delete set null,
@@ -606,6 +615,10 @@ create table public.purchase_returns (
   payable_account_id uuid not null,
   purchase_return_variance_account_id uuid,
   posted_journal_entry_id uuid,
+  reversal_journal_entry_id uuid,
+  reversed_at timestamptz,
+  reversed_by uuid references auth.users(id) on delete set null,
+  reversal_reason text,
   created_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default pg_catalog.now(),
   updated_at timestamptz not null default pg_catalog.now(),
@@ -628,7 +641,12 @@ create table public.purchase_returns (
     references public.accounts (organization_id, id)
     on delete restrict,
   constraint purchase_returns_discount_limit_chk check (discount_amount <= subtotal),
-  constraint purchase_returns_confirmed_timestamp_chk
+  constraint purchase_returns_reversal_entry_same_org_fk
+    foreign key (organization_id, reversal_journal_entry_id)
+    references public.journal_entries (organization_id, id) on delete restrict,
+  constraint purchase_returns_reversed_audit_chk
+    check (status <> 'reversed' or (reversal_journal_entry_id is not null and reversed_at is not null and reversed_by is not null and nullif(pg_catalog.btrim(reversal_reason), '') is not null)),
+    constraint purchase_returns_confirmed_timestamp_chk
     check (status <> 'confirmed' or (confirmed_at is not null and confirmed_by is not null)),
   constraint purchase_returns_void_timestamp_chk
     check (status <> 'void' or (voided_at is not null and voided_by is not null and nullif(pg_catalog.btrim(void_reason), '') is not null))
@@ -732,7 +750,7 @@ create table public.sales_returns (
   sales_id uuid not null,
   customer_id uuid not null,
   return_date date not null,
-  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'void')),
+  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'void', 'reversed')),
   confirmed_at timestamptz,
   confirmed_by uuid references auth.users(id) on delete set null,
   posted_by uuid references auth.users(id) on delete set null,
@@ -744,6 +762,10 @@ create table public.sales_returns (
   total_amount numeric(20, 4) not null default 0 check (total_amount >= 0),
   receivable_account_id uuid not null,
   posted_journal_entry_id uuid,
+  reversal_journal_entry_id uuid,
+  reversed_at timestamptz,
+  reversed_by uuid references auth.users(id) on delete set null,
+  reversal_reason text,
   created_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default pg_catalog.now(),
   updated_at timestamptz not null default pg_catalog.now(),
@@ -762,7 +784,12 @@ create table public.sales_returns (
     references public.accounts (organization_id, id)
     on delete restrict,
   constraint sales_returns_discount_limit_chk check (discount_amount <= subtotal),
-  constraint sales_returns_confirmed_timestamp_chk
+  constraint sales_returns_reversal_entry_same_org_fk
+    foreign key (organization_id, reversal_journal_entry_id)
+    references public.journal_entries (organization_id, id) on delete restrict,
+  constraint sales_returns_reversed_audit_chk
+    check (status <> 'reversed' or (reversal_journal_entry_id is not null and reversed_at is not null and reversed_by is not null and nullif(pg_catalog.btrim(reversal_reason), '') is not null)),
+    constraint sales_returns_confirmed_timestamp_chk
     check (status <> 'confirmed' or (confirmed_at is not null and confirmed_by is not null)),
   constraint sales_returns_void_timestamp_chk
     check (status <> 'void' or (voided_at is not null and voided_by is not null and nullif(pg_catalog.btrim(void_reason), '') is not null))
@@ -808,7 +835,7 @@ create table public.expenses (
   expense_date date not null,
   amount numeric(20, 4) not null check (amount > 0),
   description text,
-  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'void')),
+  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'void', 'reversed')),
   confirmed_at timestamptz,
   confirmed_by uuid references auth.users(id) on delete set null,
   posted_by uuid references auth.users(id) on delete set null,
@@ -816,6 +843,10 @@ create table public.expenses (
   voided_by uuid references auth.users(id) on delete set null,
   void_reason text,
   posted_journal_entry_id uuid,
+  reversal_journal_entry_id uuid,
+  reversed_at timestamptz,
+  reversed_by uuid references auth.users(id) on delete set null,
+  reversal_reason text,
   created_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default pg_catalog.now(),
   updated_at timestamptz not null default pg_catalog.now(),
@@ -833,7 +864,12 @@ create table public.expenses (
     foreign key (organization_id, payable_account_id)
     references public.accounts (organization_id, id)
     on delete restrict,
-  constraint expenses_confirmed_timestamp_chk
+  constraint expenses_reversal_entry_same_org_fk
+    foreign key (organization_id, reversal_journal_entry_id)
+    references public.journal_entries (organization_id, id) on delete restrict,
+  constraint expenses_reversed_audit_chk
+    check (status <> 'reversed' or (reversal_journal_entry_id is not null and reversed_at is not null and reversed_by is not null and nullif(pg_catalog.btrim(reversal_reason), '') is not null)),
+    constraint expenses_confirmed_timestamp_chk
     check (status <> 'confirmed' or (confirmed_at is not null and confirmed_by is not null)),
   constraint expenses_void_timestamp_chk
     check (status <> 'void' or (voided_at is not null and voided_by is not null and nullif(pg_catalog.btrim(void_reason), '') is not null))
@@ -849,7 +885,7 @@ create table public.payments (
   amount numeric(20, 4) not null check (amount > 0),
   account_id uuid not null,
   settlement_account_id uuid,
-  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'void')),
+  status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'void', 'reversed')),
   confirmed_at timestamptz,
   confirmed_by uuid references auth.users(id) on delete set null,
   posted_by uuid references auth.users(id) on delete set null,
@@ -857,6 +893,10 @@ create table public.payments (
   voided_by uuid references auth.users(id) on delete set null,
   void_reason text,
   posted_journal_entry_id uuid,
+  reversal_journal_entry_id uuid,
+  reversed_at timestamptz,
+  reversed_by uuid references auth.users(id) on delete set null,
+  reversal_reason text,
   description text,
   created_by uuid references auth.users(id) on delete set null,
   created_at timestamptz not null default pg_catalog.now(),
@@ -875,7 +915,12 @@ create table public.payments (
     foreign key (organization_id, settlement_account_id)
     references public.accounts (organization_id, id)
     on delete restrict,
-  constraint payments_confirmed_timestamp_chk
+  constraint payments_reversal_entry_same_org_fk
+    foreign key (organization_id, reversal_journal_entry_id)
+    references public.journal_entries (organization_id, id) on delete restrict,
+  constraint payments_reversed_audit_chk
+    check (status <> 'reversed' or (reversal_journal_entry_id is not null and reversed_at is not null and reversed_by is not null and nullif(pg_catalog.btrim(reversal_reason), '') is not null)),
+    constraint payments_confirmed_timestamp_chk
     check (status <> 'confirmed' or (confirmed_at is not null and confirmed_by is not null)),
   constraint payments_void_timestamp_chk
     check (status <> 'void' or (voided_at is not null and voided_by is not null and nullif(pg_catalog.btrim(void_reason), '') is not null))
