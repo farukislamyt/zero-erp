@@ -1,0 +1,45 @@
+name: Database CI
+
+on:
+  push:
+    branches:
+      - feat/database-migrations
+  pull_request:
+    branches:
+      - feat/database-migrations
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  supabase-database:
+    name: Clean Supabase bootstrap and pgTAP
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Start disposable local Supabase stack
+        run: supabase start -x studio,imgproxy,inbucket,logflare,vector,supavisor
+
+      - name: Apply canonical bootstrap to an empty database
+        run: supabase db reset --local
+
+      - name: Run pgTAP database tests
+        run: supabase test db
+
+      - name: Stop disposable Supabase stack
+        if: always()
+        run: supabase stop --no-backup
