@@ -1341,7 +1341,7 @@ end;
 $$;
 
 create trigger organization_users_guard_last_admin
-before update or delete on public.organization_users
+before insert or update or delete on public.organization_users
 for each row execute function public.guard_administrator_membership();
 
 create or replace function public.guard_system_role_permissions()
