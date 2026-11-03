@@ -50,6 +50,7 @@ DECLARE
   v_manager_role_id uuid;
   v_third_membership_id uuid;
   v_creator_membership_id uuid;
+  v_forged_membership_id uuid;
   v_unverified_user_id uuid := '00000000-0000-0000-0000-000000000005';
   v_fourth_membership_first_org uuid;
   v_fourth_membership_second_org uuid;
@@ -728,15 +729,19 @@ BEGIN
     RAISE EXCEPTION 'An ordinary membership forged the creator timestamp';
   EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
   END;
-  BEGIN
-    INSERT INTO public.organization_users(
-      organization_id,user_id,role_id,is_active,created_at
-    )
-    SELECT v_test_organization_id,v_unverified_user_id,v_manager_role_id,false,o.created_at
-    FROM public.organizations o WHERE o.id=v_test_organization_id;
-    RAISE EXCEPTION 'A second creator timestamp anchor was inserted';
-  EXCEPTION WHEN SQLSTATE '42501' THEN NULL;
-  END;
+  INSERT INTO public.organization_users(
+    organization_id,user_id,role_id,is_active,created_at
+  )
+  SELECT v_test_organization_id,v_unverified_user_id,v_manager_role_id,false,o.created_at
+  FROM public.organizations o WHERE o.id=v_test_organization_id
+  RETURNING id INTO v_forged_membership_id;
+
+  IF (SELECT created_at FROM public.organization_users WHERE id=v_forged_membership_id)
+       = (SELECT created_at FROM public.organizations WHERE id=v_test_organization_id)
+     OR public.is_organization_creator(v_test_organization_id,v_unverified_user_id) THEN
+    RAISE EXCEPTION 'A later membership reused or forged the permanent creator timestamp';
+  END IF;
+  DELETE FROM public.organization_users WHERE id=v_forged_membership_id;
 
   -- Add a pre-existing, email-verified account. No invitation is sent.
   INSERT INTO auth.users(id,email,email_confirmed_at)
