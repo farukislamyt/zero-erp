@@ -39,7 +39,7 @@ See the [Complete Database Reference](docs/DATABASE_REFERENCE.md) for exact defi
 - Each membership has one role. The permission catalog is global; roles are organization-scoped.
 - The original creator membership is the permanent, immutable Administrator for the organization's lifetime. Administrator transfer is not supported.
 - Direct browser-role table writes are revoked; authenticated clients use explicitly granted, permission-checked RPCs.
-- Database-defined workflows include draft/confirm/post document handling, journal reversals, inventory adjustments, payment allocations, document numbering, opening balances and financial/operational reports.
+- Database-defined routines include draft/confirm/post document handling, journal reversals, payment allocations, document numbering, opening balances and financial/operational reports. The inventory-adjustment RPC exists but has a known document-number permission-mapping blocker; receivables aging has a historical as-of-date cutoff defect. See the [Database Audit](docs/DATABASE_AUDIT.md).
 - The database schema does not by itself prove that a corresponding UI screen or application workflow is implemented.
 
 ## Verification
