@@ -6367,16 +6367,15 @@ begin
   end if;
 
   if exists (
-    select 1
+    select o.id
     from public.organizations o
-    where not exists (
-      select 1
-      from public.organization_users ou
-      where ou.organization_id = o.id
-        and ou.created_at = o.created_at
-    )
+    left join public.organization_users ou
+      on ou.organization_id = o.id
+     and ou.created_at = o.created_at
+    group by o.id
+    having count(ou.id) <> 1
   ) then
-    raise exception 'Migration blocked: at least one company has no identifiable original Administrator membership timestamp. Founder history must be reconciled before retrying.';
+    raise exception 'Migration blocked: each company must have exactly one identifiable original creator membership timestamp. Reconcile ambiguous or missing founder history before retrying.';
   end if;
 end;
 $preflight$;
@@ -6476,6 +6475,20 @@ declare
     coalesce(pg_catalog.current_setting('app.allow_admin_transfer', true), '') = 'on';
 begin
   if tg_op = 'INSERT' then
+    select o.created_at
+      into v_org_created_at
+    from public.organizations o
+    where o.id = new.organization_id;
+
+    -- Only the atomic company-creation RPC may create the timestamp-matched
+    -- founder row. This prevents later same-transaction inserts from becoming
+    -- ambiguous lifetime-creation markers.
+    if v_org_created_at is not null
+       and new.created_at = v_org_created_at
+       and coalesce(pg_catalog.current_setting('app.allow_company_creation', true), '') <> 'on' then
+      raise exception using errcode = '42501',
+        message = 'Only the company-creation workflow may establish the permanent creator membership record.';
+    end if;
     return new;
   end if;
 
@@ -6759,8 +6772,11 @@ begin
   on conflict (role_id, permission_id) do nothing;
 
   perform pg_catalog.set_config('app.allow_admin_transfer', 'on', true);
+  perform pg_catalog.set_config('app.allow_company_creation', 'on', true);
   insert into public.organization_users (organization_id, user_id, role_id, is_active)
   values (v_organization_id, v_user_id, v_role_id, true);
+  perform pg_catalog.set_config('app.allow_company_creation', 'off', true);
+  perform pg_catalog.set_config('app.allow_admin_transfer', 'off', true);
 
   -- Preserve the existing bootstrap behavior: initialize the company's
   -- default chart of accounts as part of the same transaction.
@@ -7169,6 +7185,8 @@ begin
   set role_id = v_admin_role_id, updated_at = pg_catalog.now()
   where organization_id = p_organization_id
     and id = p_new_administrator_membership_id;
+
+  perform pg_catalog.set_config('app.allow_admin_transfer', 'off', true);
 end;
 $function$;
 revoke all on function public.transfer_organization_administrator(uuid,uuid) from public, anon;
