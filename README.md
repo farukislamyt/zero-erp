@@ -382,7 +382,7 @@ Next.js is the web application framework. Follow the project’s existing routin
 
 ### Supabase and PostgreSQL
 
-Supabase provides the PostgreSQL platform and may provide authentication or other backend services depending on configuration. Use migrations to version database changes and test schema updates in a non-production environment.
+Supabase provides the PostgreSQL platform and may provide authentication or other backend services depending on configuration. During the current schema-design phase, maintain one canonical database SQL file at `supabase/migrations/20261103000000_initial_database_schema.sql`; consolidate schema changes there and test against a fresh, non-production PostgreSQL database. Do not add separate incremental SQL files until the schema is finalized.
 
 ### Vercel
 
@@ -401,7 +401,7 @@ General workflow:
    ```
 2. Install dependencies using the package manager specified by the repository.
 3. Configure the required environment variables.
-4. Apply database migrations using the project's established migration workflow.
+4. For a fresh/empty non-production database, apply the canonical bootstrap file `supabase/migrations/20261103000000_initial_database_schema.sql` once. It is not an upgrade script for an existing database.
 5. Run the development command defined in `package.json`.
 6. Run the available lint, type-check, test, and production-build scripts before submitting changes.
 
