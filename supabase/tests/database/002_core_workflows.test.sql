@@ -144,12 +144,14 @@ select is((select round(sum(atx.debit-atx.credit),2) from public.account_transac
 select throws_ok(
   format('select public.post_contact_payment(%L::uuid,%L::uuid)',current_setting('test.org_id'),current_setting('test.transfer_id')),
   '23514',
+  'Only a confirmed, unposted payment can be posted.',
   'duplicate posting of a transfer is rejected'
 );
 select throws_ok(
   format('select public.post_opening_balances(%L::uuid,date %L,%L::jsonb,%L::jsonb,%L::jsonb)',
     current_setting('test.org_id'),'2026-01-03','[]','[]','[]'),
   '23514',
+  'Opening balances have already been posted for this organization. Use a reversal or adjustment for corrections.',
   'opening balances cannot be posted a second time'
 );
 
@@ -166,6 +168,7 @@ select throws_ok(
   format('select public.confirm_transaction_document(%L::uuid,%L,%L::uuid)',
     current_setting('test.org_id'),'payment',current_setting('test.invalid_transfer_id')),
   '23514',
+  'Payment requires valid cash/bank, settlement account, contact, and payment-type configuration.',
   'transfer from an account to itself is rejected'
 );
 
@@ -192,6 +195,7 @@ select throws_ok(
   format('select public.save_master_data(%L::uuid,%L,%L::jsonb)',
     current_setting('test.org_id'),'account','{"account_code":"1199","account_name":"Forbidden","account_type":"asset","normal_balance":"debit"}'),
   '42501',
+  'You do not have permission to manage this master-data entity.',
   'limited member cannot create chart-of-account records'
 );
 
