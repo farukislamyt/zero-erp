@@ -5719,11 +5719,13 @@ begin
   );
 
   for v_line in
-    select x.product_id,x.direction,x.quantity,x.unit_cost,x.ordinality
-    from pg_catalog.jsonb_to_recordset(p_lines) with ordinality as x(
-      product_id uuid,direction text,quantity numeric,unit_cost numeric,ordinality bigint
-    )
-    order by x.product_id,x.ordinality
+    select (x.item->>'product_id')::uuid as product_id,
+      x.item->>'direction' as direction,
+      (x.item->>'quantity')::numeric as quantity,
+      (x.item->>'unit_cost')::numeric as unit_cost,
+      x.ordinality
+    from pg_catalog.jsonb_array_elements(p_lines) with ordinality as x(item,ordinality)
+    order by (x.item->>'product_id')::uuid,x.ordinality
   loop
     select b.quantity,b.inventory_value,b.average_cost
     into v_balance_quantity,v_balance_value,v_average_cost
