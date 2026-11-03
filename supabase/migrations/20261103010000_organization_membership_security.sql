@@ -5,7 +5,7 @@
 -- existing organization_users/roles records and removes invitation workflows.
 --
 -- Founder identity is recorded by the original Administrator membership row:
--- its created_at is the same transaction timestamp as organizations.created_at.
+-- its created_at is the same captured timestamp as organizations.created_at.
 -- The founder row is never deleted and its identity/timestamp never changes.
 -- During an Administrator handover it is deactivated (not deleted), so it
 -- remains a permanent company-creation record while releasing the user to join
@@ -410,6 +410,7 @@ declare
   v_user_id uuid;
   v_organization_id uuid;
   v_role_id uuid;
+  v_created_at timestamptz;
 begin
   v_user_id := (select auth.uid());
   if v_user_id is null then
@@ -458,8 +459,12 @@ begin
       message = 'Timezone must be a valid PostgreSQL timezone name.';
   end if;
 
-  insert into public.organizations (name, currency, timezone)
-  values (pg_catalog.btrim(p_name), p_currency, p_timezone)
+  -- Use one captured wall-clock timestamp for both anchor rows. This remains
+  -- unique per company even when multiple RPC calls share one test transaction.
+  v_created_at := pg_catalog.clock_timestamp();
+
+  insert into public.organizations (name, currency, timezone, created_at)
+  values (pg_catalog.btrim(p_name), p_currency, p_timezone, v_created_at)
   returning id into v_organization_id;
 
   insert into public.roles (organization_id, name, status, is_system_role)
@@ -473,8 +478,8 @@ begin
 
   perform pg_catalog.set_config('app.allow_admin_transfer', 'on', true);
   perform pg_catalog.set_config('app.allow_company_creation', 'on', true);
-  insert into public.organization_users (organization_id, user_id, role_id, is_active)
-  values (v_organization_id, v_user_id, v_role_id, true);
+  insert into public.organization_users (organization_id, user_id, role_id, is_active, created_at)
+  values (v_organization_id, v_user_id, v_role_id, true, v_created_at);
   perform pg_catalog.set_config('app.allow_company_creation', 'off', true);
   perform pg_catalog.set_config('app.allow_admin_transfer', 'off', true);
 
