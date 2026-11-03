@@ -3481,6 +3481,19 @@ begin
     raise exception using errcode = '23514', message = 'All journal accounts must be active and postable before posting.';
   end if;
 
+  if exists (
+    select 1
+    from public.account_transactions atx
+    left join public.contacts c
+      on c.organization_id = atx.organization_id and c.id = atx.contact_id
+    where atx.organization_id = p_organization_id
+      and atx.journal_entry_id = p_journal_entry_id
+      and atx.contact_id is not null
+      and (c.id is null or not c.is_active)
+  ) then
+    raise exception using errcode = '23514', message = 'Every journal contact must be active and belong to this organization.';
+  end if;
+
   update public.journal_entries
   set status = 'posted', posted_at = pg_catalog.now(), posted_by = v_user_id, updated_at = pg_catalog.now()
   where organization_id = p_organization_id and id = p_journal_entry_id;
@@ -3810,7 +3823,7 @@ begin
       on p.organization_id = pr.organization_id and p.id = pr.purchase_id
     where pr.organization_id = p_organization_id and pr.id = p_document_id
       and pr.supplier_id = p.supplier_id and pr.payable_account_id = p.payable_account_id;
-    if v_source_status not in ('posted','partially_returned') then
+    if v_source_status is null or v_source_status not in ('posted','partially_returned') then
       raise exception using errcode = '23514', message = 'Purchase return must reference a posted, not-fully-returned purchase with matching supplier and payable account.';
     end if;
     if exists (
@@ -3848,7 +3861,7 @@ begin
       on s.organization_id = sr.organization_id and s.id = sr.sales_id
     where sr.organization_id = p_organization_id and sr.id = p_document_id
       and sr.customer_id = s.customer_id and sr.receivable_account_id = s.receivable_account_id;
-    if v_source_status not in ('posted','partially_returned') then
+    if v_source_status is null or v_source_status not in ('posted','partially_returned') then
       raise exception using errcode = '23514', message = 'Sales return must reference a posted, not-fully-returned invoice with matching customer and receivable account.';
     end if;
     if exists (
