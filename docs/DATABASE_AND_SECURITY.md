@@ -146,7 +146,7 @@ Core domains:
 8. **Sales:** `sales`, `sales_items`, `sales_returns`, `sales_return_items`
 9. **Expenses and cash/bank activity:** `expenses`, `payments`, `payment_allocations`
 
-The core business schema contains 24 tables. The complete Zero ERP data model consists of those tables plus `roles`, `permissions`, and `role_permissions`, with `organization_users.role_id` linking each membership to its role.
+The core business schema contains 24 business tables. The complete Zero ERP data model consists of those tables plus the three RBAC tables `roles`, `permissions`, and `role_permissions` (27 tables total), with `organization_users.role_id` linking each membership to its role.
 
 ## 6. Relationship map
 
@@ -277,6 +277,7 @@ These RPC contracts define the database operations exposed to the application. E
 | `revert_transaction_document_to_draft(p_organization_id, p_document_type, p_document_id)` | Unlock a confirmed document for correction | Confirmed-only transition; clear confirmation metadata; no ledger or inventory impact |
 | `void_transaction_document(p_organization_id, p_document_type, p_document_id, p_reason)` | Cancel an unposted document | Draft/confirmed only; require a reason; retain audit metadata; never void posted documents |
 | `delete_draft_transaction_document(p_organization_id, p_document_type, p_document_id)` | Hard-delete a draft and its draft-only child rows | Draft-only; permission checked; posted/confirmed/void records cannot be deleted |
+| `post_confirmed_journal_entry(p_organization_id, p_journal_entry_id)` | Post a confirmed manual journal entry | Confirmed-only; validates open period, date, active/postable accounts, balanced lines, and posting permission; marks posted atomically |
 | `post_journal_entry(p_entry_id)` | Validate and post a journal entry | Balance debits/credits; check period, organization, permissions, idempotency; commit status and posting atomically |
 | `post_opening_balances(p_organization_id, p_accounting_period_id, p_entry_date, p_account_lines, p_party_balances, p_inventory_lines, p_description)` | One-time organization opening balance initialization using existing tables only | Derive customer receivables and supplier payables from contact-tagged control-account lines; derive inventory value from product opening quantities/costs; balance the journal; lock the organization/period; initialize stock; reject duplicate opening posts; commit all effects atomically |
 | `post_contact_payment(p_organization_id, p_payment_id, p_accounting_period_id)` | Post a customer receipt or supplier payment against the existing contact-wise control-account balance | Receipt: debit cash/bank and credit receivables; supplier payment: debit payables and credit cash/bank; validate current outstanding, contact, control account, period and permission; reject overpayment and duplicate posting; update the payment and ledger atomically |
