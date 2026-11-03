@@ -86,20 +86,8 @@ Deno.serve(async (request: Request): Promise<Response> => {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  const { data: existingUserMembership, error: membershipLookupError } = await adminClient
-    .from("organization_users")
-    .select("id")
-    .eq("organization_id", organizationId)
-    .eq("user_id", inviter.id)
-    .maybeSingle();
-
-  // A caller may already be a member, but that does not imply the invite target
-  // is a member. Check the target through the existing verified-user RPC first.
-  if (membershipLookupError) {
-    return json(500, { error: "Could not verify organization membership state." });
-  }
-  void existingUserMembership;
-
+  // Existing verified Auth users are added through the caller-scoped RPC;
+  // only an unknown/unverified email proceeds to the Auth Admin invitation path.
   const { data: existingMembershipId, error: addExistingError } = await callerClient.rpc(
     "add_organization_user_by_email",
     {
