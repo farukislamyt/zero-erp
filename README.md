@@ -53,7 +53,7 @@ For the logical ER diagram, schema dependency order, relationship map, table inv
 ## Database Schema
 
 
-The executable bootstrap SQL is maintained in **[`supabase/initial_database_schema.sql`](supabase/initial_database_schema.sql)**. It consolidates the complete database schema, seed data, RLS policies, grants, and posting RPCs into one ordered script. Run it only once against a new/empty Supabase database; do not run it as an upgrade against a database that already contains these objects.
+The executable bootstrap SQL is maintained in **[`supabase/initial_database_schema.sql`](supabase/initial_database_schema.sql)**. It consolidates the complete database schema, seed data, RLS policies, grants, and posting RPCs into one ordered script. Run it only once against a new/empty Supabase database; do not run it as an upgrade against a database that already contains these objects. For an existing installation, apply the ordered SQL files in [`supabase/migrations/`](supabase/migrations/) instead. The `20261103000100_remove_accounting_periods.sql` migration removes period metadata and the period ID from journal entries while preserving financial documents, journal lines, and transaction dates; back up and verify on staging before production.
 
 ### Organization and configuration
 
