@@ -33,7 +33,7 @@ This README and the database blueprint define the target relational model, tenan
 
 - Organization and membership management
 - Role-based access control with a protected Administrator role and organization-specific custom roles
-- Accounting periods and chart of accounts
+- Chart of accounts and date-based general ledger
 - General ledger and journal entries
 - Product catalog and units of measure
 - Contacts for customers, suppliers, and other counterparties
@@ -324,8 +324,7 @@ The ledger model separates journal headers (`journal_entries`) from journal line
 Required accounting controls:
 
 1. A posted journal entry must have at least the required lines and total debits equal to total credits.
-2. The entry date must be valid for its accounting period.
-3. Posting to a closed accounting period must be blocked unless an explicit, authorized exception exists.
+2. Every journal entry retains its source transaction date.
 4. Posting must be atomic: the business document, journal entry, journal lines, and related inventory effects must succeed or fail together.
 5. Prevent duplicate posting and use controlled reversal entries to correct posted activity.
 6. Validate that accounts, contacts, products, periods, and source documents belong to the same organization.
