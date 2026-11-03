@@ -34,7 +34,7 @@ Parameters are listed in SQL order. Optional parameters retain their SQL default
 | `has_org_permission` | `p_organization_id uuid, p_permission_key text` | Authenticated identity; active membership, active role and matching permission | Boolean authorization result; false for inactive/missing scope |
 | `is_org_administrator` | `p_organization_id uuid` | Authenticated identity | True only for the current active organization Administrator |
 | `create_organization_with_admin` | `p_name text, p_currency text DEFAULT 'BDT', p_timezone text DEFAULT 'Asia/Dhaka'` | Authenticated user; one-company/active-membership restrictions | Atomically creates tenant, permanent creator Administrator, all 43 role permissions, 22 default accounts, General Expenses category and 8 number sequences |
-| `update_organization_profile` | `p_organization_id uuid, p_name text, p_phone text, p_email text, p_address text, p_city text, p_country text, p_currency text, p_timezone text, p_tin text, p_bin text` | `organization.update` plus active member | Updates supported company profile fields; trims empty optional text to NULL |
+| `update_organization_profile` | `p_organization_id uuid, p_name text, p_phone text, p_email text, p_address text, p_city text, p_country text, p_currency text, p_timezone text, p_tin text, p_bin text` | Organization Administrator only; active organization and caller re-check after row lock | Updates supported company profile fields; trims empty optional text to NULL |
 | `add_organization_user_by_email` | `p_organization_id uuid, p_email text, p_role_id uuid` | Organization Administrator only; existing verified Auth user; active custom role | Creates/reactivates ordinary membership; never creates an Auth account |
 | `update_organization_user_role` | `p_organization_id uuid, p_membership_id uuid, p_role_id uuid` | Organization Administrator only | Assigns active same-organization custom role; Creator membership is immutable |
 | `set_organization_user_active` | `p_organization_id uuid, p_membership_id uuid, p_is_active boolean` | Organization Administrator only | Activates/deactivates ordinary membership; Creator cannot be changed |
@@ -118,13 +118,13 @@ All three payloads must be JSON arrays and must parse completely (record count e
 
 - `p_organization_id`: active organization with `opening_balances.post`.
 - `p_entry_date`: required accounting date.
-- `p_account_lines`: account UUID, debit, credit; account same tenant, active and postable; non-negative valid 4-decimal amounts; no malformed row; total debits equal total credits.
-- `p_party_balances`: contact UUID, control account UUID, amount and balance direction/type as accepted by the SQL recordset; contact and account same tenant; control account correct AR/AP type; party/account duplicates or incompatible GL/inventory mapping rejected.
-- `p_inventory_lines`: product UUID, quantity and unit cost; product same tenant, active and mapped to valid inventory asset account; quantity/cost positive and 6-decimal precision; total value rounded to 4 decimals.
+- `p_account_lines`: each row has `account_id uuid, debit numeric, credit numeric, description text`; account same tenant, active and postable; debit/credit non-negative, exactly one side positive, each amount rounded to 4 decimals.
+- `p_party_balances`: each row has `contact_id uuid, party_type text, account_id uuid, amount numeric, description text, balance_side text`; `party_type` is `customer|supplier`; contact active and same tenant; account is an active/postable control account and Asset for customer or Liability for supplier; amount positive and rounded to 4 decimals; optional `balance_side` is `debit|credit` (defaults to debit for customer and credit for supplier).
+- `p_inventory_lines`: each row has `product_id uuid, quantity numeric, unit_cost numeric`; product same tenant, active and mapped to active/postable Inventory Asset; quantity positive and rounded to 6 decimals; unit cost non-negative and rounded to 6 decimals; duplicate product rows are rejected (combine into one row); total value is rounded to 4 decimals.
 - `p_description`: optional; default `Opening balances`.
 - One-time rule: a second opening post or opening post after disallowed accounting activity fails. All GL, party and stock effects are one transaction.
 
-The exact JSON recordset column declarations in the canonical SQL are the field-level oracle; a change to any recordset requires updating this section and the matching test fixtures.
+`p_description` is optional and defaults to `Opening balances`. Ordinary GL lines may not directly use AR/AP control accounts, party control accounts, or inventory control accounts; those balances must be represented by their detailed party/inventory rows. A party control account cannot also be an inventory control account. All three arrays must be supplied, even when an array is empty.
 
 ### 5.3 Inventory adjustment
 
