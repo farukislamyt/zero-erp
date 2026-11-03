@@ -4247,7 +4247,7 @@ begin
           where x.organization_id=p_organization_id and x.id=(p_header->>'reference_id')::uuid) then
           raise exception using errcode='23503', message='Referenced purchase was not found in this organization.';
         end if;
-      when 'sales' then
+      when 'sale' then
         if not exists (select 1 from public.sales x
           where x.organization_id=p_organization_id and x.id=(p_header->>'reference_id')::uuid) then
           raise exception using errcode='23503', message='Referenced sale was not found in this organization.';
