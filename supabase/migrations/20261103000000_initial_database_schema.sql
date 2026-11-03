@@ -7746,9 +7746,7 @@ end;
 $admin_preflight$;
 
 -- One active company membership per Auth user. Inactive historical rows remain.
-create unique index if not exists organization_users_one_active_company_per_user
-  on public.organization_users (user_id)
-  where is_active = true;
+
 
 -- The creator is identified by the initial membership timestamp. This helper
 -- deliberately does not depend on the member's current role or active state.

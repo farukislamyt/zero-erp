@@ -20,7 +20,7 @@ The consolidated SQL retains the final `CREATE OR REPLACE FUNCTION`, trigger rep
 | Tables with RLS enabled | 26 |
 | RLS policies | 26 |
 | Effective triggers | 37 |
-| Explicit indexes (including unique/partial) | 30 |
+| Explicit indexes (including unique/partial) | 29 |
 | Effective public functions (transfer RPC excluded) | 53 |
 | Seeded global permission keys | 43 |
 | Views / materialized views | 0 |
@@ -252,7 +252,6 @@ create policy permissions_select_authenticated on public.permissions for select 
 
 - `create index organization_users_user_active_idx on public.organization_users (user_id, is_active);`
 - `create index organization_users_role_idx on public.organization_users (role_id);`
-- `create unique index if not exists organization_users_one_active_company_per_user on public.organization_users (user_id) where is_active = true;`
 - `create unique index if not exists organization_users_one_active_company_per_user on public.organization_users (user_id) where is_active = true;`
 
 **Triggers:**
@@ -2000,10 +1999,6 @@ create unique index journal_entries_payment_reference_uq on public.journal_entri
 
 ```sql
 create unique index journal_entries_sales_reference_uq on public.journal_entries (organization_id, reference_type, reference_id) where entry_type = 'sale' and reference_type = 'sale' and reference_id is not null;
-```
-
-```sql
-create unique index if not exists organization_users_one_active_company_per_user on public.organization_users (user_id) where is_active = true;
 ```
 
 ```sql

@@ -18,7 +18,7 @@ That file now contains the effective SQL previously distributed across the three
 | Public tables | 26 |
 | Columns | 349 |
 | Declared table constraints | 129 |
-| Explicit indexes | 30 |
+| Explicit indexes | 29 |
 | RLS-enabled tables | 26 |
 | RLS policies | 26 |
 | Effective triggers | 37 |

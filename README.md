@@ -22,7 +22,7 @@ The file is intended to initialize a **new/empty Supabase database**. It contain
 
 - 26 public tables and 349 columns.
 - 129 declared table constraints.
-- 30 explicit indexes.
+- 29 effective explicit indexes.
 - RLS enabled on all 26 tables with 26 installed SELECT policies.
 - 37 effective triggers.
 - 53 effective public functions.

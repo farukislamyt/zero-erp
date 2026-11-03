@@ -20,7 +20,7 @@ The historical `transfer_organization_administrator(uuid, uuid)` RPC is not part
 | Public tables | 26 |
 | Columns across those tables | 349 |
 | Declared table constraints (inline and later ALTER constraints) | 129 |
-| Explicit indexes | 30 |
+| Explicit indexes | 29 |
 | RLS-enabled tables | 26 |
 | RLS policies | 26 |
 | Triggers | 37 |
