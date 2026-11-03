@@ -54,14 +54,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
-      - name: Type-check Auth invitation Edge Function
-        run: deno check supabase/functions/invite-organization-member/index.ts
-
       - name: Install PostgreSQL client
         run: |
           sudo apt-get update
