@@ -441,3 +441,7 @@ Keep changes focused and consistent with the existing codebase. Include migratio
 ## License
 
 A license has not been specified in the supplied project information. Add the chosen license before distributing or reusing the project publicly.
+
+### Current database boundaries
+
+The canonical bootstrap uses Supabase Auth as the identity source and does not create a separate `profiles` table. Organization administrators can add an existing verified Auth user by email, change membership roles, and deactivate/reactivate memberships through permission-checked RPCs. Inviting a not-yet-registered user requires a trusted server or Edge Function using the Supabase Auth Admin API. Invoice-level payment allocations remain deferred; current payment posting is contact-level. See [Database Blueprint](docs/DATABASE_AND_SECURITY.md#final-database-review-and-implementation-boundaries) for current scope and verification limitations.
