@@ -3734,7 +3734,7 @@ begin
   returning id into v_journal_id;
 
   for v_line in
-    select ri.id, ri.product_id, ri.quantity, ri.line_total, ri.line_number,
+    select ri.id, ri.sales_item_id, ri.product_id, ri.quantity, ri.line_total, ri.line_number,
            si.cogs_unit_cost, si.quantity as sold_quantity, si.cogs_total as sold_cogs_total,
            pr.sales_account_id, pr.inventory_account_id, pr.cogs_account_id
     from public.sales_return_items ri
@@ -3754,7 +3754,7 @@ begin
     from public.sales_return_items sri
     join public.sales_returns sr on sr.organization_id = sri.organization_id and sr.id = sri.sales_return_id
     where sri.organization_id = p_organization_id
-      and sri.sales_item_id = v_line.id
+      and sri.sales_item_id = v_line.sales_item_id
       and sr.status = 'posted';
 
     if v_line.quantity + v_previously_returned_quantity = v_line.sold_quantity then
