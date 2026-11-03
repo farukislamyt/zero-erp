@@ -4747,4 +4747,583 @@ grant execute on function public.void_transaction_document(uuid, text, uuid, tex
 grant execute on function public.delete_draft_transaction_document(uuid, text, uuid) to authenticated;
 
 
+
+-- ============================================================================
+-- OPERATIONAL ERP COMPLETION: DEFAULT COA, MASTER DATA, RBAC, PROFILE, NUMBERING
+-- ============================================================================
+
+create or replace function public.seed_default_chart_of_accounts(p_organization_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v record;
+  v_parent_id uuid;
+begin
+  if not exists (select 1 from public.organizations o where o.id = p_organization_id) then
+    raise exception using errcode = '23503', message = 'Organization was not found.';
+  end if;
+
+  for v in
+    select *
+    from (values
+      ('1000','Assets','asset',null::text,'debit',false,false,10),
+      ('1100','Current Assets','asset','1000','debit',false,false,20),
+      ('1110','Cash and Bank','asset','1100','debit',false,true,30),
+      ('1120','Accounts Receivable','asset','1100','debit',true,true,40),
+      ('1130','Inventory','asset','1100','debit',false,true,50),
+      ('1140','Other Current Assets','asset','1100','debit',false,true,60),
+      ('2000','Liabilities','liability',null::text,'credit',false,false,70),
+      ('2100','Current Liabilities','liability','2000','credit',false,false,80),
+      ('2110','Accounts Payable','liability','2100','credit',true,true,90),
+      ('3000','Equity','equity',null::text,'credit',false,false,100),
+      ('3100','Owner Capital','equity','3000','credit',false,true,110),
+      ('3200','Retained Earnings','equity','3000','credit',false,true,120),
+      ('3300','Opening Balance Equity','equity','3000','credit',false,true,130),
+      ('4000','Revenue','revenue',null::text,'credit',false,false,140),
+      ('4100','Sales Revenue','revenue','4000','credit',false,true,150),
+      ('4200','Purchase Return Gain','revenue','4000','credit',false,true,160),
+      ('4300','Inventory Adjustment Gain','revenue','4000','credit',false,true,170),
+      ('5000','Expenses','expense',null::text,'debit',false,false,180),
+      ('5100','Cost of Goods Sold','expense','5000','debit',false,true,190),
+      ('5200','Purchase Return Loss','expense','5000','debit',false,true,200),
+      ('5300','Inventory Adjustment Loss','expense','5000','debit',false,true,210),
+      ('5400','General Expenses','expense','5000','debit',false,true,220)
+    ) as coa(code, name, account_type, parent_code, normal_balance, is_control, is_postable, sort_order)
+    order by sort_order
+  loop
+    v_parent_id := null;
+    if v.parent_code is not null then
+      select a.id into v_parent_id
+      from public.accounts a
+      where a.organization_id = p_organization_id
+        and a.account_code = v.parent_code;
+      if v_parent_id is null then
+        raise exception using errcode = '23514',
+          message = pg_catalog.format('Default chart parent %s is missing.', v.parent_code);
+      end if;
+    end if;
+
+    insert into public.accounts (
+      organization_id, account_code, account_name, account_type,
+      parent_account_id, normal_balance, is_control_account,
+      is_system_account, is_postable, is_active
+    )
+    values (
+      p_organization_id, v.code, v.name, v.account_type,
+      v_parent_id, v.normal_balance, v.is_control, true, v.is_postable, true
+    )
+    on conflict (organization_id, account_code) do nothing;
+  end loop;
+
+  insert into public.expense_categories (
+    organization_id, category_code, name, expense_account_id, is_active
+  )
+  select p_organization_id, 'GEN', 'General Expenses', a.id, true
+  from public.accounts a
+  where a.organization_id = p_organization_id and a.account_code = '5400'
+  on conflict (organization_id, category_code) do nothing;
+
+  insert into public.number_sequences (
+    organization_id, document_type, prefix, next_number, padding, is_active
+  )
+  values
+    (p_organization_id, 'purchase', 'PUR-', 1, 5, true),
+    (p_organization_id, 'sale', 'SAL-', 1, 5, true),
+    (p_organization_id, 'expense', 'EXP-', 1, 5, true),
+    (p_organization_id, 'payment', 'PAY-', 1, 5, true),
+    (p_organization_id, 'journal_entry', 'JRN-', 1, 5, true),
+    (p_organization_id, 'purchase_return', 'PR-', 1, 5, true),
+    (p_organization_id, 'sales_return', 'SR-', 1, 5, true),
+    (p_organization_id, 'inventory_adjustment', 'IA-', 1, 5, true)
+  on conflict (organization_id, document_type) do nothing;
+end;
+$function$;
+revoke all on function public.seed_default_chart_of_accounts(uuid) from public, anon, authenticated;
+
+create or replace function public.create_organization_with_admin(
+  p_name text,
+  p_currency text default 'BDT',
+  p_timezone text default 'Asia/Dhaka'
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_organization_id uuid;
+  v_role_id uuid;
+begin
+  if v_user_id is null then
+    raise exception using errcode = '42501', message = 'Authentication is required to create an organization.';
+  end if;
+  if p_name is null or pg_catalog.length(pg_catalog.btrim(p_name)) not between 1 and 160 then
+    raise exception using errcode = '22023', message = 'Organization name must contain between 1 and 160 characters.';
+  end if;
+  if p_currency is null or p_currency !~ '^[A-Z]{3} then
+    raise exception using errcode = '22023', message = 'Currency must be a three-letter uppercase ISO currency code.';
+  end if;
+  if p_timezone is null or not exists (
+    select 1 from pg_catalog.pg_timezone_names tz where tz.name = pg_catalog.btrim(p_timezone)
+  ) then
+    raise exception using errcode = '22023', message = 'Timezone must be a valid PostgreSQL timezone name.';
+  end if;
+
+  insert into public.organizations (name, currency, timezone)
+  values (pg_catalog.btrim(p_name), p_currency, pg_catalog.btrim(p_timezone))
+  returning id into v_organization_id;
+
+  insert into public.roles (organization_id, name, status, is_system_role)
+  values (v_organization_id, 'Administrator', 'active', true)
+  returning id into v_role_id;
+
+  insert into public.role_permissions (role_id, permission_id)
+  select v_role_id, p.id from public.permissions p
+  on conflict (role_id, permission_id) do nothing;
+
+  insert into public.organization_users (organization_id, user_id, role_id, is_active)
+  values (v_organization_id, v_user_id, v_role_id, true);
+
+  perform public.seed_default_chart_of_accounts(v_organization_id);
+  return v_organization_id;
+end;
+$function$;
+revoke all on function public.create_organization_with_admin(text,text,text) from public, anon;
+grant execute on function public.create_organization_with_admin(text,text,text) to authenticated;
+
+create or replace function public.next_document_number(
+  p_organization_id uuid,
+  p_document_type text
+)
+returns text
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_permission text;
+  v_prefix text;
+  v_number bigint;
+  v_padding smallint;
+begin
+  v_permission := case p_document_type
+    when 'purchase' then 'purchases.create'
+    when 'sale' then 'sales.create'
+    when 'expense' then 'expenses.manage'
+    when 'payment' then 'payments.manage'
+    when 'journal_entry' then 'journal_entries.create'
+    when 'purchase_return' then 'purchases.returns.create'
+    when 'sales_return' then 'sales.returns.create'
+    when 'inventory_adjustment' then 'inventory.adjust'
+    else null
+  end;
+  if (select auth.uid()) is null or v_permission is null
+     or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, v_permission) then
+    raise exception using errcode = '42501', message = 'Not authorized to allocate this document number.';
+  end if;
+
+  insert into public.number_sequences(organization_id, document_type, prefix, next_number, padding)
+  values (p_organization_id, p_document_type, upper(left(p_document_type, 3)) || '-', 2, 5)
+  on conflict (organization_id, document_type) do update
+    set next_number = public.number_sequences.next_number + 1,
+        updated_at = pg_catalog.now()
+    where public.number_sequences.is_active
+  returning prefix, next_number - 1, padding into v_prefix, v_number, v_padding;
+
+  if not found then
+    raise exception using errcode = '55000',
+      message = 'Document numbering is disabled for this document type in this organization.';
+  end if;
+  return v_prefix || lpad(v_number::text, v_padding, '0');
+end;
+$function$;
+revoke all on function public.next_document_number(uuid,text) from public, anon;
+grant execute on function public.next_document_number(uuid,text) to authenticated;
+
+-- Document numbers are generated by PostgreSQL and cannot be client-selected or edited.
+create or replace function public.assign_document_number()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_type text;
+begin
+  if tg_op = 'UPDATE' then
+    if tg_table_name = 'purchase' then new.invoice_id := old.invoice_id;
+    elsif tg_table_name = 'sales' then new.invoice_id := old.invoice_id;
+    elsif tg_table_name = 'expenses' then new.expense_number := old.expense_number;
+    elsif tg_table_name = 'payments' then new.payment_number := old.payment_number;
+    elsif tg_table_name = 'purchase_returns' then new.return_number := old.return_number;
+    elsif tg_table_name = 'sales_returns' then new.return_number := old.return_number;
+    elsif tg_table_name = 'journal_entries' then new.entry_number := old.entry_number;
+    end if;
+    return new;
+  end if;
+
+  if new.status <> 'draft' then return new; end if;
+  if tg_table_name = 'purchase' then v_type := 'purchase'; new.invoice_id := public.next_document_number(new.organization_id, v_type);
+  elsif tg_table_name = 'sales' then v_type := 'sale'; new.invoice_id := public.next_document_number(new.organization_id, v_type);
+  elsif tg_table_name = 'expenses' then v_type := 'expense'; new.expense_number := public.next_document_number(new.organization_id, v_type);
+  elsif tg_table_name = 'payments' then v_type := 'payment'; new.payment_number := public.next_document_number(new.organization_id, v_type);
+  elsif tg_table_name = 'purchase_returns' then v_type := 'purchase_return'; new.return_number := public.next_document_number(new.organization_id, v_type);
+  elsif tg_table_name = 'sales_returns' then v_type := 'sales_return'; new.return_number := public.next_document_number(new.organization_id, v_type);
+  elsif tg_table_name = 'journal_entries' and new.entry_type = 'manual' then v_type := 'journal_entry'; new.entry_number := public.next_document_number(new.organization_id, v_type);
+  end if;
+  return new;
+end;
+$function$;
+revoke all on function public.assign_document_number() from public, anon, authenticated;
+
+create trigger purchase_assign_document_number before insert or update of invoice_id on public.purchase
+for each row execute function public.assign_document_number();
+create trigger sales_assign_document_number before insert or update of invoice_id on public.sales
+for each row execute function public.assign_document_number();
+create trigger expenses_assign_document_number before insert or update of expense_number on public.expenses
+for each row execute function public.assign_document_number();
+create trigger payments_assign_document_number before insert or update of payment_number on public.payments
+for each row execute function public.assign_document_number();
+create trigger purchase_returns_assign_document_number before insert or update of return_number on public.purchase_returns
+for each row execute function public.assign_document_number();
+create trigger sales_returns_assign_document_number before insert or update of return_number on public.sales_returns
+for each row execute function public.assign_document_number();
+create trigger journal_entries_assign_document_number before insert or update of entry_number on public.journal_entries
+for each row execute function public.assign_document_number();
+
+create or replace function public.update_organization_profile(
+  p_organization_id uuid,
+  p_name text,
+  p_phone text,
+  p_email text,
+  p_address text,
+  p_city text,
+  p_country text,
+  p_currency text,
+  p_timezone text,
+  p_tin text,
+  p_bin text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if (select auth.uid()) is null
+     or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, 'organization.update') then
+    raise exception using errcode = '42501', message = 'Not authorized to update this organization.';
+  end if;
+  if p_name is null or pg_catalog.length(pg_catalog.btrim(p_name)) not between 1 and 160
+     or p_currency is null or p_currency !~ '^[A-Z]{3}
+     or p_timezone is null or not exists (
+       select 1 from pg_catalog.pg_timezone_names tz where tz.name = pg_catalog.btrim(p_timezone)
+     ) then
+    raise exception using errcode = '22023', message = 'Organization name, ISO currency, or timezone is invalid.';
+  end if;
+
+  update public.organizations
+  set name = pg_catalog.btrim(p_name),
+      phone = nullif(pg_catalog.btrim(coalesce(p_phone,'')), ''),
+      email = nullif(pg_catalog.btrim(coalesce(p_email,'')), ''),
+      address = nullif(pg_catalog.btrim(coalesce(p_address,'')), ''),
+      city = nullif(pg_catalog.btrim(coalesce(p_city,'')), ''),
+      country = nullif(pg_catalog.btrim(coalesce(p_country,'')), ''),
+      currency = p_currency,
+      timezone = pg_catalog.btrim(p_timezone),
+      tin = nullif(pg_catalog.btrim(coalesce(p_tin,'')), ''),
+      bin = nullif(pg_catalog.btrim(coalesce(p_bin,'')), '')
+  where id = p_organization_id and is_active;
+  if not found then
+    raise exception using errcode = '23503', message = 'Active organization was not found.';
+  end if;
+end;
+$function$;
+revoke all on function public.update_organization_profile(uuid,text,text,text,text,text,text,text,text,text,text) from public, anon;
+grant execute on function public.update_organization_profile(uuid,text,text,text,text,text,text,text,text,text,text) to authenticated;
+
+create or replace function public.save_master_data(
+  p_organization_id uuid,
+  p_entity_type text,
+  p_data jsonb,
+  p_record_id uuid default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_table text;
+  v_permission text;
+  v_allowed text[];
+  v_key text;
+  v_columns text;
+  v_values text;
+  v_set_clause text;
+  v_id uuid := coalesce(p_record_id, pg_catalog.gen_random_uuid());
+  v_has_created_by boolean := false;
+  v_system boolean;
+  v_has_activity boolean;
+  v_default_id uuid;
+  v_parent_type text;
+  v_parent_balance text;
+begin
+  if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id) then
+    raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
+  end if;
+  if p_data is null or pg_catalog.jsonb_typeof(p_data) <> 'object' or p_data = '{}'::jsonb then
+    raise exception using errcode = '22023', message = 'Master-data fields must be a non-empty JSON object.';
+  end if;
+
+  case p_entity_type
+    when 'account' then
+      v_table := 'accounts'; v_permission := 'accounts.manage';
+      v_allowed := array['account_code','account_name','account_type','parent_account_id','normal_balance','is_control_account','is_postable','is_active'];
+    when 'unit' then
+      v_table := 'units_of_measure'; v_permission := 'products.manage';
+      v_allowed := array['name','is_active'];
+    when 'contact' then
+      v_table := 'contacts'; v_permission := 'contacts.manage'; v_has_created_by := true;
+      v_allowed := array['contact_number','name','phone','email','address','is_active'];
+    when 'product' then
+      v_table := 'products'; v_permission := 'products.manage'; v_has_created_by := true;
+      v_allowed := array['product_code','name','unit_id','inventory_account_id','sales_account_id','cogs_account_id','is_active'];
+    when 'expense_category' then
+      v_table := 'expense_categories'; v_permission := 'expenses.manage';
+      v_allowed := array['category_code','name','expense_account_id','is_active'];
+    else
+      raise exception using errcode = '22023', message = 'Unsupported master-data entity type.';
+  end case;
+
+  if not public.has_org_permission(p_organization_id, v_permission) then
+    raise exception using errcode = '42501', message = 'You do not have permission to manage this master-data entity.';
+  end if;
+  for v_key in select pg_catalog.jsonb_object_keys(p_data) loop
+    if not (v_key = any(v_allowed)) then
+      raise exception using errcode = '22023',
+        message = pg_catalog.format('Field %s is not editable for %s.', v_key, p_entity_type);
+    end if;
+  end loop;
+
+  if p_entity_type = 'account' then
+    perform 1 from public.organizations o where o.id = p_organization_id and o.is_active for update;
+    if not found then raise exception using errcode = '23503', message = 'Active organization was not found.'; end if;
+    if p_data ? 'account_type' or p_data ? 'normal_balance' then
+      if (p_data->>'account_type') is not null and
+         (p_data->>'normal_balance') is distinct from
+           case p_data->>'account_type'
+             when 'asset' then 'debit' when 'expense' then 'debit'
+             when 'liability' then 'credit' when 'equity' then 'credit'
+             when 'revenue' then 'credit' else null end then
+        raise exception using errcode = '22023', message = 'Normal balance must match the account type.';
+      end if;
+    end if;
+    if p_record_id is not null then
+      select a.is_system_account into v_system
+      from public.accounts a where a.organization_id = p_organization_id and a.id = p_record_id for update;
+      if not found then raise exception using errcode = '23503', message = 'Account was not found in this organization.'; end if;
+      if v_system and (p_data ? 'account_code' or p_data ? 'account_type' or p_data ? 'normal_balance'
+        or p_data ? 'is_control_account' or p_data ? 'is_postable' or p_data ? 'is_active'
+        or p_data ? 'parent_account_id') then
+        raise exception using errcode = '42501', message = 'System chart accounts cannot be reclassified, moved, or deactivated.';
+      end if;
+      if exists (select 1 from public.account_transactions atx
+        where atx.organization_id = p_organization_id and atx.account_id = p_record_id)
+        and (p_data ? 'account_type' or p_data ? 'normal_balance' or p_data ? 'is_control_account'
+          or p_data ? 'is_postable' or p_data ? 'parent_account_id') then
+        raise exception using errcode = '23514', message = 'An account used by ledger entries cannot be structurally reclassified.';
+      end if;
+    end if;
+    if p_data ? 'parent_account_id' and p_data->>'parent_account_id' is not null then
+      select a.account_type, a.normal_balance into v_parent_type, v_parent_balance
+      from public.accounts a
+      where a.organization_id = p_organization_id and a.id = (p_data->>'parent_account_id')::uuid;
+      if not found then raise exception using errcode = '23503', message = 'Parent account must belong to this organization.'; end if;
+      if p_data ? 'account_type' and p_data->>'account_type' <> v_parent_type then
+        raise exception using errcode = '23514', message = 'Parent and child accounts must have the same account type.';
+      end if;
+    end if;
+  elsif p_entity_type = 'product' then
+    if not (p_data ? 'unit_id') and p_record_id is null then
+      raise exception using errcode = '22023', message = 'A unit of measure is required for a new product.';
+    end if;
+    select id into v_default_id from public.accounts where organization_id = p_organization_id and account_code = '1130';
+    if not p_data ? 'inventory_account_id' then p_data := p_data || pg_catalog.jsonb_build_object('inventory_account_id',v_default_id); end if;
+    select id into v_default_id from public.accounts where organization_id = p_organization_id and account_code = '4100';
+    if not p_data ? 'sales_account_id' then p_data := p_data || pg_catalog.jsonb_build_object('sales_account_id',v_default_id); end if;
+    select id into v_default_id from public.accounts where organization_id = p_organization_id and account_code = '5100';
+    if not p_data ? 'cogs_account_id' then p_data := p_data || pg_catalog.jsonb_build_object('cogs_account_id',v_default_id); end if;
+    if exists (
+      select 1 from public.accounts a
+      where a.organization_id = p_organization_id
+        and ((a.id = (p_data->>'inventory_account_id')::uuid and (a.account_type <> 'asset' or not a.is_postable))
+          or (a.id = (p_data->>'sales_account_id')::uuid and (a.account_type <> 'revenue' or not a.is_postable))
+          or (a.id = (p_data->>'cogs_account_id')::uuid and (a.account_type <> 'expense' or not a.is_postable)))
+    ) then
+      raise exception using errcode = '23514', message = 'Product accounts must be postable inventory asset, revenue, and COGS expense accounts.';
+    end if;
+    if p_record_id is not null and exists (
+      select 1 from public.inventory_transactions it
+      where it.organization_id = p_organization_id and it.product_id = p_record_id
+    ) and (p_data ? 'inventory_account_id' or p_data ? 'sales_account_id' or p_data ? 'cogs_account_id') then
+      raise exception using errcode = '23514', message = 'Product account mappings cannot change after inventory movements exist.';
+    end if;
+  elsif p_entity_type = 'expense_category' then
+    if not p_data ? 'expense_account_id' then
+      select id into v_default_id from public.accounts where organization_id = p_organization_id and account_code = '5400';
+      p_data := p_data || pg_catalog.jsonb_build_object('expense_account_id',v_default_id);
+    end if;
+    if not exists (
+      select 1 from public.accounts a
+      where a.organization_id = p_organization_id and a.id = (p_data->>'expense_account_id')::uuid
+        and a.account_type = 'expense' and a.is_postable and a.is_active
+    ) then
+      raise exception using errcode = '23514', message = 'Expense category must map to an active, postable expense account.';
+    end if;
+  end if;
+
+  if p_record_id is null then
+    select
+      pg_catalog.string_agg(pg_catalog.format('%I',k),', ' order by k),
+      pg_catalog.string_agg(pg_catalog.format('(pg_catalog.jsonb_populate_record(null::public.%I,$3)).%I',v_table,k),', ' order by k)
+    into v_columns,v_values
+    from pg_catalog.jsonb_object_keys(p_data) as keys(k);
+    if v_has_created_by then
+      execute pg_catalog.format(
+        'insert into public.%I (id,organization_id,created_by,%s) values ($1,$2,$4,%s)',
+        v_table,v_columns,v_values
+      ) using v_id,p_organization_id,p_data,(select auth.uid());
+    else
+      execute pg_catalog.format(
+        'insert into public.%I (id,organization_id,%s) values ($1,$2,%s)',
+        v_table,v_columns,v_values
+      ) using v_id,p_organization_id,p_data;
+    end if;
+  else
+    if v_table = 'products' and not exists (
+      select 1 from public.products where organization_id = p_organization_id and id = p_record_id
+    ) then raise exception using errcode = '23503', message = 'Product was not found in this organization.'; end if;
+    if v_table = 'contacts' and not exists (
+      select 1 from public.contacts where organization_id = p_organization_id and id = p_record_id
+    ) then raise exception using errcode = '23503', message = 'Contact was not found in this organization.'; end if;
+    if v_table = 'units_of_measure' and not exists (
+      select 1 from public.units_of_measure where organization_id = p_organization_id and id = p_record_id
+    ) then raise exception using errcode = '23503', message = 'Unit was not found in this organization.'; end if;
+    if v_table = 'expense_categories' and not exists (
+      select 1 from public.expense_categories where organization_id = p_organization_id and id = p_record_id
+    ) then raise exception using errcode = '23503', message = 'Expense category was not found in this organization.'; end if;
+    if v_table = 'accounts' and not exists (
+      select 1 from public.accounts where organization_id = p_organization_id and id = p_record_id
+    ) then raise exception using errcode = '23503', message = 'Account was not found in this organization.'; end if;
+
+    select pg_catalog.string_agg(
+      pg_catalog.format('%I=(pg_catalog.jsonb_populate_record(null::public.%I,$3)).%I',k,v_table,k),
+      ', ' order by k
+    ) into v_set_clause
+    from pg_catalog.jsonb_object_keys(p_data) as keys(k);
+    execute pg_catalog.format('update public.%I set %s where organization_id=$1 and id=$2',v_table,v_set_clause)
+      using p_organization_id,p_record_id,p_data;
+  end if;
+  return v_id;
+end;
+$function$;
+revoke all on function public.save_master_data(uuid,text,jsonb,uuid) from public, anon;
+grant execute on function public.save_master_data(uuid,text,jsonb,uuid) to authenticated;
+
+create or replace function public.create_custom_role(
+  p_organization_id uuid,
+  p_name text,
+  p_permission_keys text[]
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_role_id uuid;
+  v_requested integer;
+  v_inserted integer;
+begin
+  if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id,'roles.manage') then
+    raise exception using errcode = '42501', message = 'Not authorized to create roles.';
+  end if;
+  if p_name is null or pg_catalog.length(pg_catalog.btrim(p_name)) not between 1 and 100
+     or p_permission_keys is null then
+    raise exception using errcode = '22023', message = 'Role name and permission list are required.';
+  end if;
+  if exists (
+    select 1 from unnest(p_permission_keys) k
+    where not public.has_org_permission(p_organization_id,k)
+  ) then
+    raise exception using errcode = '42501', message = 'A custom role cannot receive permissions the current user does not hold.';
+  end if;
+  insert into public.roles(organization_id,name,status,is_system_role)
+  values(p_organization_id,pg_catalog.btrim(p_name),'active',false)
+  returning id into v_role_id;
+  select count(distinct k) into v_requested from unnest(p_permission_keys) k;
+  insert into public.role_permissions(role_id,permission_id)
+  select v_role_id,p.id from public.permissions p
+  where p.permission_key = any(p_permission_keys);
+  get diagnostics v_inserted = row_count;
+  if v_inserted <> v_requested then
+    raise exception using errcode = '22023', message = 'One or more permission keys do not exist.';
+  end if;
+  return v_role_id;
+exception when unique_violation then
+  raise exception using errcode = '23505', message = 'A role with this name already exists.';
+end;
+$function$;
+
+create or replace function public.replace_custom_role_permissions(
+  p_organization_id uuid,
+  p_role_id uuid,
+  p_permission_keys text[]
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_system boolean;
+  v_requested integer;
+  v_inserted integer;
+begin
+  if (select auth.uid()) is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id,'roles.manage') then
+    raise exception using errcode = '42501', message = 'Not authorized to change role permissions.';
+  end if;
+  if p_permission_keys is null then raise exception using errcode = '22023', message = 'Permission list is required.'; end if;
+  select r.is_system_role into v_system
+  from public.roles r
+  where r.organization_id=p_organization_id and r.id=p_role_id and r.status='active'
+  for update;
+  if not found then raise exception using errcode = '23503', message = 'Active role was not found.'; end if;
+  if v_system then raise exception using errcode = '42501', message = 'System Administrator permissions are immutable.'; end if;
+  if exists (select 1 from unnest(p_permission_keys) k where not public.has_org_permission(p_organization_id,k)) then
+    raise exception using errcode = '42501', message = 'A custom role cannot receive permissions the current user does not hold.';
+  end if;
+  select count(distinct k) into v_requested from unnest(p_permission_keys) k;
+  delete from public.role_permissions where role_id=p_role_id;
+  insert into public.role_permissions(role_id,permission_id)
+  select p_role_id,p.id from public.permissions p where p.permission_key=any(p_permission_keys);
+  get diagnostics v_inserted = row_count;
+  if v_inserted <> v_requested then raise exception using errcode = '22023', message = 'One or more permission keys do not exist.'; end if;
+end;
+$function$;
+revoke all on function public.create_custom_role(uuid,text,text[]) from public,anon;
+revoke all on function public.replace_custom_role_permissions(uuid,uuid,text[]) from public,anon;
+grant execute on function public.create_custom_role(uuid,text,text[]) to authenticated;
+grant execute on function public.replace_custom_role_permissions(uuid,uuid,text[]) to authenticated;
+
+
 commit;
