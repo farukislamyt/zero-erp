@@ -147,11 +147,23 @@ declare
   v_new_is_admin boolean := false;
   v_old_is_admin boolean := false;
   v_active_admins integer := 0;
+  v_org_id uuid;
+  v_old_id uuid;
   v_transfer_allowed boolean :=
     coalesce(pg_catalog.current_setting('app.allow_admin_transfer', true), '') = 'on';
 begin
+  if tg_op = 'INSERT' then
+    v_org_id := new.organization_id;
+  elsif tg_op = 'DELETE' then
+    v_org_id := old.organization_id;
+    v_old_id := old.id;
+  else
+    v_org_id := new.organization_id;
+    v_old_id := old.id;
+  end if;
+
   if tg_op <> 'DELETE' then
-    select r.is_system_role and r.name = 'Administrator'
+    select (r.is_system_role and r.name = 'Administrator')
       into v_new_is_admin
     from public.roles r
     where r.id = new.role_id
@@ -160,7 +172,7 @@ begin
   end if;
 
   if tg_op <> 'INSERT' then
-    select r.is_system_role and r.name = 'Administrator'
+    select (r.is_system_role and r.name = 'Administrator')
       into v_old_is_admin
     from public.roles r
     where r.id = old.role_id
@@ -168,10 +180,7 @@ begin
     v_old_is_admin := coalesce(v_old_is_admin, false);
   end if;
 
-  perform 1
-  from public.organizations o
-  where o.id = case when tg_op = 'DELETE' then old.organization_id else new.organization_id end
-  for update;
+  perform 1 from public.organizations o where o.id = v_org_id for update;
 
   if tg_op <> 'DELETE' and new.is_active and v_new_is_admin
      and (tg_op = 'INSERT'
@@ -179,7 +188,6 @@ begin
        or not v_old_is_admin
        or old.organization_id is distinct from new.organization_id
        or old.role_id is distinct from new.role_id) then
-
     select count(*) into v_active_admins
     from public.organization_users ou
     join public.roles r
@@ -188,7 +196,7 @@ begin
       and ou.is_active
       and r.is_system_role
       and r.name = 'Administrator'
-      and (tg_op = 'INSERT' or ou.id <> old.id);
+      and (v_old_id is null or ou.id <> v_old_id);
 
     if v_active_admins > 0 then
       raise exception using errcode = '23505',
@@ -203,10 +211,12 @@ begin
 
   if tg_op <> 'INSERT' and old.is_active and v_old_is_admin then
     if tg_op = 'DELETE'
-       or not new.is_active
-       or not v_new_is_admin
-       or new.organization_id is distinct from old.organization_id
-       or new.role_id is distinct from old.role_id then
+       or (tg_op = 'UPDATE' and (
+         not new.is_active
+         or not v_new_is_admin
+         or new.organization_id is distinct from old.organization_id
+         or new.role_id is distinct from old.role_id
+       )) then
       select count(*) into v_active_admins
       from public.organization_users ou
       join public.roles r
@@ -228,12 +238,6 @@ begin
   return new;
 end;
 $$;
-
-drop trigger if exists organization_users_guard_last_admin on public.organization_users;
-create trigger organization_users_guard_last_admin
-before insert or update or delete on public.organization_users
-for each row execute function public.guard_administrator_membership();
-
 revoke all on function public.guard_organization_creator_membership() from public, anon, authenticated;
 revoke all on function public.guard_administrator_membership() from public, anon, authenticated;
 
@@ -373,7 +377,6 @@ declare
   v_user_id uuid;
   v_membership_id uuid;
   v_existing_active_org uuid;
-  v_is_creator boolean;
 begin
   if (select auth.uid()) is null or not public.is_org_administrator(p_organization_id) then
     raise exception using errcode = '42501',
@@ -547,9 +550,8 @@ begin
     raise exception using errcode = '23503', message = 'Active organization was not found.';
   end if;
 
-  select ou.role_id, r.is_system_role,
-         public.is_organization_creator(ou.organization_id, ou.user_id)
-    into v_role_id, v_is_system, v_is_creator
+  select ou.role_id, r.is_system_role
+    into v_role_id, v_is_system
   from public.organization_users ou
   join public.roles r
     on r.id = ou.role_id and r.organization_id = ou.organization_id
