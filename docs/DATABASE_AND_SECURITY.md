@@ -133,14 +133,16 @@ The legacy `post_manual_journal_entry` function remains defined but client EXECU
 
 ### Reports
 
-Reporting RPCs exist for trial balance, general ledger, profit and loss, balance sheet, inventory valuation, contact balances, receivables aging, payables aging and unapplied payments. Their exact arguments and return columns are listed in the function catalog. `report_receivables_aging` applies `payment_date <= p_as_of_date` to posted payment allocations, keeping later payments out of historical balances. This is source-level verification; historical report results have not been runtime-tested.
+Reporting RPCs exist for trial balance, general ledger, profit and loss, balance sheet, inventory valuation, contact balances, receivables aging, payables aging and unapplied payments. Their exact arguments and return columns are listed in the function catalog. The three aging/unapplied-payment reports use document dates and the linked reversal journal entry's accounting `entry_date` to determine whether a payment, return, or expense reversal belongs in the requested as-of snapshot. Fully returned sales and purchases remain eligible for earlier snapshots; return amounts are applied only when their return dates are on or before the cutoff. Reversals dated after the cutoff do not erase the earlier state. This is source-level verification; historical report results have not been runtime-tested or financially reconciled.
 
 ## 7. Tenant-isolation hardening in the current SQL
 
 - The self-read branch of `organization_users_select_member_or_self` exposes only the caller's own active membership in an active organization. The `users.read` permission branch remains available for authorized organization administrators.
 - `save_draft_transaction_document` validates a supplied manual-journal `reference_id` against an explicit allowlist of reference types and requires the referenced row to belong to the same `p_organization_id`. Unsupported types, missing reference types, and cross-organization or nonexistent targets are rejected.
 - The document-number allocator maps `inventory_adjustment` to `inventory.adjust`.
-- Receivables aging excludes posted payments whose `payment_date` is later than the requested `p_as_of_date`.
+- Receivables and payables aging include only payments and returns whose effective dates fall on or before the requested `p_as_of_date`; a reversal changes the historical result from its linked reversal journal entry's `entry_date`, not its wall-clock `reversed_at`.
+- Fully returned sales and purchases remain available to earlier as-of snapshots, with returns subtracted only from their own effective return dates.
+- Unapplied-payment reporting uses the same accounting-date reversal rule as the aging reports.
 
 These controls were reviewed statically in the canonical SQL. They have not yet been certified through live PostgreSQL/Supabase adversarial tests.
 
