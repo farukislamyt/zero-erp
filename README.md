@@ -62,7 +62,6 @@ The executable bootstrap SQL is maintained in **[`supabase/initial_database_sche
 | `organizations` | Organization profile and defaults | `name`, `currency`, `timezone`, `tin`, `bin`, `is_active` |
 | `organization_users` | Links users to organizations and, assigns a role within that organization | `organization_id`, `user_id`, `role_id`, `is_active` |
 | `units_of_measure` | Product measurement units | `name`, `is_active` |
-| `accounting_periods` | Accounting date ranges and closure state | `start_date`, `end_date`, `status`, `closed_at`, `closed_by` |
 | `number_sequences` | Document number configuration | `document_type`, `prefix`, `next_number`, `padding` |
 
 ### Access control
@@ -169,7 +168,6 @@ The complete data model documents 24 business tables plus three RBAC tables (27 
 </details>
 
 <details>
-<summary>accounting_periods (10 columns)</summary>
 
 `id`, `organization_id`, `name`, `start_date`, `end_date`, `status`, `closed_at`, `closed_by`, `created_at`, `updated_at`
 
@@ -204,9 +202,9 @@ The complete data model documents 24 business tables plus three RBAC tables (27 
 </details>
 
 <details>
-<summary>journal_entries (25 columns)</summary>
+<summary>journal_entries (24 columns)</summary>
 
-`id`, `organization_id`, `entry_number`, `accounting_period_id`, `entry_date`, `entry_type`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `reference_type`, `reference_id`, `description`, `posted_at`, `reversal_of_id`, `reversal_journal_entry_id`, `reversed_at`, `reversed_by`, `reversal_reason`, `created_by`, `created_at`, `updated_at`
+`id`, `organization_id`, `entry_number`, `entry_date`, `entry_type`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `reference_type`, `reference_id`, `description`, `posted_at`, `reversal_of_id`, `reversal_journal_entry_id`, `reversed_at`, `reversed_by`, `reversal_reason`, `created_by`, `created_at`, `updated_at`
 
 </details>
 
