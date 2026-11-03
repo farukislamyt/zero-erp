@@ -203,9 +203,9 @@ The complete data model documents 24 business tables plus three RBAC tables (27 
 </details>
 
 <details>
-<summary>journal_entries (15 columns)</summary>
+<summary>journal_entries (21 columns)</summary>
 
-`id`, `organization_id`, `entry_number`, `accounting_period_id`, `entry_date`, `entry_type`, `status`, `reference_type`, `reference_id`, `description`, `posted_at`, `reversal_of_id`, `created_by`, `created_at`, `updated_at`
+`id`, `organization_id`, `entry_number`, `accounting_period_id`, `entry_date`, `entry_type`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `reference_type`, `reference_id`, `description`, `posted_at`, `reversal_of_id`, `created_by`, `created_at`, `updated_at`
 
 </details>
 
@@ -217,9 +217,9 @@ The complete data model documents 24 business tables plus three RBAC tables (27 
 </details>
 
 <details>
-<summary>purchase (14 columns)</summary>
+<summary>purchase (20 columns)</summary>
 
-`id`, `organization_id`, `invoice_id`, `supplier_id`, `invoice_date`, `status`, `subtotal`, `discount_amount`, `total_amount`, `payable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
+`id`, `organization_id`, `invoice_id`, `supplier_id`, `invoice_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `payable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
 
 </details>
 
@@ -231,9 +231,9 @@ The complete data model documents 24 business tables plus three RBAC tables (27 
 </details>
 
 <details>
-<summary>sales (14 columns)</summary>
+<summary>sales (20 columns)</summary>
 
-`id`, `organization_id`, `invoice_id`, `customer_id`, `invoice_date`, `status`, `subtotal`, `discount_amount`, `total_amount`, `receivable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
+`id`, `organization_id`, `invoice_id`, `customer_id`, `invoice_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `receivable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
 
 </details>
 
@@ -266,16 +266,16 @@ The complete data model documents 24 business tables plus three RBAC tables (27 
 </details>
 
 <details>
-<summary>expenses (14 columns)</summary>
+<summary>expenses (20 columns)</summary>
 
-`id`, `organization_id`, `expense_number`, `expense_category_id`, `contact_id`, `payable_account_id`, `expense_date`, `amount`, `description`, `status`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
+`id`, `organization_id`, `expense_number`, `expense_category_id`, `contact_id`, `payable_account_id`, `expense_date`, `amount`, `description`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
 
 </details>
 
 <details>
-<summary>payments (15 columns)</summary>
+<summary>payments (21 columns)</summary>
 
-`id`, `organization_id`, `payment_number`, `payment_type`, `contact_id`, `payment_date`, `amount`, `account_id`, `settlement_account_id`, `status`, `posted_journal_entry_id`, `description`, `created_by`, `created_at`, `updated_at`
+`id`, `organization_id`, `payment_number`, `payment_type`, `contact_id`, `payment_date`, `amount`, `account_id`, `settlement_account_id`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `posted_journal_entry_id`, `description`, `created_by`, `created_at`, `updated_at`
 
 </details>
 
@@ -287,9 +287,9 @@ The complete data model documents 24 business tables plus three RBAC tables (27 
 </details>
 
 <details>
-<summary>purchase_returns (15 columns)</summary>
+<summary>purchase_returns (21 columns)</summary>
 
-`id`, `organization_id`, `return_number`, `purchase_id`, `supplier_id`, `return_date`, `status`, `subtotal`, `discount_amount`, `total_amount`, `payable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
+`id`, `organization_id`, `return_number`, `purchase_id`, `supplier_id`, `return_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `payable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
 
 </details>
 
@@ -301,9 +301,9 @@ The complete data model documents 24 business tables plus three RBAC tables (27 
 </details>
 
 <details>
-<summary>sales_returns (15 columns)</summary>
+<summary>sales_returns (21 columns)</summary>
 
-`id`, `organization_id`, `return_number`, `sales_id`, `customer_id`, `return_date`, `status`, `subtotal`, `discount_amount`, `total_amount`, `receivable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
+`id`, `organization_id`, `return_number`, `sales_id`, `customer_id`, `return_date`, `status`, `confirmed_at`, `confirmed_by`, `posted_by`, `voided_at`, `voided_by`, `void_reason`, `subtotal`, `discount_amount`, `total_amount`, `receivable_account_id`, `posted_journal_entry_id`, `created_by`, `created_at`, `updated_at`
 
 </details>
 
