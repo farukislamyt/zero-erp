@@ -1010,6 +1010,61 @@ $function$;
 revoke all on function public.update_custom_role(uuid,uuid,text,text) from public, anon;
 grant execute on function public.update_custom_role(uuid,uuid,text,text) to authenticated;
 
+-- Company profile/security settings are also Administrator-exclusive.
+create or replace function public.update_organization_profile(
+  p_organization_id uuid,
+  p_name text,
+  p_phone text,
+  p_email text,
+  p_address text,
+  p_city text,
+  p_country text,
+  p_currency text,
+  p_timezone text,
+  p_tin text,
+  p_bin text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if (select auth.uid()) is null or not public.is_org_administrator(p_organization_id) then
+    raise exception using errcode = '42501', message = 'Only the organization Administrator can update company details.';
+  end if;
+  if p_name is null or pg_catalog.length(pg_catalog.btrim(p_name)) not between 1 and 160
+     or p_currency is null or p_currency !~ '^[A-Z]{3}
+drop function if exists public.complete_organization_invitation(uuid,uuid,uuid,uuid);
+
+commit;
+ or p_timezone is null or not exists (
+       select 1 from pg_catalog.pg_timezone_names tz where tz.name = pg_catalog.btrim(p_timezone)
+     ) then
+    raise exception using errcode = '22023', message = 'Organization name, ISO currency, or timezone is invalid.';
+  end if;
+
+  update public.organizations
+  set name = pg_catalog.btrim(p_name),
+      phone = nullif(pg_catalog.btrim(coalesce(p_phone,'')), ''),
+      email = nullif(pg_catalog.btrim(coalesce(p_email,'')), ''),
+      address = nullif(pg_catalog.btrim(coalesce(p_address,'')), ''),
+      city = nullif(pg_catalog.btrim(coalesce(p_city,'')), ''),
+      country = nullif(pg_catalog.btrim(coalesce(p_country,'')), ''),
+      currency = p_currency,
+      timezone = pg_catalog.btrim(p_timezone),
+      tin = nullif(pg_catalog.btrim(coalesce(p_tin,'')), ''),
+      bin = nullif(pg_catalog.btrim(coalesce(p_bin,'')), '')
+  where id = p_organization_id and is_active;
+  if not found then
+    raise exception using errcode = '23503', message = 'Active organization was not found.';
+  end if;
+end;
+$function$;
+revoke all on function public.update_organization_profile(uuid,text,text,text,text,text,text,text,text,text,text) from public, anon;
+revoke all on function public.update_organization_profile(uuid,text,text,text,text,text,text,text,text,text,text) from public, anon;
+grant execute on function public.update_organization_profile(uuid,text,text,text,text,text,text,text,text,text,text) to authenticated;
+
 -- Invitation-only finalization is no longer part of the application contract.
 drop function if exists public.complete_organization_invitation(uuid,uuid,uuid,uuid);
 
