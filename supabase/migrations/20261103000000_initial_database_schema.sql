@@ -6353,4 +6353,87 @@ revoke all on function public.update_custom_role(uuid,uuid,text,text) from publi
 grant execute on function public.update_custom_role(uuid,uuid,text,text) to authenticated;
 
 
+
+-- Trusted Supabase Edge Function only: finalize a membership after Auth Admin
+-- has created/sent the invitation. The inviter's role is revalidated here so
+-- a permission change between invitation and acceptance cannot escalate access.
+create or replace function public.complete_organization_invitation(
+  p_organization_id uuid,
+  p_user_id uuid,
+  p_role_id uuid,
+  p_inviter_user_id uuid
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_inviter_role_id uuid;
+  v_membership_id uuid;
+begin
+  if p_organization_id is null or p_user_id is null or p_role_id is null or p_inviter_user_id is null then
+    raise exception using errcode='22023',message='Organization, invited user, role, and inviter IDs are required.';
+  end if;
+
+  perform 1 from public.organizations o
+  where o.id=p_organization_id and o.is_active
+  for update;
+  if not found then raise exception using errcode='23503',message='Active organization was not found.'; end if;
+
+  select ou.role_id into v_inviter_role_id
+  from public.organization_users ou
+  join public.roles r on r.organization_id=ou.organization_id and r.id=ou.role_id
+  where ou.organization_id=p_organization_id
+    and ou.user_id=p_inviter_user_id and ou.is_active and r.status='active';
+  if not found or not exists (
+    select 1 from public.role_permissions rp
+    join public.permissions p on p.id=rp.permission_id
+    where rp.role_id=v_inviter_role_id and p.permission_key='users.manage'
+  ) then
+    raise exception using errcode='42501',message='Inviter no longer has permission to manage organization members.';
+  end if;
+
+  if not exists (
+    select 1 from public.roles r
+    where r.organization_id=p_organization_id and r.id=p_role_id and r.status='active'
+  ) then
+    raise exception using errcode='23503',message='The invited role must be active and belong to this organization.';
+  end if;
+
+  if exists (
+    select 1 from public.role_permissions target_permission
+    where target_permission.role_id=p_role_id
+      and not exists (
+        select 1 from public.role_permissions inviter_permission
+        where inviter_permission.role_id=v_inviter_role_id
+          and inviter_permission.permission_id=target_permission.permission_id
+      )
+  ) then
+    raise exception using errcode='42501',
+      message='Inviter no longer holds every permission assigned to the invitation role.';
+  end if;
+
+  if not exists(select 1 from auth.users u where u.id=p_user_id) then
+    raise exception using errcode='23503',message='Invited Supabase Auth user was not found.';
+  end if;
+
+  insert into public.organization_users(organization_id,user_id,role_id,is_active)
+  values(p_organization_id,p_user_id,p_role_id,true)
+  returning id into v_membership_id;
+  return v_membership_id;
+exception when unique_violation then
+  raise exception using errcode='23505',message='This user is already a member of the organization.';
+end;
+$function$;
+revoke all on function public.complete_organization_invitation(uuid,uuid,uuid,uuid) from public,anon,authenticated;
+do $grant_service_role$
+begin
+  if exists(select 1 from pg_catalog.pg_roles where rolname='service_role') then
+    grant execute on function public.complete_organization_invitation(uuid,uuid,uuid,uuid) to service_role;
+  end if;
+end;
+$grant_service_role$;
+
+
 commit;
