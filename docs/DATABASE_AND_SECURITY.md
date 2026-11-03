@@ -136,7 +136,7 @@ Core domains:
 
 1. **Tenant and membership:** `organizations`, `organization_users`
 2. **Access control:** `roles`, `permissions`, `role_permissions`
-3. **Accounting setup:** `accounting_periods`, `accounts`, `number_sequences`
+3. **Accounting configuration:** `accounts`, `number_sequences`.
 4. **Master data:** `contacts`, `products`, `units_of_measure`, `expense_categories`
 5. **Accounting ledger:** `journal_entries`, `account_transactions`
 6. **Inventory:** `inventory_transactions`, `inventory_balances`
