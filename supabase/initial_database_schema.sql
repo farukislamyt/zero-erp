@@ -2816,6 +2816,626 @@ grant execute on function public.post_sales(uuid, uuid) to authenticated;
 -- ============================================================================
 
 
+
+create or replace function public.post_expense(
+  p_organization_id uuid,
+  p_expense_id uuid
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_expense public.expenses%rowtype;
+  v_period_id uuid;
+  v_period_status text;
+  v_expense_account_id uuid;
+  v_category_active boolean;
+  v_expense_account public.accounts%rowtype;
+  v_payable_account public.accounts%rowtype;
+  v_journal_id uuid;
+begin
+  if v_user_id is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, 'expenses.post') then
+    raise exception using errcode = '42501', message = 'You are not authorized to post expenses for this organization.';
+  end if;
+
+  select * into v_expense
+  from public.expenses
+  where organization_id = p_organization_id and id = p_expense_id
+  for update;
+  if not found then
+    raise exception using errcode = '23503', message = 'Expense was not found in this organization.';
+  end if;
+  if v_expense.status <> 'confirmed' or v_expense.posted_journal_entry_id is not null then
+    raise exception using errcode = '23514', message = 'Only a confirmed, unposted expense can be posted.';
+  end if;
+  if v_expense.amount <= 0 or v_expense.payable_account_id is null then
+    raise exception using errcode = '23514', message = 'Expense amount and payable account are required before posting.';
+  end if;
+
+  select ec.expense_account_id, ec.is_active
+    into v_expense_account_id, v_category_active
+  from public.expense_categories ec
+  where ec.organization_id = p_organization_id and ec.id = v_expense.expense_category_id;
+  if not found or not v_category_active or v_expense_account_id is null then
+    raise exception using errcode = '23503', message = 'Expense category must be active and mapped to an expense account.';
+  end if;
+
+  select * into v_expense_account
+  from public.accounts
+  where organization_id = p_organization_id and id = v_expense_account_id;
+  if not found or not v_expense_account.is_active or not v_expense_account.is_postable
+     or v_expense_account.account_type <> 'expense' then
+    raise exception using errcode = '23514', message = 'Expense category account must be an active, postable expense account.';
+  end if;
+
+  select * into v_payable_account
+  from public.accounts
+  where organization_id = p_organization_id and id = v_expense.payable_account_id;
+  if not found or not v_payable_account.is_active or not v_payable_account.is_postable
+     or v_payable_account.account_type <> 'liability' then
+    raise exception using errcode = '23514', message = 'Expense payable account must be an active, postable liability account.';
+  end if;
+
+  if v_expense.contact_id is not null then
+    if not v_payable_account.is_control_account then
+      raise exception using errcode = '23514', message = 'A contact-linked expense requires a payable control account.';
+    end if;
+    perform 1 from public.contacts
+    where organization_id = p_organization_id and id = v_expense.contact_id and is_active
+    for update;
+    if not found then
+      raise exception using errcode = '23503', message = 'Expense contact must be active and belong to this organization.';
+    end if;
+  elsif v_payable_account.is_control_account then
+    raise exception using errcode = '23514', message = 'A payable control account requires an expense contact.';
+  end if;
+
+  select ap.id, ap.status into v_period_id, v_period_status
+  from public.accounting_periods ap
+  where ap.organization_id = p_organization_id
+    and v_expense.expense_date between ap.start_date and ap.end_date
+  order by ap.start_date desc limit 1 for update;
+  if not found or v_period_status <> 'open' then
+    raise exception using errcode = '23514', message = 'Expense date must fall within an open accounting period.';
+  end if;
+
+  insert into public.journal_entries (
+    organization_id, entry_number, accounting_period_id, entry_date,
+    entry_type, status, reference_type, reference_id, description,
+    posted_at, posted_by, created_by
+  )
+  values (
+    p_organization_id, 'EXP-' || pg_catalog.replace(p_expense_id::text, '-', ''),
+    v_period_id, v_expense.expense_date, 'expense', 'posted',
+    'expense', p_expense_id,
+    coalesce(nullif(pg_catalog.btrim(v_expense.description), ''), 'Expense ' || v_expense.expense_number),
+    pg_catalog.now(), v_user_id, v_user_id
+  )
+  returning id into v_journal_id;
+
+  insert into public.account_transactions (
+    organization_id, journal_entry_id, account_id, line_number,
+    description, debit, credit, contact_id
+  )
+  values
+    (p_organization_id, v_journal_id, v_expense_account.id, 1,
+     'Expense - ' || v_expense.expense_number, v_expense.amount, 0, null),
+    (p_organization_id, v_journal_id, v_payable_account.id, 2,
+     'Expense payable - ' || v_expense.expense_number, 0, v_expense.amount, v_expense.contact_id);
+
+  update public.expenses
+  set status = 'posted', posted_journal_entry_id = v_journal_id,
+      posted_by = v_user_id, updated_at = pg_catalog.now()
+  where organization_id = p_organization_id and id = p_expense_id;
+  return v_journal_id;
+end;
+$function$;
+
+revoke all on function public.post_expense(uuid, uuid) from public, anon;
+grant execute on function public.post_expense(uuid, uuid) to authenticated;
+
+
+create or replace function public.post_purchase_return(
+  p_organization_id uuid,
+  p_purchase_return_id uuid
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_return public.purchase_returns%rowtype;
+  v_purchase public.purchase%rowtype;
+  v_period_id uuid;
+  v_period_status text;
+  v_line_count integer;
+  v_subtotal numeric(20,4);
+  v_inventory_value numeric(20,4) := 0;
+  v_variance numeric(20,4);
+  v_balance_quantity numeric(20,6);
+  v_balance_value numeric(20,4);
+  v_average_cost numeric(20,6);
+  v_return_quantity numeric(20,6);
+  v_line_value numeric(20,4);
+  v_new_quantity numeric(20,6);
+  v_new_value numeric(20,4);
+  v_new_average numeric(20,6);
+  v_journal_id uuid;
+  v_line_number integer := 1;
+  v_product record;
+  v_account record;
+  v_variance_account public.accounts%rowtype;
+begin
+  if v_user_id is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, 'purchases.returns.post') then
+    raise exception using errcode = '42501', message = 'You are not authorized to post purchase returns for this organization.';
+  end if;
+
+  select * into v_return from public.purchase_returns
+  where organization_id = p_organization_id and id = p_purchase_return_id for update;
+  if not found then
+    raise exception using errcode = '23503', message = 'Purchase return was not found in this organization.';
+  end if;
+  if v_return.status <> 'confirmed' or v_return.posted_journal_entry_id is not null then
+    raise exception using errcode = '23514', message = 'Only a confirmed, unposted purchase return can be posted.';
+  end if;
+
+  select * into v_purchase from public.purchase
+  where organization_id = p_organization_id and id = v_return.purchase_id for update;
+  if not found or v_purchase.status not in ('posted','partially_returned') then
+    raise exception using errcode = '23514', message = 'Purchase return requires a posted purchase that has not been fully returned.';
+  end if;
+  if v_return.supplier_id <> v_purchase.supplier_id
+     or v_return.payable_account_id <> v_purchase.payable_account_id then
+    raise exception using errcode = '23514', message = 'Purchase return supplier and payable account must match the original purchase.';
+  end if;
+
+  select count(*)::integer, coalesce(sum(line_total),0)
+    into v_line_count, v_subtotal
+  from public.purchase_return_items
+  where organization_id = p_organization_id and purchase_return_id = p_purchase_return_id;
+  if v_line_count < 1 or v_subtotal <> v_return.subtotal
+     or v_return.discount_amount > v_subtotal
+     or v_return.total_amount <> v_subtotal - v_return.discount_amount
+     or v_return.total_amount <= 0 then
+    raise exception using errcode = '23514', message = 'Purchase return items, subtotal, discount, and total are inconsistent.';
+  end if;
+
+  if exists (
+    select 1
+    from public.purchase_return_items ri
+    join public.purchase_items pi on pi.organization_id = ri.organization_id and pi.id = ri.purchase_item_id
+    where ri.organization_id = p_organization_id and ri.purchase_return_id = p_purchase_return_id
+      and (pi.purchase_id <> v_purchase.id or pi.product_id <> ri.product_id
+        or pi.unit_cost <> ri.unit_cost or ri.line_total <> round(ri.quantity * ri.unit_cost,4)
+        or ri.quantity + coalesce((
+          select sum(pri.quantity)
+          from public.purchase_return_items pri
+          join public.purchase_returns pr on pr.organization_id = pri.organization_id and pr.id = pri.purchase_return_id
+          where pri.organization_id = p_organization_id and pri.purchase_item_id = ri.purchase_item_id
+            and pr.status = 'posted'
+        ),0) > pi.quantity)
+  ) then
+    raise exception using errcode = '23514', message = 'Return quantity or unit cost exceeds the unreturned quantity/cost of the original purchase item.';
+  end if;
+
+  if not exists (
+    select 1 from public.accounts a
+    where a.organization_id = p_organization_id and a.id = v_return.payable_account_id
+      and a.is_active and a.is_postable and a.is_control_account and a.account_type = 'liability'
+  ) then
+    raise exception using errcode = '23514', message = 'Purchase return payable account must be an active liability control account.';
+  end if;
+
+  if exists (
+    select 1 from public.purchase_return_items ri
+    join public.products pr on pr.organization_id = ri.organization_id and pr.id = ri.product_id
+    left join public.accounts ia on ia.organization_id = pr.organization_id and ia.id = pr.inventory_account_id
+    where ri.organization_id = p_organization_id and ri.purchase_return_id = p_purchase_return_id
+      and (not pr.is_active or ia.id is null or not ia.is_active or not ia.is_postable or ia.account_type <> 'asset')
+  ) then
+    raise exception using errcode = '23514', message = 'Every returned product must be active and mapped to an active, postable inventory asset account.';
+  end if;
+
+  select ap.id, ap.status into v_period_id, v_period_status
+  from public.accounting_periods ap
+  where ap.organization_id = p_organization_id and v_return.return_date between ap.start_date and ap.end_date
+  order by ap.start_date desc limit 1 for update;
+  if not found or v_period_status <> 'open' then
+    raise exception using errcode = '23514', message = 'Purchase return date must fall within an open accounting period.';
+  end if;
+
+  for v_product in
+    select ri.product_id, sum(ri.quantity) as quantity
+    from public.purchase_return_items ri
+    where ri.organization_id = p_organization_id and ri.purchase_return_id = p_purchase_return_id
+    group by ri.product_id order by ri.product_id
+  loop
+    select b.quantity, b.inventory_value, b.average_cost
+      into v_balance_quantity, v_balance_value, v_average_cost
+    from public.inventory_balances b
+    where b.organization_id = p_organization_id and b.product_id = v_product.product_id
+    for update;
+    if not found then
+      raise exception using errcode = '23514', message = 'Returned product has no inventory balance to reduce.';
+    end if;
+    v_return_quantity := v_product.quantity;
+    v_line_value := round(v_return_quantity * v_average_cost,4);
+    if v_balance_quantity < v_return_quantity or v_balance_value < v_line_value then
+      raise exception using errcode = '23514', message = 'Insufficient on-hand quantity or inventory value for this purchase return.';
+    end if;
+    v_new_quantity := v_balance_quantity - v_return_quantity;
+    v_new_value := v_balance_value - v_line_value;
+    v_new_average := case when v_new_quantity = 0 then 0 else round(v_new_value / v_new_quantity,6) end;
+    update public.inventory_balances
+    set quantity = v_new_quantity, inventory_value = v_new_value,
+        average_cost = v_new_average, updated_at = pg_catalog.now()
+    where organization_id = p_organization_id and product_id = v_product.product_id;
+
+    insert into public.inventory_transactions (
+      organization_id, transaction_number, product_id, transaction_date,
+      transaction_type, direction, quantity, unit_cost, total_value,
+      reference_type, reference_id, unit_cost_before, average_cost_after, created_by
+    )
+    values (
+      p_organization_id,
+      'PR-' || pg_catalog.replace(p_purchase_return_id::text,'-','') || '-' || pg_catalog.replace(v_product.product_id::text,'-',''),
+      v_product.product_id, v_return.return_date, 'purchase_return', 'out',
+      v_return_quantity, v_average_cost, v_line_value,
+      'purchase_return', p_purchase_return_id, v_average_cost, v_new_average, v_user_id
+    );
+    v_inventory_value := v_inventory_value + v_line_value;
+  end loop;
+
+  v_variance := v_return.total_amount - v_inventory_value;
+  if v_variance <> 0 then
+    select * into v_variance_account
+    from public.accounts
+    where organization_id = p_organization_id and id = v_return.purchase_return_variance_account_id;
+    if not found or not v_variance_account.is_active or not v_variance_account.is_postable
+       or (v_variance > 0 and v_variance_account.account_type <> 'revenue')
+       or (v_variance < 0 and v_variance_account.account_type <> 'expense') then
+      raise exception using errcode = '23514',
+        message = 'Purchase return requires a postable revenue variance account when supplier credit exceeds inventory carrying value, or an expense variance account when it is lower.';
+    end if;
+  end if;
+
+  insert into public.journal_entries (
+    organization_id, entry_number, accounting_period_id, entry_date,
+    entry_type, status, reference_type, reference_id, description,
+    posted_at, posted_by, created_by
+  )
+  values (
+    p_organization_id, 'PR-' || pg_catalog.replace(p_purchase_return_id::text,'-',''),
+    v_period_id, v_return.return_date, 'purchase_return', 'posted',
+    'purchase_return', p_purchase_return_id, 'Purchase return ' || v_return.return_number,
+    pg_catalog.now(), v_user_id, v_user_id
+  )
+  returning id into v_journal_id;
+
+  insert into public.account_transactions (
+    organization_id, journal_entry_id, account_id, line_number, description, debit, credit, contact_id
+  )
+  values (
+    p_organization_id, v_journal_id, v_return.payable_account_id, v_line_number,
+    'Supplier credit - ' || v_return.return_number, v_return.total_amount, 0, v_return.supplier_id
+  );
+  v_line_number := v_line_number + 1;
+
+  for v_account in
+    select pr.inventory_account_id as account_id, sum(it.total_value) as amount
+    from public.inventory_transactions it
+    join public.products pr on pr.organization_id = it.organization_id and pr.id = it.product_id
+    where it.organization_id = p_organization_id
+      and it.reference_type = 'purchase_return' and it.reference_id = p_purchase_return_id
+    group by pr.inventory_account_id order by pr.inventory_account_id
+  loop
+    if v_account.amount > 0 then
+      insert into public.account_transactions (
+        organization_id, journal_entry_id, account_id, line_number, description, debit, credit, contact_id
+      )
+      values (p_organization_id, v_journal_id, v_account.account_id, v_line_number,
+        'Inventory returned to supplier - ' || v_return.return_number, 0, v_account.amount, null);
+      v_line_number := v_line_number + 1;
+    end if;
+  end loop;
+
+  if v_variance > 0 then
+    insert into public.account_transactions (
+      organization_id, journal_entry_id, account_id, line_number, description, debit, credit, contact_id
+    )
+    values (p_organization_id, v_journal_id, v_variance_account.id, v_line_number,
+      'Purchase return price variance - ' || v_return.return_number, 0, v_variance, null);
+  elsif v_variance < 0 then
+    insert into public.account_transactions (
+      organization_id, journal_entry_id, account_id, line_number, description, debit, credit, contact_id
+    )
+    values (p_organization_id, v_journal_id, v_variance_account.id, v_line_number,
+      'Purchase return price variance - ' || v_return.return_number, abs(v_variance), 0, null);
+  end if;
+
+  update public.purchase_returns
+  set status = 'posted', posted_journal_entry_id = v_journal_id, posted_by = v_user_id, updated_at = pg_catalog.now()
+  where organization_id = p_organization_id and id = p_purchase_return_id;
+
+  if exists (
+    select 1 from public.purchase_items pi
+    where pi.organization_id = p_organization_id and pi.purchase_id = v_purchase.id
+      and pi.quantity > coalesce((
+        select sum(pri.quantity)
+        from public.purchase_return_items pri
+        join public.purchase_returns pr on pr.organization_id = pri.organization_id and pr.id = pri.purchase_return_id
+        where pri.organization_id = p_organization_id and pri.purchase_item_id = pi.id and pr.status = 'posted'
+      ),0)
+  ) then
+    update public.purchase set status = 'partially_returned', updated_at = pg_catalog.now()
+    where organization_id = p_organization_id and id = v_purchase.id;
+  else
+    update public.purchase set status = 'returned', updated_at = pg_catalog.now()
+    where organization_id = p_organization_id and id = v_purchase.id;
+  end if;
+  return v_journal_id;
+end;
+$function$;
+
+revoke all on function public.post_purchase_return(uuid, uuid) from public, anon;
+grant execute on function public.post_purchase_return(uuid, uuid) to authenticated;
+
+
+create or replace function public.post_sales_return(
+  p_organization_id uuid,
+  p_sales_return_id uuid
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_user_id uuid := (select auth.uid());
+  v_return public.sales_returns%rowtype;
+  v_sales public.sales%rowtype;
+  v_period_id uuid;
+  v_period_status text;
+  v_line_count integer;
+  v_subtotal numeric(20,4);
+  v_allocated_revenue numeric(20,4) := 0;
+  v_line_revenue numeric(20,4);
+  v_line_cost numeric(20,4);
+  v_balance_quantity numeric(20,6);
+  v_balance_value numeric(20,4);
+  v_average_cost numeric(20,6);
+  v_new_quantity numeric(20,6);
+  v_new_value numeric(20,4);
+  v_new_average numeric(20,6);
+  v_journal_id uuid;
+  v_line_number integer := 1;
+  v_last_line integer;
+  v_line record;
+begin
+  if v_user_id is null or not public.is_active_org_member(p_organization_id)
+     or not public.has_org_permission(p_organization_id, 'sales.returns.post') then
+    raise exception using errcode = '42501', message = 'You are not authorized to post sales returns for this organization.';
+  end if;
+
+  select * into v_return from public.sales_returns
+  where organization_id = p_organization_id and id = p_sales_return_id for update;
+  if not found then
+    raise exception using errcode = '23503', message = 'Sales return was not found in this organization.';
+  end if;
+  if v_return.status <> 'confirmed' or v_return.posted_journal_entry_id is not null then
+    raise exception using errcode = '23514', message = 'Only a confirmed, unposted sales return can be posted.';
+  end if;
+
+  select * into v_sales from public.sales
+  where organization_id = p_organization_id and id = v_return.sales_id for update;
+  if not found or v_sales.status not in ('posted','partially_returned') then
+    raise exception using errcode = '23514', message = 'Sales return requires a posted sales invoice that has not been fully returned.';
+  end if;
+  if v_return.customer_id <> v_sales.customer_id
+     or v_return.receivable_account_id <> v_sales.receivable_account_id then
+    raise exception using errcode = '23514', message = 'Sales return customer and receivable account must match the original sales invoice.';
+  end if;
+
+  select count(*)::integer, coalesce(sum(line_total),0), max(line_number)
+    into v_line_count, v_subtotal, v_last_line
+  from public.sales_return_items
+  where organization_id = p_organization_id and sales_return_id = p_sales_return_id;
+  if v_line_count < 1 or v_subtotal <> v_return.subtotal
+     or v_return.discount_amount > v_subtotal
+     or v_return.total_amount <> v_subtotal - v_return.discount_amount
+     or v_return.total_amount <= 0 then
+    raise exception using errcode = '23514', message = 'Sales return items, subtotal, discount, and total are inconsistent.';
+  end if;
+
+  if exists (
+    select 1
+    from public.sales_return_items ri
+    join public.sales_items si on si.organization_id = ri.organization_id and si.id = ri.sales_item_id
+    where ri.organization_id = p_organization_id and ri.sales_return_id = p_sales_return_id
+      and (si.sales_id <> v_sales.id or si.product_id <> ri.product_id
+        or si.unit_price <> ri.unit_price or ri.line_total <> round(ri.quantity * ri.unit_price,4)
+        or ri.quantity + coalesce((
+          select sum(sri.quantity)
+          from public.sales_return_items sri
+          join public.sales_returns sr on sr.organization_id = sri.organization_id and sr.id = sri.sales_return_id
+          where sri.organization_id = p_organization_id and sri.sales_item_id = ri.sales_item_id and sr.status = 'posted'
+        ),0) > si.quantity)
+  ) then
+    raise exception using errcode = '23514', message = 'Return quantity or unit price exceeds the unreturned quantity/price of the original sales item.';
+  end if;
+
+  if not exists (
+    select 1 from public.accounts a
+    where a.organization_id = p_organization_id and a.id = v_return.receivable_account_id
+      and a.is_active and a.is_postable and a.is_control_account and a.account_type = 'asset'
+  ) then
+    raise exception using errcode = '23514', message = 'Sales return receivable account must be an active asset control account.';
+  end if;
+
+  if exists (
+    select 1
+    from public.sales_return_items ri
+    join public.products pr on pr.organization_id = ri.organization_id and pr.id = ri.product_id
+    left join public.accounts sa on sa.organization_id = pr.organization_id and sa.id = pr.sales_account_id
+    left join public.accounts ia on ia.organization_id = pr.organization_id and ia.id = pr.inventory_account_id
+    left join public.accounts ca on ca.organization_id = pr.organization_id and ca.id = pr.cogs_account_id
+    where ri.organization_id = p_organization_id and ri.sales_return_id = p_sales_return_id
+      and (sa.id is null or not sa.is_active or not sa.is_postable or sa.account_type <> 'revenue'
+        or ia.id is null or not ia.is_active or not ia.is_postable or ia.account_type <> 'asset'
+        or ca.id is null or not ca.is_active or not ca.is_postable or ca.account_type <> 'expense')
+  ) then
+    raise exception using errcode = '23514', message = 'Returned products require active, postable revenue, inventory, and COGS account mappings.';
+  end if;
+
+  select ap.id, ap.status into v_period_id, v_period_status
+  from public.accounting_periods ap
+  where ap.organization_id = p_organization_id and v_return.return_date between ap.start_date and ap.end_date
+  order by ap.start_date desc limit 1 for update;
+  if not found or v_period_status <> 'open' then
+    raise exception using errcode = '23514', message = 'Sales return date must fall within an open accounting period.';
+  end if;
+
+  for v_line in
+    select distinct ri.product_id
+    from public.sales_return_items ri
+    where ri.organization_id = p_organization_id and ri.sales_return_id = p_sales_return_id
+    order by ri.product_id
+  loop
+    perform 1 from public.inventory_balances b
+    where b.organization_id = p_organization_id and b.product_id = v_line.product_id
+    for update;
+    if not found then
+      raise exception using errcode = '23514', message = 'Returned product has no inventory balance row.';
+    end if;
+  end loop;
+
+  insert into public.journal_entries (
+    organization_id, entry_number, accounting_period_id, entry_date,
+    entry_type, status, reference_type, reference_id, description,
+    posted_at, posted_by, created_by
+  )
+  values (
+    p_organization_id, 'SR-' || pg_catalog.replace(p_sales_return_id::text,'-',''),
+    v_period_id, v_return.return_date, 'sales_return', 'posted',
+    'sales_return', p_sales_return_id, 'Sales return ' || v_return.return_number,
+    pg_catalog.now(), v_user_id, v_user_id
+  )
+  returning id into v_journal_id;
+
+  for v_line in
+    select ri.id, ri.product_id, ri.quantity, ri.line_total, ri.line_number,
+           si.cogs_unit_cost, pr.sales_account_id, pr.inventory_account_id, pr.cogs_account_id
+    from public.sales_return_items ri
+    join public.sales_items si on si.organization_id = ri.organization_id and si.id = ri.sales_item_id
+    join public.products pr on pr.organization_id = ri.organization_id and pr.id = ri.product_id
+    where ri.organization_id = p_organization_id and ri.sales_return_id = p_sales_return_id
+    order by ri.line_number
+  loop
+    if v_line.line_number = v_last_line then
+      v_line_revenue := v_return.total_amount - v_allocated_revenue;
+    else
+      v_line_revenue := round(v_line.line_total * v_return.total_amount / v_subtotal,4);
+      v_allocated_revenue := v_allocated_revenue + v_line_revenue;
+    end if;
+    v_line_cost := round(v_line.quantity * v_line.cogs_unit_cost,4);
+
+    select b.quantity, b.inventory_value, b.average_cost
+      into v_balance_quantity, v_balance_value, v_average_cost
+    from public.inventory_balances b
+    where b.organization_id = p_organization_id and b.product_id = v_line.product_id
+    for update;
+
+    v_new_quantity := v_balance_quantity + v_line.quantity;
+    v_new_value := v_balance_value + v_line_cost;
+    v_new_average := case when v_new_quantity = 0 then 0 else round(v_new_value / v_new_quantity,6) end;
+
+    update public.inventory_balances
+    set quantity = v_new_quantity, inventory_value = v_new_value,
+        average_cost = v_new_average, updated_at = pg_catalog.now()
+    where organization_id = p_organization_id and product_id = v_line.product_id;
+
+    update public.sales_return_items
+    set cogs_unit_cost = v_line.cogs_unit_cost, cogs_total = v_line_cost, updated_at = pg_catalog.now()
+    where organization_id = p_organization_id and id = v_line.id;
+
+    insert into public.inventory_transactions (
+      organization_id, transaction_number, product_id, transaction_date,
+      transaction_type, direction, quantity, unit_cost, total_value,
+      reference_type, reference_id, unit_cost_before, average_cost_after, created_by
+    )
+    values (
+      p_organization_id,
+      'SR-' || pg_catalog.replace(p_sales_return_id::text,'-','') || '-' || v_line.line_number::text,
+      v_line.product_id, v_return.return_date, 'sales_return', 'in',
+      v_line.quantity, v_line.cogs_unit_cost, v_line_cost,
+      'sales_return', p_sales_return_id, v_average_cost, v_new_average, v_user_id
+    );
+
+    if v_line_revenue > 0 then
+      insert into public.account_transactions (
+        organization_id, journal_entry_id, account_id, line_number, description, debit, credit, contact_id
+      )
+      values (p_organization_id, v_journal_id, v_line.sales_account_id, v_line_number,
+        'Sales return - ' || v_return.return_number, v_line_revenue, 0, null);
+      v_line_number := v_line_number + 1;
+    end if;
+
+    if v_line_cost > 0 then
+      insert into public.account_transactions (
+        organization_id, journal_entry_id, account_id, line_number, description, debit, credit, contact_id
+      )
+      values
+        (p_organization_id, v_journal_id, v_line.inventory_account_id, v_line_number,
+         'Inventory returned by customer - ' || v_return.return_number, v_line_cost, 0, null),
+        (p_organization_id, v_journal_id, v_line.cogs_account_id, v_line_number + 1,
+         'Reverse cost of goods sold - ' || v_return.return_number, 0, v_line_cost, null);
+      v_line_number := v_line_number + 2;
+    end if;
+  end loop;
+
+  insert into public.account_transactions (
+    organization_id, journal_entry_id, account_id, line_number, description, debit, credit, contact_id
+  )
+  values (
+    p_organization_id, v_journal_id, v_return.receivable_account_id,
+    v_line_number, 'Customer credit - ' || v_return.return_number, 0, v_return.total_amount, v_return.customer_id
+  );
+
+  update public.sales_returns
+  set status = 'posted', posted_journal_entry_id = v_journal_id,
+      posted_by = v_user_id, updated_at = pg_catalog.now()
+  where organization_id = p_organization_id and id = p_sales_return_id;
+
+  if exists (
+    select 1 from public.sales_items si
+    where si.organization_id = p_organization_id and si.sales_id = v_sales.id
+      and si.quantity > coalesce((
+        select sum(sri.quantity)
+        from public.sales_return_items sri
+        join public.sales_returns sr on sr.organization_id = sri.organization_id and sr.id = sri.sales_return_id
+        where sri.organization_id = p_organization_id and sri.sales_item_id = si.id and sr.status = 'posted'
+      ),0)
+  ) then
+    update public.sales set status = 'partially_returned', updated_at = pg_catalog.now()
+    where organization_id = p_organization_id and id = v_sales.id;
+  else
+    update public.sales set status = 'returned', updated_at = pg_catalog.now()
+    where organization_id = p_organization_id and id = v_sales.id;
+  end if;
+  return v_journal_id;
+end;
+$function$;
+
+revoke all on function public.post_sales_return(uuid, uuid) from public, anon;
+grant execute on function public.post_sales_return(uuid, uuid) to authenticated;
+
 create or replace function public.post_confirmed_journal_entry(
   p_organization_id uuid,
   p_journal_entry_id uuid
@@ -2898,7 +3518,7 @@ create or replace function public.save_draft_transaction_document(
   p_organization_id uuid,
   p_document_type text,
   p_header jsonb,
-  p_items jsonb default '[]'::jsonb,
+  p_items jsonb default null,
   p_document_id uuid default null
 )
 returns uuid
@@ -2928,7 +3548,7 @@ begin
     raise exception using errcode = '42501', message = 'An authenticated active organization member is required.';
   end if;
   if p_header is null or pg_catalog.jsonb_typeof(p_header) <> 'object'
-     or p_items is null or pg_catalog.jsonb_typeof(p_items) <> 'array' then
+     or (p_items is not null and pg_catalog.jsonb_typeof(p_items) <> 'array') then
     raise exception using errcode = '22023', message = 'Document header must be a JSON object and items must be a JSON array.';
   end if;
 
@@ -3037,10 +3657,10 @@ begin
   end if;
 
   if v_child_table is null then
-    if pg_catalog.jsonb_array_length(p_items) > 0 then
+    if p_items is not null and pg_catalog.jsonb_array_length(p_items) > 0 then
       raise exception using errcode = '22023', message = 'This document type does not accept line items.';
     end if;
-  else
+  elsif p_items is not null then
     execute pg_catalog.format(
       'delete from public.%I where organization_id = $1 and %I = $2',
       v_child_table, v_parent_column
