@@ -9,6 +9,10 @@ create unique index journal_entries_payment_reference_uq
     and reference_type = 'payment'
     and reference_id is not null;
 
+create index account_transactions_party_balance_idx
+  on public.account_transactions (organization_id, account_id, contact_id)
+  where contact_id is not null;
+
 create or replace function public.post_contact_payment(
   p_organization_id uuid,
   p_payment_id uuid,
