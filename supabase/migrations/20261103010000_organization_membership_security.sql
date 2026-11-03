@@ -435,9 +435,13 @@ begin
   insert into public.organization_users (organization_id, user_id, role_id, is_active)
   values (v_organization_id, v_user_id, v_role_id, true);
 
+  -- Preserve the existing bootstrap behavior: initialize the company's
+  -- default chart of accounts as part of the same transaction.
+  perform public.seed_default_chart_of_accounts(v_organization_id);
+
   return v_organization_id;
 end;
-$$;
+$;
 revoke all on function public.create_organization_with_admin(text,text,text) from public, anon;
 grant execute on function public.create_organization_with_admin(text,text,text) to authenticated;
 
