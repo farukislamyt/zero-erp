@@ -514,15 +514,16 @@ The SQL file remains a one-time bootstrap for a new, empty Supabase database. Do
 - Payment posting locks the contact before the accounting period, matching the contact-then-period order used by sales/expense posting.
 - Sales stock depletion and purchase-return depletion consume the exact remaining inventory value when the movement takes the product quantity to zero; inventory balance constraints prohibit negative quantity/value.
 - Account hierarchy cycle checks and explicit revokes for trigger-only SECURITY DEFINER functions are installed.
+- Sales-return confirmation/posting caps each return at the proportional original net value of returned lines after allocating the source invoice-wide discount; return-specific discounts may reduce, but cannot increase, that cap.
 - `next_document_number` allocates a number atomically under the organization's sequence row and checks the relevant document-create/manage permission. It is not yet integrated into existing draft-save/posting RPCs; current callers must not assume automatic numbering.
 
 ### Explicitly deferred (not implemented)
 
 - Invoice-level payment allocations and invoice-wise outstanding balances.
 - Custom role creation/permission editing and role assignment RPCs beyond the existing membership role-update workflow.
+- Master-data create/update RPCs for accounts, contacts, products, units of measure, and expense categories. Browser-role table writes remain revoked, so these CRUD workflows must use new permission-checked RPCs before the application exposes them.
 - Accounting-period close RPC and inventory-adjustment posting RPC.
 - Automatic number allocation inside document creation flows.
-- The return confirmation/posting routines now cap each sales return at the proportional original net value of its returned lines after allocating the source invoice-wide discount. Return-specific discounts may reduce, but cannot increase, that cap.
 - Opening customer-credit and supplier-debit balances in the contact subledger; the current opening-balance contract represents customer receivables and supplier payables only.
 
 The SQL remains a one-time bootstrap for an empty database, not a migration to apply over an existing populated database. No live Supabase project has been changed by this repository edit.
