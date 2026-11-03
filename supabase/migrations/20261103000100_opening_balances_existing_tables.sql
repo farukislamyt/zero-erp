@@ -130,8 +130,8 @@ begin
       message = 'Opening balance date must fall within the selected accounting period.';
   end if;
 
-  -- Validate ordinary GL lines. Control accounts are populated from their
-  -- corresponding party/inventory details to avoid double-counting.
+  -- Validate ordinary GL lines. Accounts also used by party/inventory detail
+  -- lines are rejected below to avoid double-counting those control balances.
   if exists (
     select 1
     from pg_catalog.jsonb_to_recordset(p_account_lines) as x(
@@ -161,10 +161,9 @@ begin
     where a.id is null
        or not a.is_active
        or not a.is_postable
-       or a.is_control_account
   ) then
     raise exception using errcode = '23503',
-      message = 'Ordinary GL lines must reference active, postable, non-control accounts in this organization.';
+      message = 'GL lines must reference active, postable accounts in this organization.';
   end if;
 
   -- Validate customer/supplier summary balances. Contacts do not carry a
