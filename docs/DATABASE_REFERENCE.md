@@ -1,20 +1,16 @@
 # Zero ERP — Complete Database Reference
 
-> **Database source of truth.** This reference describes the effective database after applying the migrations below in timestamp order. It is generated from the SQL definitions in this branch; it is not a target design or a description of unimplemented application features.
+> **Database source of truth.** This reference describes the effective database defined by the single consolidated bootstrap SQL file. It is generated from the SQL definitions in this branch; it is not a target design or a description of unimplemented application features.
 >
 > **Branch:** `feat/database-migrations`  
 > **Last reviewed:** 2026-11-03  
 > **Scope:** Supabase PostgreSQL, `public` schema, and the external Supabase Auth dependency (`auth.users`, `auth.uid()`).
 
-## Migration chain and effective-state rule
+## Canonical SQL file and effective-state rule
 
-Apply these migrations in order:
+The complete database is defined by [`20261103000000_initial_database_schema.sql`](../supabase/migrations/20261103000000_initial_database_schema.sql). It contains the original bootstrap, membership/RBAC security updates and permanent original-Creator Administrator protections, merged in execution order inside one transaction. It is intended to initialize a new/empty Supabase database only.
 
-1. [`20261103000000_initial_database_schema.sql`](../supabase/migrations/20261103000000_initial_database_schema.sql) — creates the tables, constraints, indexes, seeds, initial functions, triggers, RLS policies and grants for a new/empty database.
-2. [`20261103010000_organization_membership_security.sql`](../supabase/migrations/20261103010000_organization_membership_security.sql) — adds/overrides membership, creator-anchor, RBAC, role-management and profile functions/triggers; adds the one-active-company-per-user unique index.
-3. [`20261103020000_permanent_organization_administrator.sql`](../supabase/migrations/20261103020000_permanent_organization_administrator.sql) — makes the original creator membership permanently immutable, protects the Administrator role, redefines organization creation and drops the Administrator-transfer RPC.
-
-A later `CREATE OR REPLACE FUNCTION` replaces the earlier body for the same function signature. A later `DROP TRIGGER` / `CREATE TRIGGER` replaces the named trigger on its table. The historical `transfer_organization_administrator(uuid, uuid)` function existed in an earlier migration but is **not present in the effective final schema** because migration 0200 drops it. The legacy `post_manual_journal_entry(...)` function remains defined but its client EXECUTE privilege is revoked.
+The consolidated SQL retains the final `CREATE OR REPLACE FUNCTION`, trigger replacement and privilege statements from the former separate files. The historical `transfer_organization_administrator(uuid, uuid)` function is **not present in the effective final schema** because the consolidated SQL drops it before COMMIT. The legacy `post_manual_journal_entry(...)` function remains defined but its client EXECUTE privilege is revoked.
 
 ## Effective database inventory
 
@@ -1475,11 +1471,11 @@ The list below is the effective final function set after migration overrides and
 | `public.is_active_org_member` | `p_organization_id uuid` | `boolean` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Returns whether the current auth.uid() has an active membership in the specified organization. |
 | `public.has_org_permission` | `p_organization_id uuid, p_permission_key text` | `boolean` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Checks active organization, active membership, active role and the requested permission key. |
 | `public.next_document_number` | `p_organization_id uuid, p_document_type text` | `text` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Atomically allocates the next formatted number from the organization's active number_sequences row after permission validation. |
-| `public.create_organization_with_admin` | `p_name text, p_currency text default 'BDT', p_timezone text default 'Asia/Dhaka'` | `uuid` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103020000_permanent_organization_administrator.sql` | Atomically creates an organization, its system Administrator role, role-permission assignments, the authenticated creator's permanent membership, and the default chart of accounts. |
+| `public.create_organization_with_admin` | `p_name text, p_currency text default 'BDT', p_timezone text default 'Asia/Dhaka'` | `uuid` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Atomically creates an organization, its system Administrator role, role-permission assignments, the authenticated creator's permanent membership, and the default chart of accounts. |
 | `public.guard_system_role_mutation` | `—` | `trigger` | Trigger function | No | Trigger-only | `20261103000000_initial_database_schema.sql` | Rejects protected system-role mutation through the roles table. |
 | `public.guard_administrator_membership` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103020000_permanent_organization_administrator.sql` | Membership trigger that prevents Administrator membership changes, reassignment, deactivation or deletion; final implementation allows initial creator bootstrap only. |
 | `public.guard_system_role_permissions` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | Protects the system role's permission assignments from unauthorized changes. |
-| `public.add_organization_user_by_email` | `p_organization_id uuid, p_email text, p_role_id uuid` | `uuid` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103010000_organization_membership_security.sql` | Adds an existing email-verified Supabase Auth user to the organization with an active organization role. |
+| `public.add_organization_user_by_email` | `p_organization_id uuid, p_email text, p_role_id uuid` | `uuid` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Adds an existing email-verified Supabase Auth user to the organization with an active organization role. |
 | `public.update_organization_user_role` | `p_organization_id uuid, p_membership_id uuid, p_role_id uuid` | `void` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103010000_organization_membership_security.sql` | Changes an ordinary membership's assigned role after organization/permission validation; creator membership is protected by triggers. |
 | `public.set_organization_user_active` | `p_organization_id uuid, p_membership_id uuid, p_is_active boolean` | `void` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103010000_organization_membership_security.sql` | Activates/deactivates an ordinary membership subject to role and creator protections. |
 | `public.post_manual_journal_entry` | `p_organization_id uuid, p_entry_number text, p_entry_date date, p_description text, p_lines jsonb` | `uuid` | Internal/helper function | Yes | No authenticated EXECUTE grant; PUBLIC, anon and authenticated revoked | `20261103000000_initial_database_schema.sql` | Legacy one-step manual journal posting function; EXECUTE is revoked from client roles. Use the draft/confirm/post workflow. |
@@ -1607,7 +1603,7 @@ The migration fails closed if these conditions are not already true. It does not
 
 ### Historical / removed function
 
-- `public.transfer_organization_administrator(uuid, uuid)`: introduced by migration 0100 and granted to `authenticated` in that historical migration; dropped by migration 0200. It is **not callable and does not exist** after the full migration chain.
+- `public.transfer_organization_administrator(uuid, uuid)`: present in an earlier intermediate source revision and granted to `authenticated`; the consolidated bootstrap drops it before COMMIT. It is **not callable and does not exist** after the full canonical SQL file.
 - `public.post_manual_journal_entry(uuid, text, date, text, jsonb)`: remains defined in the bootstrap but client-role EXECUTE is revoked. Manual journals use `save_draft_transaction_document`, `confirm_transaction_document`, and `post_confirmed_journal_entry`.
 
 ## Effective trigger inventory
@@ -2614,13 +2610,11 @@ These are database facts, not UI promises:
 - `report_receivables_aging` exists, but its payment-allocation subquery currently lacks a `payment_date <= p_as_of_date` condition; historical results can include later payments. See the audit.
 - Reporting RPCs exist for trial balance, general ledger, profit and loss, balance sheet, inventory valuation, contact balances, receivables aging, payables aging and unapplied payments.
 - `payment_allocations` is a real table with a controlled setter/validator, but the exact operational limitations of each payment type are enforced by the posting/validation function bodies; do not infer universal invoice allocation support beyond those implementations.
-- There is no accounting-period table, period column, period permission, period-close function or period-lock workflow in this migration chain.
+- There is no accounting-period table, period column, period permission, period-close function or period-lock workflow in the canonical SQL file.
 - There are no SQL views or materialized views in the migrations.
 
 ## Source files
 
-- [Initial bootstrap](../supabase/migrations/20261103000000_initial_database_schema.sql)
-- [Membership security migration](../supabase/migrations/20261103010000_organization_membership_security.sql)
-- [Permanent Administrator migration](../supabase/migrations/20261103020000_permanent_organization_administrator.sql)
+- [Canonical consolidated database SQL](../supabase/migrations/20261103000000_initial_database_schema.sql)
 - [Database architecture and security guide](DATABASE_AND_SECURITY.md)
 - [Static database audit](DATABASE_AUDIT.md)
