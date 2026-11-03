@@ -2,18 +2,14 @@
 
 **Audit date:** 2026-11-03  
 **Branch:** `feat/database-migrations`  
-**Audit type:** Static source audit of the complete effective migration chain and its database documentation.  
+**Audit type:** Static source audit of the single consolidated bootstrap SQL file and its database documentation.  
 **Live database status:** No Supabase project was queried or modified. No PostgreSQL migration execution or runtime test is claimed.
 
 ## 1. Scope and source of truth
 
-Reviewed in migration order:
+Reviewed the single canonical file: `supabase/migrations/20261103000000_initial_database_schema.sql`.
 
-1. `supabase/migrations/20261103000000_initial_database_schema.sql`
-2. `supabase/migrations/20261103010000_organization_membership_security.sql`
-3. `supabase/migrations/20261103020000_permanent_organization_administrator.sql`
-
-The effective schema is the combined result of all three files. Later function definitions replace earlier versions. Migration 0200 drops the previously introduced `transfer_organization_administrator(uuid, uuid)` function. The detailed, table-by-table object catalog is [DATABASE_REFERENCE.md](DATABASE_REFERENCE.md).
+That file now contains the effective SQL previously distributed across the three source files, merged in dependency order and wrapped in one transaction. The historical `transfer_organization_administrator(uuid, uuid)` function is dropped before the final COMMIT and is not part of the effective schema. The detailed, table-by-table object catalog is [DATABASE_REFERENCE.md](DATABASE_REFERENCE.md).
 
 ## 2. Effective static inventory
 
@@ -92,7 +88,7 @@ The initial bootstrap contains multiple `CREATE OR REPLACE FUNCTION` definitions
 
 ## 6. Test and verification boundary
 
-The repository branch currently contains the three migrations and documentation files; the earlier database smoke test and GitHub Actions SQL-test workflow were removed at the user's request. Therefore:
+The repository branch currently contains one consolidated database SQL file and the documentation files; the earlier database smoke test and GitHub Actions SQL-test workflow were removed at the user's request. Therefore:
 
 | Verification | Status |
 |---|---|
@@ -109,7 +105,7 @@ Do not describe this audit as a successful live database deployment or as a pass
 
 ## 7. Documentation maintenance rule
 
-The executable migration chain is authoritative. When schema objects change:
+The executable bootstrap SQL is authoritative. When schema objects change:
 
 1. Update the migration(s).
 2. Rebuild the table-by-table catalog, including columns, constraints, indexes, triggers and RLS policies.
