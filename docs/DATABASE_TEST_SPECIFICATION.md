@@ -171,13 +171,13 @@ For every posting: journal debit total equals journal credit total; every journa
 
 For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `purchase_return`, `sales_return`, `journal_entry`):
 
-1. **Create Draft:** valid payload returns UUID, status Draft, correct child count and auto-number.
-2. **Update Draft:** only allowlisted fields change; document number is immutable; child replacement is atomic.
-3. **Confirm:** valid complete document becomes Confirmed with `confirmed_at/by`; no journal, stock movement, balance or posted timestamp appears.
+1. **Create Draft:** valid payload returns UUID, status Draft, correct child count; the document number is NULL and the corresponding `number_sequences.next_number` is unchanged.
+2. **Update Draft:** only allowlisted fields change; document number remains NULL before first confirmation and cannot be client-selected; child replacement is atomic.
+3. **Confirm:** after all business validation succeeds, valid complete document becomes Confirmed with `confirmed_at/by` and receives exactly one sequence number in the same transaction; no journal, stock movement, balance or posted timestamp appears.
 4. **Invalid Confirm:** missing line, wrong total, inactive/wrong-tenant contact/account/product, bad source return, oversold/over-returned quantity or unbalanced journal fails and remains Draft.
-5. **Revert:** Confirmed becomes Draft; confirmation audit semantics match SQL; no posting effects.
-6. **Void:** Draft/Confirmed becomes Void with trimmed reason >=3 and audit fields; Posted/Voided fails.
-7. **Delete:** Draft and children removed; Confirmed/Posted fails; payment-allocation-linked document fails until allocations are removed.
+5. **Revert:** Confirmed becomes Draft; its assigned number is retained; reconfirmation reuses that number without advancing the sequence; no posting effects.
+6. **Void:** Draft/Confirmed becomes Void with trimmed reason >=3 and audit fields; a Draft void has no number, while a Confirmed void retains its number; Posted/Voided fails.
+7. **Delete:** Draft and children removed; an unconfirmed Draft deletion consumes no number; Confirmed/Posted fails; payment-allocation-linked document fails until allocations are removed.
 8. **Authorization:** missing create/confirm/post permission fails independently at each RPC.
 9. **Tenant:** foreign-tenant ID is indistinguishable from missing target and produces no mutation.
 10. **Concurrency:** two simultaneous confirm/post requests produce at most one posting and one set of effects.
@@ -227,7 +227,12 @@ For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `
 - **NUM-001–008** Each of purchase, sale, expense, payment, journal_entry, purchase_return, sales_return, inventory_adjustment returns expected prefix/padding and increments once.
 - **NUM-009–011** Unauthorized type, unknown type, inactive sequence: rejected; counter unchanged.
 - **NUM-012** Concurrent allocations are unique and gap/rollback behavior is recorded; no duplicate document numbers.
-- **NUM-013** Updating a document cannot change assigned number.
+- **NUM-013** Updating a document cannot change an assigned number.
+- **NUM-014** Creating/updating a Draft does not allocate a number; client-supplied number fields are ignored.
+- **NUM-015** First successful confirmation allocates exactly one number; failed confirmation leaves the sequence unchanged.
+- **NUM-016** Revert and reconfirm retain the original number without another increment; void/delete preserve the no-gap policy.
+- **NUM-017** Authenticated clients cannot directly execute `next_document_number`; document confirmation and inventory adjustment posting remain the only supported allocation paths.
+- **NUM-018** Inventory adjustment allocates its number atomically with its posting transaction; a failed posting rolls back the sequence change.
 
 ### 8.3 Opening balances
 
@@ -372,9 +377,9 @@ Executable pgTAP suites:
 
 | Test file | Executable coverage |
 |---|---|
-| `001_schema_contract.test.sql` | Catalog inventory, all-table RLS/policies, permission seeds, triggers/indexes, SECURITY DEFINER search_path, browser-role write revocation, exposed RPC grants, Creator Administrator bootstrap/invariants, default COA/category/sequences, custom-role restriction, numbering and basic report RPC access |
+| `001_schema_contract.test.sql` | Catalog inventory, all-table RLS/policies, permission seeds, triggers/indexes, SECURITY DEFINER search_path, browser-role write revocation, exposed RPC grants, Creator Administrator bootstrap/invariants, default COA/category/sequences, custom-role restriction, internal-only number allocator exposure and basic report RPC access |
 | `002_core_workflows.test.sql` | Company bootstrap, account/contact/unit/product creation, opening GL and inventory balances, Cash–Bank transfer Draft/Confirm/Post, debit/credit ledger lines, source/destination/final balances, total asset preservation, duplicate posting rejection, repeated opening-balance rejection, same-account transfer rejection, custom role/member onboarding and least-privilege denial |
-| `003_commerce_accounting_workflows.test.sql` | Supplier/customer/product setup, opening inventory, purchase Draft/Confirm/Post, stock quantity and valuation, sales Draft/Confirm/Post, stock-out and balanced journal, expense Draft/Confirm/Post, inventory adjustment, manual journal Draft/Confirm/Post/Reversal, oversell rejection with no stock mutation, trial balance/GL/P&L/balance-sheet/inventory-valuation report availability and reconciliation |
+| `003_commerce_accounting_workflows.test.sql` | Supplier/customer/product setup, opening inventory, Draft-without-number and confirmation-stage numbering for purchase/sales/expense/manual journal, number immutability through posting, inventory-adjustment posting number, stock quantity and valuation, balanced journals, manual journal reversal, oversell rejection with no stock mutation, and financial/inventory report reconciliation |
 | `004_returns_and_payment_allocations.test.sql` | Purchase return lifecycle and source/stock effects, sales return lifecycle and source/stock effects, customer receipt allocation/posting, supplier payment allocation/posting |
 | `005_tenant_isolation.test.sql` | Two independent organizations, active membership and permission scoping, RLS tenant read isolation, cross-tenant master-data write denial and no-write-on-failure |
 
