@@ -23,8 +23,8 @@ The historical `transfer_organization_administrator(uuid, uuid)` RPC is not part
 | Explicit indexes | 29 |
 | RLS-enabled tables | 26 |
 | RLS policies | 26 |
-| Triggers | 37 |
-| Effective public functions | 53 |
+| Triggers | 39 |
+| Effective public functions | 55 |
 | Seeded permission keys | 43 |
 | Views / materialized views | 0 |
 | User-defined sequences | 0 |
@@ -48,7 +48,7 @@ Every table, column, constraint, index, trigger, policy, function signature, per
 - `journal_entries` stores journal headers and lifecycle/reversal metadata.
 - `account_transactions` stores debit/credit lines. Each line must be one-sided (debit or credit), positive on the populated side, and associated with same-organization journal/account/contact records.
 - `inventory_transactions` stores stock movement and cost history; `inventory_balances` stores current per-product quantity/value/cost.
-- `products` links units and optional inventory, sales and COGS accounts.
+- `products` links units and optional inventory, sales and COGS accounts. A product's unit is immutable after its first inventory movement; the RPC guard and database triggers reject changes, with product-row locking to serialize stock inserts against unit updates.
 - The default chart of accounts, General Expenses category and document-number sequences are seeded by `seed_default_chart_of_accounts`, which the final organization-creation RPC calls.
 
 ### Commercial documents
@@ -94,7 +94,7 @@ The full function catalog in [DATABASE_REFERENCE.md](DATABASE_REFERENCE.md#funct
 - `add_organization_user_by_email` adds an existing email-verified Auth user; the database does not create an invitation or send an invitation email.
 - `update_organization_user_role` and `set_organization_user_active` manage ordinary memberships; Creator membership changes are rejected by triggers.
 - `create_custom_role`, `replace_custom_role_permissions`, `validate_role_assignment`, and `update_custom_role` implement organization role management.
-- No Administrator transfer API exists in the final schema.
+- No Administrator transfer API exists in the final schema. The original Creator remains the sole, immutable Administrator; membership, role, active state, and identity cannot be changed or transferred.
 
 ### Master data and organization profile
 
