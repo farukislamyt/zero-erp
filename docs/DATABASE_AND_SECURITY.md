@@ -113,16 +113,17 @@ The full function catalog in [DATABASE_REFERENCE.md](DATABASE_REFERENCE.md#funct
 
 ### Posting and reversals
 
-The final schema defines posting functions for purchases, sales, purchase returns, sales returns, expenses, contact payments, inventory adjustments, opening balances and confirmed manual journals. `reverse_journal_entry` provides controlled journal reversal. These routines use organization-scoped locks and row locks where implemented in their bodies; see the SQL source for exact lock ordering and validation. `next_document_number` maps `inventory_adjustment` to `inventory.adjust`, so the posting path has the required allocator permission check. This is source-level verification; live posting has not been executed.
+The final schema defines posting functions for purchases, sales, purchase returns, sales returns, expenses, contact payments, inventory adjustments, opening balances and confirmed manual journals. `reverse_journal_entry` provides controlled journal reversal. These routines use organization-scoped locks and row locks where implemented in their bodies; see the SQL source for exact lock ordering and validation. Inventory adjustment numbering remains part of its posting transaction and requires `inventory.adjust`. Runtime behavior must be verified by the database CI workflow.
 
 The legacy `post_manual_journal_entry` function remains defined but client EXECUTE is revoked. The supported manual journal path is draft save → confirm → `post_confirmed_journal_entry`.
 
 ### Number allocation
 
 - `number_sequences` stores organization/document-type prefixes, next values, padding and active state.
-- `next_document_number` allocates a number under the sequence row and checks the corresponding permission.
-- `assign_document_number` is attached to purchase, sales, expense, payment, purchase-return, sales-return and journal-entry inserts. It assigns numbers to eligible draft inserts and preserves the existing number on UPDATE.
-- Inventory adjustment posting calls `next_document_number` directly.
+- Draft purchase, sales, expense, payment, purchase-return, sales-return and manual-journal records have a NULL document number. A `BEFORE UPDATE OF status` trigger allocates the number only on the first Draft → Confirmed transition, after the confirmation RPC has completed its business validation.
+- The trigger preserves an assigned number through later updates, Confirmed → Draft reversion, reconfirmation, voiding and posting. A reverted document therefore keeps its original number and does not consume another sequence value.
+- `next_document_number` is an internal SECURITY DEFINER helper. Browser-authenticated clients have no direct EXECUTE privilege; the helper checks the document-specific Confirm permission (or `inventory.adjust` for inventory adjustments) and atomically increments the organization-scoped sequence.
+- Inventory adjustment is a direct posting workflow rather than a saved Draft/Confirmed transaction document. Its posting RPC allocates the `inventory_adjustment` number inside the same transaction as the journal and inventory effects.
 
 ### Payments and allocations
 
