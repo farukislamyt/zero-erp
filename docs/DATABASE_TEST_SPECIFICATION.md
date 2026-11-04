@@ -230,9 +230,9 @@ For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `
 - **NUM-012** Concurrent confirmations/postings produce unique numbers; sequence-row locking prevents duplicates and transaction failures roll back allocation.
 - **NUM-013** Updating a document cannot change an assigned number.
 - **NUM-014–018** Drafts have NULL numbers; first confirmation allocates once; invalid confirmation does not allocate; revert/reconfirm retains the number; direct authenticated allocator execution is denied; direct non-Draft INSERT and client-selected numbers are rejected; inventory-adjustment number allocation is atomic with posting.
-- **NUM-014** Creating/updating a Draft does not allocate a number; client-supplied number fields are ignored.
+- **NUM-014** Creating/updating a Draft does not allocate a number; client-supplied number fields are rejected by the RPC allowlist and cannot be persisted.
 - **NUM-015** First successful confirmation allocates exactly one number; failed confirmation leaves the sequence unchanged.
-- **NUM-016** Revert and reconfirm retain the original number without another increment; void/delete preserve the no-gap policy.
+- **NUM-016** Revert and reconfirm retain the original number without another increment; void retains an allocated number; deleting an unconfirmed Draft consumes no number; deleting a previously confirmed document after reversion does not roll back or reuse its consumed sequence value.
 - **NUM-017** Authenticated clients cannot directly execute `next_document_number`; document confirmation and inventory adjustment posting remain the only supported allocation paths.
 - **NUM-018** Inventory adjustment allocates its number atomically with its posting transaction; a failed posting rolls back the sequence change.
 
