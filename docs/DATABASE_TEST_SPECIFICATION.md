@@ -73,7 +73,7 @@ Parameters are listed in SQL order. Optional parameters retain their SQL default
 
 ### Internal / trigger-only functions
 
-The following are not normal application RPCs and must not be granted to browser roles: `set_updated_at()`, `prevent_account_hierarchy_cycle()`, `guard_system_role_mutation()`, `guard_administrator_membership()`, `guard_system_role_permissions()`, `post_manual_journal_entry(uuid,text,date,text,jsonb)` (legacy, client EXECUTE revoked), `seed_default_chart_of_accounts(uuid)`, `assign_document_number()`, `guard_organization_creator_membership()`, `guard_organization_created_at()`, `guard_custom_role_control_plane_permissions()`, and `guard_system_administrator_role()`. `is_organization_creator(uuid,uuid)` is an internal identity helper. Trigger-only functions are tested through their triggering table operation, not called directly.
+The following are not normal application RPCs and must not be granted to browser roles: `set_updated_at()`, `prevent_account_hierarchy_cycle()`, `guard_system_role_mutation()`, `guard_administrator_membership()`, `guard_system_role_permissions()`, `post_manual_journal_entry(uuid,text,date,text,jsonb)` (legacy, client EXECUTE revoked), `seed_default_chart_of_accounts(uuid)`, `assign_document_number()`, `guard_organization_creator_membership()`, `guard_organization_created_at()`, `guard_custom_role_control_plane_permissions()`, `guard_system_administrator_role()`, `guard_product_unit_immutable_after_inventory()`, and `lock_product_for_inventory_transaction()`. `is_organization_creator(uuid,uuid)` is an internal identity helper. Trigger-only functions are tested through their triggering table operation, not called directly.
 
 ## 4. JSON payload field contract
 
@@ -199,6 +199,7 @@ For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `
 - **ORG-011** Organization creator timestamp update: 42501.
 - **ORG-012** Later Administrator membership insert/assignment: rejected.
 - **ORG-013** Administrator Role rename/deactivate/delete or permission removal: rejected.
+- **ORG-014** Creator Administrator UPDATE/DELETE/deactivation/reassignment, later Administrator INSERT, and Administrator transfer attempt: rejected; `transfer_organization_administrator` must not exist and must have no authenticated EXECUTE grant.
 - **ORG-014** Profile update valid all 11 arguments; blank optional text becomes NULL.
 - **ORG-015–017** Profile invalid name/currency/timezone, inactive organization, non-Administrator: rejected.
 - **RBAC-001** Add existing verified user with valid custom role.
@@ -225,6 +226,11 @@ For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `
 - **MD-021–024** Duplicate/blank Unit; deactivate Unit used by active Product; wrong-tenant Unit: rejected.
 - **MD-025–028** Duplicate/blank Contact; deactivate Contact with outstanding AR/AP; wrong-tenant Contact: rejected.
 - **MD-029–034** Product missing/inactive/wrong-tenant Unit; invalid inventory/sales/COGS account type; mapping change after stock movement; deactivate non-zero stock: rejected.
+- **MD-035** Change Product `unit_id` before its first inventory movement: allowed for a valid active same-organization Unit.
+- **MD-036** Change Product `unit_id` after any inventory movement, including zero current stock, net-zero movement history, or reversed source document: rejected with SQLSTATE `23514`.
+- **MD-037** Submit the same `unit_id` after inventory movements: allowed as a no-op; other permitted Product fields remain independently editable.
+- **MD-038** Attempt direct trusted SQL UPDATE of `products.unit_id` after movement history: rejected by `products_guard_unit_after_inventory`.
+- **MD-039** Race a first inventory insert against a Product unit change: product-row locking serializes both operations; if the movement commits first, the unit change fails; if the unit change commits first, the movement proceeds against the new Product unit.
 - **MD-035–038** Expense category missing/invalid/inactive/wrong-tenant expense account; duplicate code: rejected.
 - **NUM-001–008** Each seeded sequence has the expected prefix/padding; business-document sequences advance only on first successful confirmation, while inventory adjustment advances inside its posting RPC.
 - **NUM-009–011** Unauthorized document confirmation/posting, unknown internal type and inactive sequence: rejected; counter unchanged.
@@ -360,6 +366,7 @@ For every report, test authorized role, denied role, inactive member, inactive o
 - **SEC-006** Two-tenant read/write isolation for every tenant-owned table and RPC.
 - **SEC-007** Inactive membership and inactive organization cannot call tenant RPCs or read own historical membership metadata.
 - **SEC-008** Creator anchor and Administrator protections survive direct trusted SQL attempts as well as RPC attempts.
+- **SEC-009** No Administrator transfer function or authenticated EXECUTE grant exists; creator membership remains the sole permanent Administrator.
 - **SEC-009** Custom roles cannot receive `users.manage` or `roles.manage`.
 - **SEC-010** Legacy `post_manual_journal_entry` has no client EXECUTE; transfer RPC absent.
 - **TX-001** Every posting function is atomic across header status, journal, ledger, inventory and source-document changes.
