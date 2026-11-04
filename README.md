@@ -25,7 +25,7 @@ The file is intended to initialize a **new/empty Supabase database**. It contain
 - 129 declared table constraints.
 - 29 effective explicit indexes.
 - RLS enabled on all 26 public tables with 26 installed SELECT policies.
-- 41 effective triggers.
+- 45 effective triggers.
 - 59 effective public functions (60 definitions including the client-revoked legacy helper).
 - 43 seeded permission keys.
 - No SQL views, materialized views, user-defined sequences, custom enum/type/domain definitions, or accounting-period subsystem.

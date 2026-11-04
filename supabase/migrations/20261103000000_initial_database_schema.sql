@@ -613,40 +613,78 @@ create or replace function public.guard_product_unit_immutable_after_inventory()
 returns trigger language plpgsql security definer set search_path = ''
 as $function$
 begin
-  if new.unit_id is distinct from old.unit_id
-     and public.product_has_unit_history(old.organization_id, old.id) then
-    raise exception using errcode = '23514',
-      message = 'A product unit cannot be changed after inventory movements exist. Create a new product or use a controlled unit-conversion workflow.';
+  if tg_op = 'INSERT' then
+    -- FOR SHARE conflicts with a concurrent UOM rename (which takes NO KEY UPDATE).
+    perform 1 from public.units_of_measure u
+    where u.organization_id = new.organization_id and u.id = new.unit_id and u.is_active
+    for share;
+    if not found then
+      raise exception using errcode = '23503',
+        message = 'Product unit must be active and belong to this organization.';
+    end if;
+    return new;
+  end if;
+
+  if new.unit_id is distinct from old.unit_id then
+    perform 1 from public.units_of_measure u
+    where u.organization_id = new.organization_id and u.id = new.unit_id and u.is_active
+    for share;
+    if not found then
+      raise exception using errcode = '23503',
+        message = 'Product unit must be active and belong to this organization.';
+    end if;
+
+    if public.product_has_unit_history(old.organization_id, old.id) then
+      raise exception using errcode = '23514',
+        message = 'A product unit cannot be changed after purchase, sales, return or inventory history exists. Create a new product or use a controlled unit-conversion workflow.';
+    end if;
   end if;
   return new;
 end;
 $function$;
 
-create or replace function public.lock_product_for_inventory_transaction()
+create or replace function public.lock_product_for_reference()
 returns trigger language plpgsql security definer set search_path = ''
 as $function$
+declare
+  v_locked_count integer;
 begin
-  perform 1 from public.products p
-  where p.organization_id = new.organization_id and p.id = new.product_id
-  for update;
-  if not found then
-    raise exception using errcode = '23503',
-      message = 'Inventory transaction product was not found in this organization.';
+  if tg_op = 'UPDATE' and old.product_id is distinct from new.product_id then
+    -- Lock both references in deterministic order to avoid product-swap deadlocks.
+    perform 1
+    from public.products p
+    where (p.organization_id = old.organization_id and p.id = old.product_id)
+       or (p.organization_id = new.organization_id and p.id = new.product_id)
+    order by p.organization_id, p.id
+    for update;
+    get diagnostics v_locked_count = row_count;
+    if v_locked_count <> 2 then
+      raise exception using errcode = '23503',
+        message = 'Both old and new document-line products must exist in their organizations.';
+    end if;
+  else
+    perform 1 from public.products p
+    where p.organization_id = new.organization_id and p.id = new.product_id
+    for update;
+    if not found then
+      raise exception using errcode = '23503',
+        message = 'Document or inventory line product was not found in this organization.';
+    end if;
   end if;
   return new;
 end;
 $function$;
 
 revoke all on function public.guard_product_unit_immutable_after_inventory() from public, anon, authenticated;
-revoke all on function public.lock_product_for_inventory_transaction() from public, anon, authenticated;
+revoke all on function public.lock_product_for_reference() from public, anon, authenticated;
 
 create trigger products_guard_unit_after_inventory
-before update of unit_id on public.products
+before insert or update of unit_id on public.products
 for each row execute function public.guard_product_unit_immutable_after_inventory();
 
 create trigger inventory_transactions_lock_product
 before insert on public.inventory_transactions
-for each row execute function public.lock_product_for_inventory_transaction();
+for each row execute function public.lock_product_for_reference();
 
 create table public.purchase (
   id uuid primary key default pg_catalog.gen_random_uuid(),
@@ -1066,6 +1104,21 @@ create table public.payment_allocations (
     references public.payments (organization_id, id)
     on delete restrict
 );
+
+-- Serialize product UOM changes against every document-line reference.
+-- The lock helper also locks old/new Products in deterministic order for direct UPDATEs.
+create trigger purchase_items_lock_product
+before insert or update of product_id on public.purchase_items
+for each row execute function public.lock_product_for_reference();
+create trigger sales_items_lock_product
+before insert or update of product_id on public.sales_items
+for each row execute function public.lock_product_for_reference();
+create trigger purchase_return_items_lock_product
+before insert or update of product_id on public.purchase_return_items
+for each row execute function public.lock_product_for_reference();
+create trigger sales_return_items_lock_product
+before insert or update of product_id on public.sales_return_items
+for each row execute function public.lock_product_for_reference();
 
 -- Add document-to-journal references after both sides exist. Composite FKs enforce tenant equality.
 alter table public.purchase
@@ -4504,6 +4557,7 @@ declare
   v_set_clause text;
   v_child_column_list text;
   v_child_value_list text;
+  v_child_order_clause text := '';
   v_sql text;
 begin
   if v_user_id is null or not public.is_active_org_member(p_organization_id) then
@@ -4689,11 +4743,15 @@ begin
       into v_child_column_list, v_child_value_list
       from pg_catalog.unnest(v_child_columns) with ordinality as cols(c, ord);
 
+      if v_child_table in ('purchase_items','sales_items','purchase_return_items','sales_return_items') then
+        v_child_order_clause := ' order by x.product_id';
+      end if;
+
       v_sql := pg_catalog.format(
         'insert into public.%I (id, organization_id, %I, %s) ' ||
         'select pg_catalog.gen_random_uuid(), $1, $2, %s ' ||
-        'from pg_catalog.jsonb_populate_recordset(null::public.%I, $3) as x',
-        v_child_table, v_parent_column, v_child_column_list, v_child_value_list, v_child_table
+        'from pg_catalog.jsonb_populate_recordset(null::public.%I, $3) as x%s',
+        v_child_table, v_parent_column, v_child_column_list, v_child_value_list, v_child_table, v_child_order_clause
       );
       execute v_sql using p_organization_id, v_document_id, p_items;
     end if;

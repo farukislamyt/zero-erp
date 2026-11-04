@@ -162,7 +162,7 @@ These are explicit properties of the current schema:
 
 - `organizations.currency` accepts current monetary ISO 4217 alpha codes from the SIX List One snapshot dated 2026-09-17. Fund, metal, test and no-currency codes are excluded; review the snapshot when SIX publishes amendments.
 - `guard_organization_currency_after_financial_activity` blocks a base-currency change once any journal, account/inventory transaction, purchase, sales, return, expense or payment record exists, including draft documents.
-- `product_has_unit_history` checks inventory movements and purchase, sales and return lines. Product `unit_id` cannot change after any such reference exists, even if the document is still draft or stock is zero.
+- `product_has_unit_history` checks inventory movements and purchase, sales and return lines. Product `unit_id` cannot change after any such reference exists, even if the document is still draft or stock is zero. Four line-table triggers lock the referenced Product during purchase, sales and return-line inserts/updates; the draft-save RPC orders multi-product inserts by Product ID to avoid inconsistent lock ordering. Product inserts/unit changes take a shared lock on the selected UOM so a concurrent rename cannot slip past the UOM guard.
 - `guard_unit_name_after_product_use` prevents renaming a UOM after it is assigned to any product. Create a new UOM rather than changing the historical meaning of an existing one.
 - These database-level guards do not add unit-conversion or currency-conversion workflows.
 

@@ -232,10 +232,11 @@ For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `
 - **MD-036** Change Product `unit_id` after any inventory movement or purchase/sales/return line reference (including draft, zero current stock, net-zero history, or reversed source document): rejected with SQLSTATE `23514`.
 - **MD-037** Submit the same `unit_id` after inventory movements: allowed as a no-op; other permitted Product fields remain independently editable.
 - **MD-038** Attempt direct trusted SQL UPDATE of `products.unit_id` after movement history: rejected by `products_guard_unit_after_inventory`.
-- **MD-039** Race a first inventory insert against a Product unit change: product-row locking serializes both operations; if the movement commits first, the unit change fails; if the unit change commits first, the movement proceeds against the new Product unit.
+- **MD-039** Race inventory movement and purchase/sales/return line inserts against a Product unit change: row locks serialize both operations; if a reference commits first, the unit change fails; if the unit change commits first, the line proceeds against the new Product unit. Multi-product draft inserts acquire Product locks in Product-ID order.
 - **MD-040** Rename a UOM before any Product references it: allowed.
 - **MD-041** Rename a UOM after any Product references it, including an inactive Product: rejected with SQLSTATE `23514`.
-- **MD-042–045** Expense category missing/invalid/inactive/wrong-tenant expense account; duplicate code: rejected.
+- **MD-042** Direct UPDATE of a document line's `product_id` locks both old and new Product rows in deterministic order.
+- **MD-043–046** Expense category missing/invalid/inactive/wrong-tenant expense account; duplicate code: rejected.
 - **NUM-001–008** Each seeded sequence has the expected prefix/padding; business-document sequences advance only on first successful confirmation, while inventory adjustment advances inside its posting RPC.
 - **NUM-009–011** Unauthorized document confirmation/posting, unknown internal type and inactive sequence: rejected; counter unchanged.
 - **NUM-012** Concurrent confirmations/postings produce unique numbers; sequence-row locking prevents duplicates and transaction failures roll back allocation.

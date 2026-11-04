@@ -2649,4 +2649,6 @@ The canonical bootstrap includes the following integrity helpers and triggers in
 - Trigger: `units_guard_name_after_product_use` — BEFORE UPDATE OF name on `public.units_of_measure`.
 - `public.guard_product_unit_immutable_after_inventory()` now uses the centralized history predicate. Product `unit_id` is immutable after any historical document-line or inventory reference; `products_guard_unit_after_inventory` remains the direct-SQL backstop.
 
+Additional line-reference triggers: `purchase_items_lock_product`, `sales_items_lock_product`, `purchase_return_items_lock_product` and `sales_return_items_lock_product` — BEFORE INSERT OR UPDATE OF product_id; each locks referenced Product rows in deterministic order.
+
 The ISO currency list is a versioned snapshot, not a live feed; it must be reviewed when the official maintenance agency publishes amendments. No currency conversion, unit conversion, fiscal-year or accounting-period workflow is introduced.

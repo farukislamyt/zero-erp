@@ -21,7 +21,7 @@ That file now contains the effective SQL previously distributed across the three
 | Explicit indexes | 29 |
 | RLS-enabled tables | 26 |
 | RLS policies | 26 |
-| Effective triggers | 41 |
+| Effective triggers | 45 |
 | Effective public functions | 59 (60 definitions including the client-revoked legacy helper) |
 | Seeded permission keys | 43 |
 | Views / materialized views | 0 |
@@ -96,7 +96,7 @@ The canonical migration now contains one definition per function signature. For 
 
 ### Fixed — Product unit-of-measure history integrity
 
-A product's `unit_id` can no longer change after any inventory movement or purchase, sales, purchase-return or sales-return line references the product. The `product_has_unit_history` helper is shared by `save_master_data` and the `BEFORE UPDATE OF unit_id` trigger. The existing inventory insert lock trigger serializes first inventory movement insertion against a concurrent unit change. A separate `units_guard_name_after_product_use` trigger prevents a UOM name change after any product references it.
+A product's `unit_id` can no longer change after any inventory movement or purchase, sales, purchase-return or sales-return line references the product. The `product_has_unit_history` helper is shared by `save_master_data` and the `BEFORE UPDATE OF unit_id` trigger. The generalized `lock_product_for_reference` trigger function serializes inventory movements and purchase, sales, purchase-return and sales-return line inserts/updates against Product UOM changes. Multi-product draft inserts are ordered by Product ID; direct line updates lock old/new Products in deterministic order. Product insert/UOM update also locks the UOM row, preventing a concurrent UOM rename from racing with first Product assignment. A separate `units_guard_name_after_product_use` trigger prevents a UOM name change after any product references it.
 
 **Verification:** the RPC guard, centralized historical-reference predicate, product-row lock trigger and UOM rename trigger were inspected statically. No live concurrency test has been run.
 
