@@ -1695,7 +1695,7 @@ begin
     raise exception using errcode = '23503', message = 'Active organization was not found.';
   end if;
 
-  -- Re-check after acquiring the organization row lock. A concurrent handover
+  -- Re-check after acquiring the organization row lock. A concurrent membership change
   -- may have revoked the caller's Administrator status while this RPC waited.
   if not public.is_org_administrator(p_organization_id) then
     raise exception using errcode = '42501',
@@ -1753,7 +1753,7 @@ begin
     raise exception using errcode = '23503', message = 'Active organization was not found.';
   end if;
 
-  -- Re-check after acquiring the organization row lock. A concurrent handover
+  -- Re-check after acquiring the organization row lock. A concurrent membership change
   -- may have revoked the caller's Administrator status while this RPC waited.
   if not public.is_org_administrator(p_organization_id) then
     raise exception using errcode = '42501',
@@ -5744,7 +5744,7 @@ begin
     raise exception using errcode = '23503', message = 'Active organization was not found.';
   end if;
 
-  -- Re-check after acquiring the organization row lock. A concurrent handover
+  -- Re-check after acquiring the organization row lock. A concurrent membership change
   -- may have revoked the caller's Administrator status while this RPC waited.
   if not public.is_org_administrator(p_organization_id) then
     raise exception using errcode = '42501',
@@ -5820,7 +5820,7 @@ begin
     raise exception using errcode = '23503', message = 'Active organization was not found.';
   end if;
 
-  -- Re-check after acquiring the organization row lock. A concurrent handover
+  -- Re-check after acquiring the organization row lock. A concurrent membership change
   -- may have revoked the caller's Administrator status while this RPC waited.
   if not public.is_org_administrator(p_organization_id) then
     raise exception using errcode = '42501',
@@ -6746,7 +6746,7 @@ begin
     raise exception using errcode = '23503', message = 'Active organization was not found.';
   end if;
 
-  -- Re-check after acquiring the organization row lock. A concurrent handover
+  -- Re-check after acquiring the organization row lock. A concurrent membership change
   -- may have revoked the caller's Administrator status while this RPC waited.
   if not public.is_org_administrator(p_organization_id) then
     raise exception using errcode = '42501',
@@ -6801,7 +6801,7 @@ begin
     raise exception using errcode = '23503', message = 'Active organization was not found.';
   end if;
 
-  -- Re-check after acquiring the organization row lock. A concurrent handover
+  -- Re-check after acquiring the organization row lock. A concurrent membership change
   -- may have revoked the caller's Administrator status while this RPC waited.
   if not public.is_org_administrator(p_organization_id) then
     raise exception using errcode = '42501',
@@ -7304,7 +7304,7 @@ for each row execute function public.guard_organization_created_at();
 revoke all on function public.guard_organization_created_at() from public, anon, authenticated;
 
 -- Enforce exactly one active Administrator per company and permit assigning
--- the system Administrator role only through the create/transfer RPCs.
+-- the system Administrator role only through the organization-creation RPC.
 
 drop trigger if exists organization_users_guard_last_admin on public.organization_users;
 create trigger organization_users_guard_last_admin
@@ -7315,7 +7315,7 @@ for each row execute function public.guard_administrator_membership();
 
 
 -- One company per user for life. The creator membership is retained forever,
--- including after deactivation or Administrator transfer. Locking the Auth
+-- including after deactivation. Locking the Auth
 -- user row serializes concurrent creation attempts for the same account.
 
 
@@ -7562,8 +7562,8 @@ revoke all on function public.guard_system_administrator_role()
   from public, anon, authenticated;
 
 -- Keep the existing creation contract and bootstrap behavior, but remove the
--- Administrator-transfer bypass. The creation flag is scoped to this one
--- transaction and is required by the three database guards above.
+-- The creation flag is scoped to this one transaction and is required by
+-- the permanent Creator and Administrator guards above.
 
 
 revoke all on function public.create_organization_with_admin(text,text,text)
@@ -7571,8 +7571,7 @@ revoke all on function public.create_organization_with_admin(text,text,text)
 grant execute on function public.create_organization_with_admin(text,text,text)
   to authenticated;
 
--- Retire the old handover API completely. Dropping the function also removes
--- its EXECUTE grants so clients cannot invoke it after this migration.
+-- Ensure the obsolete Administrator-handover API is absent from the final schema.
 drop function if exists public.transfer_organization_administrator(uuid,uuid);
 
 comment on function public.is_organization_creator(uuid,uuid) is
