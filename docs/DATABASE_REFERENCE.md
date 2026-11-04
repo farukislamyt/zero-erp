@@ -75,7 +75,22 @@ The final `create_organization_with_admin` RPC calls `seed_default_chart_of_acco
 | 5300 | Inventory Adjustment Loss | expense | 5000 | debit | false | true |
 | 5400 | General Expenses | expense | 5000 | debit | false | true |
 
-The function also inserts the `GEN` / `General Expenses` expense category mapped to account `5400`, and these active document-number sequences (each starts at `next_number = 1`, `padding = 5`):
+The function also inserts these 10 active default expense categories, all mapped to the postable `5400` / `General Expenses` account. This preserves category-level expense reporting while keeping the default Chart of Accounts compact:
+
+| Code | Expense category | Linked account |
+|---|---|---|
+| `GEN` | General Expenses | `5400` — General Expenses |
+| `SAL` | Salary & Wages | `5400` — General Expenses |
+| `RENT` | Office Rent | `5400` — General Expenses |
+| `UTIL` | Utilities (Electricity, Gas, Water) | `5400` — General Expenses |
+| `TRANS` | Transportation & Conveyance | `5400` — General Expenses |
+| `COMM` | Communication & Internet | `5400` — General Expenses |
+| `REPAIR` | Repairs & Maintenance | `5400` — General Expenses |
+| `OFFICE` | Office Supplies & Stationery | `5400` — General Expenses |
+| `MARK` | Marketing & Advertising | `5400` — General Expenses |
+| `TRAVEL` | Travel & Accommodation | `5400` — General Expenses |
+
+Seeding is idempotent by `(organization_id, category_code)`; existing categories with those codes are not overwritten. The function also inserts these active document-number sequences (each starts at `next_number = 1`, `padding = 5):
 
 | Document type | Prefix |
 |---|---|
