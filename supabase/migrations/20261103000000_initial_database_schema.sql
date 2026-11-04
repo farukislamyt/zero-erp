@@ -4202,36 +4202,36 @@ begin
     when 'purchase' then
       v_table := 'purchase'; v_child_table := 'purchase_items'; v_parent_column := 'purchase_id';
       v_permission := 'purchases.create';
-      v_allowed_header := array['invoice_id','supplier_id','invoice_date','subtotal','discount_amount','total_amount','payable_account_id'];
+      v_allowed_header := array['supplier_id','invoice_date','subtotal','discount_amount','total_amount','payable_account_id'];
       v_child_columns := array['line_number','product_id','quantity','unit_cost','line_total'];
     when 'sales' then
       v_table := 'sales'; v_child_table := 'sales_items'; v_parent_column := 'sales_id';
       v_permission := 'sales.create';
-      v_allowed_header := array['invoice_id','customer_id','invoice_date','subtotal','discount_amount','total_amount','receivable_account_id'];
+      v_allowed_header := array['customer_id','invoice_date','subtotal','discount_amount','total_amount','receivable_account_id'];
       v_child_columns := array['line_number','product_id','quantity','unit_price','line_total'];
     when 'expense' then
       v_table := 'expenses'; v_permission := 'expenses.manage';
-      v_allowed_header := array['expense_number','expense_category_id','contact_id','payable_account_id','expense_date','amount','description'];
+      v_allowed_header := array['expense_category_id','contact_id','payable_account_id','expense_date','amount','description'];
       v_child_columns := array[]::text[];
     when 'payment' then
       v_table := 'payments';
       v_permission := 'payments.manage';
-      v_allowed_header := array['payment_number','payment_type','contact_id','payment_date','amount','account_id','settlement_account_id','description'];
+      v_allowed_header := array['payment_type','contact_id','payment_date','amount','account_id','settlement_account_id','description'];
       v_child_columns := array[]::text[];
     when 'purchase_return' then
       v_table := 'purchase_returns'; v_child_table := 'purchase_return_items'; v_parent_column := 'purchase_return_id';
       v_permission := 'purchases.returns.create';
-      v_allowed_header := array['return_number','purchase_id','supplier_id','return_date','subtotal','discount_amount','total_amount','payable_account_id','purchase_return_variance_account_id'];
+      v_allowed_header := array['purchase_id','supplier_id','return_date','subtotal','discount_amount','total_amount','payable_account_id','purchase_return_variance_account_id'];
       v_child_columns := array['line_number','purchase_item_id','product_id','quantity','unit_cost','line_total'];
     when 'sales_return' then
       v_table := 'sales_returns'; v_child_table := 'sales_return_items'; v_parent_column := 'sales_return_id';
       v_permission := 'sales.returns.create';
-      v_allowed_header := array['return_number','sales_id','customer_id','return_date','subtotal','discount_amount','total_amount','receivable_account_id'];
+      v_allowed_header := array['sales_id','customer_id','return_date','subtotal','discount_amount','total_amount','receivable_account_id'];
       v_child_columns := array['line_number','sales_item_id','product_id','quantity','unit_price','line_total'];
     when 'journal_entry' then
       v_table := 'journal_entries'; v_child_table := 'account_transactions'; v_parent_column := 'journal_entry_id';
       v_permission := 'journal_entries.create';
-      v_allowed_header := array['entry_number','entry_date','entry_type','reference_type','reference_id','description'];
+      v_allowed_header := array['entry_date','entry_type','reference_type','reference_id','description'];
       v_child_columns := array['account_id','line_number','description','debit','credit','contact_id'];
     else
       raise exception using errcode = '22023', message = 'Unsupported transaction document type.';
@@ -5050,15 +5050,53 @@ declare
   v_type text;
 begin
   if tg_op = 'INSERT' then
-    -- Drafts deliberately have no number. Ignore client-supplied values.
-    if new.status = 'draft' then
-      if tg_table_name in ('purchase', 'sales') then new.invoice_id := null;
-      elsif tg_table_name = 'expenses' then new.expense_number := null;
-      elsif tg_table_name = 'payments' then new.payment_number := null;
-      elsif tg_table_name in ('purchase_returns', 'sales_returns') then new.return_number := null;
-      elsif tg_table_name = 'journal_entries' and new.entry_type = 'manual' then new.entry_number := null;
+    -- User-facing business documents must enter through Draft. This prevents
+    -- direct INSERT from bypassing confirmation-time numbering and validation.
+    if tg_table_name = 'purchase' then
+      new.invoice_id := null;
+      if new.status <> 'draft' then
+        raise exception using errcode = '23514',
+          message = 'Purchase documents must be created as drafts and confirmed through the document workflow.';
+      end if;
+    elsif tg_table_name = 'sales' then
+      new.invoice_id := null;
+      if new.status <> 'draft' then
+        raise exception using errcode = '23514',
+          message = 'Sales documents must be created as drafts and confirmed through the document workflow.';
+      end if;
+    elsif tg_table_name = 'expenses' then
+      new.expense_number := null;
+      if new.status <> 'draft' then
+        raise exception using errcode = '23514',
+          message = 'Expenses must be created as drafts and confirmed through the document workflow.';
+      end if;
+    elsif tg_table_name = 'payments' then
+      new.payment_number := null;
+      if new.status <> 'draft' then
+        raise exception using errcode = '23514',
+          message = 'Payments must be created as drafts and confirmed through the document workflow.';
+      end if;
+    elsif tg_table_name = 'purchase_returns' then
+      new.return_number := null;
+      if new.status <> 'draft' then
+        raise exception using errcode = '23514',
+          message = 'Purchase returns must be created as drafts and confirmed through the document workflow.';
+      end if;
+    elsif tg_table_name = 'sales_returns' then
+      new.return_number := null;
+      if new.status <> 'draft' then
+        raise exception using errcode = '23514',
+          message = 'Sales returns must be created as drafts and confirmed through the document workflow.';
+      end if;
+    elsif tg_table_name = 'journal_entries' and new.entry_type = 'manual' then
+      new.entry_number := null;
+      if new.status <> 'draft' then
+        raise exception using errcode = '23514',
+          message = 'Manual journal entries must be created as drafts and confirmed through the journal workflow.';
       end if;
     end if;
+    -- System-generated journal entries (purchase, sale, returns, expense,
+    -- payment, reversal and inventory adjustment) retain their internal refs.
     return new;
   end if;
 
