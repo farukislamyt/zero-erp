@@ -113,7 +113,7 @@ The full function catalog in [DATABASE_REFERENCE.md](DATABASE_REFERENCE.md#funct
 
 ### Posting and reversals
 
-The final schema defines posting functions for purchases, sales, purchase returns, sales returns, expenses, contact payments, inventory adjustments, opening balances and confirmed manual journals. `reverse_journal_entry` provides controlled journal reversal. These routines use organization-scoped locks and row locks where implemented in their bodies; see the SQL source for exact lock ordering and validation. Inventory adjustment numbering remains part of its posting transaction and requires `inventory.adjust`. Runtime behavior must be verified by the database CI workflow.
+The final schema defines posting functions for purchases, sales, purchase returns, sales returns, expenses, contact payments, inventory adjustments, opening balances and confirmed manual journals. `reverse_journal_entry` provides controlled journal reversal. Every posting path calls the internal `assert_journal_entry_balanced` invariant before returning; a journal with fewer than two lines, non-positive debit total, or unequal debit/credit totals aborts the entire transaction. These routines use organization-scoped locks and row locks where implemented in their bodies; see the SQL source for exact lock ordering and validation. Inventory adjustment numbering remains part of its posting transaction and requires `inventory.adjust`. Runtime behavior must be verified against a PostgreSQL/Supabase database.
 
 The legacy `post_manual_journal_entry` function remains defined but client EXECUTE is revoked. The supported manual journal path is draft save → confirm → `post_confirmed_journal_entry`.
 
