@@ -48,7 +48,7 @@ Every table, column, constraint, index, trigger, policy, function signature, per
 - `journal_entries` stores journal headers and lifecycle/reversal metadata.
 - `account_transactions` stores debit/credit lines. Each line must be one-sided (debit or credit), positive on the populated side, and associated with same-organization journal/account/contact records.
 - `inventory_transactions` stores stock movement and cost history; `inventory_balances` stores current per-product quantity/value/cost.
-- `products` links units and optional inventory, sales and COGS accounts. A product's unit is immutable after its first inventory movement; the RPC guard and database triggers reject changes, with product-row locking to serialize stock inserts against unit updates.
+- `products` links units and optional inventory, sales and COGS accounts. A product's unit is immutable after any purchase, sales, return-line or inventory reference exists. Product row locks serialize all four document-line tables and inventory movements against unit changes; multi-product draft inserts are ordered by Product ID. Product insert/unit changes also lock the selected UOM to serialize against UOM renames.
 - The default chart of accounts, General Expenses category and document-number sequences are seeded by `seed_default_chart_of_accounts`, which the final organization-creation RPC calls.
 
 ### Commercial documents

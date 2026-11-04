@@ -502,7 +502,7 @@ create trigger products_guard_unit_after_inventory before update of unit_id on p
 ```
 
 ```sql
-create trigger inventory_transactions_lock_product before insert on public.inventory_transactions for each row execute function public.lock_product_for_inventory_transaction();
+create trigger inventory_transactions_lock_product before insert on public.inventory_transactions for each row execute function public.lock_product_for_reference();
 ```
 
 **RLS:** Enabled.
@@ -1544,8 +1544,8 @@ The list below is the effective final function set after migration overrides and
 | `public.guard_organization_created_at` | `—` | `trigger` | Trigger function | No | Trigger-only | `20261103000000_initial_database_schema.sql` | Prevents mutation of the organization creation timestamp used as creator identity anchor. |
 | `public.guard_custom_role_control_plane_permissions` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | Prevents custom roles from being assigned protected RBAC/control-plane permissions. |
 | `public.guard_system_administrator_role` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | Prevents system Administrator role creation outside bootstrap and prevents its later update/delete. |
-| `public.guard_product_unit_immutable_after_inventory` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | Rejects changing a product's unit after inventory movements exist. |
-| `public.lock_product_for_inventory_transaction` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | Locks the referenced product row before inventory insertion to serialize movement creation against unit changes. |
+| `public.guard_product_unit_immutable_after_inventory` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | Locks the selected active UOM and rejects Product unit changes after any inventory or purchase/sales/return line history exists. |
+| `public.lock_product_for_reference` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | Locks referenced Product rows for inventory and all four quantity-bearing document line tables; direct Product reassignment locks old/new rows in deterministic order. |
 
 ### Function authorization and relation-touch map
 
@@ -1607,7 +1607,7 @@ This supplementary map is extracted from the effective function bodies. It recor
 | `public.guard_custom_role_control_plane_permissions` | No literal permission key found in function body | No direct auth.uid() reference | permissions, roles |
 | `public.guard_system_administrator_role` | No literal permission key found in function body | Reads auth.uid() | organizations |
 | `public.guard_product_unit_immutable_after_inventory` | No literal permission key found in function body | No direct auth.uid() reference | inventory_transactions |
-| `public.lock_product_for_inventory_transaction` | No literal permission key found in function body | No direct auth.uid() reference | products |
+| `public.lock_product_for_reference` | No literal permission key found in function body | No direct auth.uid() reference | products |
 
 ## Migration preflight invariants
 
