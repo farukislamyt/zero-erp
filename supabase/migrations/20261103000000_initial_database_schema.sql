@@ -5219,6 +5219,7 @@ as $function$
 declare
   v record;
   v_parent_id uuid;
+  v_general_expense_account_id uuid;
 begin
   if not exists (select 1 from public.organizations o where o.id = p_organization_id) then
     raise exception using errcode = '23503', message = 'Organization was not found.';
@@ -5276,12 +5277,44 @@ begin
     on conflict (organization_id, account_code) do nothing;
   end loop;
 
+  -- All seeded expense categories intentionally share the existing 5400
+  -- General Expenses posting account. Category-level reporting remains available
+  -- without expanding the default chart of accounts.
+  select a.id
+    into v_general_expense_account_id
+  from public.accounts a
+  where a.organization_id = p_organization_id
+    and a.account_code = '5400'
+    and a.account_type = 'expense'
+    and a.is_active
+    and a.is_postable;
+
+  if v_general_expense_account_id is null then
+    raise exception using errcode = '23514',
+      message = 'The default 5400 General Expenses posting account is missing or unavailable.';
+  end if;
+
   insert into public.expense_categories (
     organization_id, category_code, name, expense_account_id, is_active
   )
-  select p_organization_id, 'GEN', 'General Expenses', a.id, true
-  from public.accounts a
-  where a.organization_id = p_organization_id and a.account_code = '5400'
+  select
+    p_organization_id,
+    seeded.category_code,
+    seeded.name,
+    v_general_expense_account_id,
+    true
+  from (values
+    ('GEN', 'General Expenses'),
+    ('SAL', 'Salary & Wages'),
+    ('RENT', 'Office Rent'),
+    ('UTIL', 'Utilities (Electricity, Gas, Water)'),
+    ('TRANS', 'Transportation & Conveyance'),
+    ('COMM', 'Communication & Internet'),
+    ('REPAIR', 'Repairs & Maintenance'),
+    ('OFFICE', 'Office Supplies & Stationery'),
+    ('MARK', 'Marketing & Advertising'),
+    ('TRAVEL', 'Travel & Accommodation')
+  ) as seeded(category_code, name)
   on conflict (organization_id, category_code) do nothing;
 
   insert into public.number_sequences (
