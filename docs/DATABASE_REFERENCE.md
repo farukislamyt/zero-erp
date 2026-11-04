@@ -597,7 +597,7 @@ create policy number_sequences_select_member on public.number_sequences for sele
 |---|---|
 | `id` | `uuid primary key default pg_catalog.gen_random_uuid()` |
 | `organization_id` | `uuid not null references public.organizations(id) on delete restrict` |
-| `entry_number` | `text not null check (pg_catalog.length(pg_catalog.btrim(entry_number)) between 1 and 80)` |
+| `entry_number` | `text check (entry_number is null or pg_catalog.length(pg_catalog.btrim(entry_number)) between 1 and 80)` |
 | `entry_date` | `date not null` |
 | `entry_type` | `text not null check (entry_type in ('manual', 'purchase', 'purchase_return', 'sale', 'sales_return', 'expense', 'payment', 'reversal', 'opening_balance', 'adjustment'))` |
 | `status` | `text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'reversed', 'void'))` |
@@ -648,7 +648,7 @@ create trigger journal_entries_set_updated_at before update on public.journal_en
 ```
 
 ```sql
-create trigger journal_entries_assign_document_number before insert or update of entry_number on public.journal_entries for each row execute function public.assign_document_number();
+create trigger journal_entries_assign_document_number before insert or update of status, entry_number on public.journal_entries for each row execute function public.assign_document_number();
 ```
 
 **RLS:** Enabled.
@@ -799,7 +799,7 @@ create policy inventory_balances_select_member on public.inventory_balances for 
 |---|---|
 | `id` | `uuid primary key default pg_catalog.gen_random_uuid()` |
 | `organization_id` | `uuid not null references public.organizations(id) on delete restrict` |
-| `invoice_id` | `text not null check (pg_catalog.length(pg_catalog.btrim(invoice_id)) between 1 and 80)` |
+| `invoice_id` | `text check (invoice_id is null or pg_catalog.length(pg_catalog.btrim(invoice_id)) between 1 and 80)` |
 | `supplier_id` | `uuid not null` |
 | `invoice_date` | `date not null` |
 | `status` | `text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'partially_returned', 'returned', 'void'))` |
@@ -840,7 +840,7 @@ create trigger purchase_set_updated_at before update on public.purchase for each
 ```
 
 ```sql
-create trigger purchase_assign_document_number before insert or update of invoice_id on public.purchase for each row execute function public.assign_document_number();
+create trigger purchase_assign_document_number before insert or update of status, invoice_id on public.purchase for each row execute function public.assign_document_number();
 ```
 
 **RLS:** Enabled.
@@ -905,7 +905,7 @@ create policy purchase_items_select_member on public.purchase_items for select t
 |---|---|
 | `id` | `uuid primary key default pg_catalog.gen_random_uuid()` |
 | `organization_id` | `uuid not null references public.organizations(id) on delete restrict` |
-| `return_number` | `text not null check (pg_catalog.length(pg_catalog.btrim(return_number)) between 1 and 80)` |
+| `return_number` | `text check (return_number is null or pg_catalog.length(pg_catalog.btrim(return_number)) between 1 and 80)` |
 | `purchase_id` | `uuid not null` |
 | `supplier_id` | `uuid not null` |
 | `return_date` | `date not null` |
@@ -956,7 +956,7 @@ create trigger purchase_returns_set_updated_at before update on public.purchase_
 ```
 
 ```sql
-create trigger purchase_returns_assign_document_number before insert or update of return_number on public.purchase_returns for each row execute function public.assign_document_number();
+create trigger purchase_returns_assign_document_number before insert or update of status, return_number on public.purchase_returns for each row execute function public.assign_document_number();
 ```
 
 **RLS:** Enabled.
@@ -1024,7 +1024,7 @@ create policy purchase_return_items_select_member on public.purchase_return_item
 |---|---|
 | `id` | `uuid primary key default pg_catalog.gen_random_uuid()` |
 | `organization_id` | `uuid not null references public.organizations(id) on delete restrict` |
-| `invoice_id` | `text not null check (pg_catalog.length(pg_catalog.btrim(invoice_id)) between 1 and 80)` |
+| `invoice_id` | `text check (invoice_id is null or pg_catalog.length(pg_catalog.btrim(invoice_id)) between 1 and 80)` |
 | `customer_id` | `uuid not null` |
 | `invoice_date` | `date not null` |
 | `status` | `text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'partially_returned', 'returned', 'void'))` |
@@ -1065,7 +1065,7 @@ create trigger sales_set_updated_at before update on public.sales for each row e
 ```
 
 ```sql
-create trigger sales_assign_document_number before insert or update of invoice_id on public.sales for each row execute function public.assign_document_number();
+create trigger sales_assign_document_number before insert or update of status, invoice_id on public.sales for each row execute function public.assign_document_number();
 ```
 
 **RLS:** Enabled.
@@ -1132,7 +1132,7 @@ create policy sales_items_select_member on public.sales_items for select to auth
 |---|---|
 | `id` | `uuid primary key default pg_catalog.gen_random_uuid()` |
 | `organization_id` | `uuid not null references public.organizations(id) on delete restrict` |
-| `return_number` | `text not null check (pg_catalog.length(pg_catalog.btrim(return_number)) between 1 and 80)` |
+| `return_number` | `text check (return_number is null or pg_catalog.length(pg_catalog.btrim(return_number)) between 1 and 80)` |
 | `sales_id` | `uuid not null` |
 | `customer_id` | `uuid not null` |
 | `return_date` | `date not null` |
@@ -1181,7 +1181,7 @@ create trigger sales_returns_set_updated_at before update on public.sales_return
 ```
 
 ```sql
-create trigger sales_returns_assign_document_number before insert or update of return_number on public.sales_returns for each row execute function public.assign_document_number();
+create trigger sales_returns_assign_document_number before insert or update of status, return_number on public.sales_returns for each row execute function public.assign_document_number();
 ```
 
 **RLS:** Enabled.
@@ -1251,7 +1251,7 @@ create policy sales_return_items_select_member on public.sales_return_items for 
 |---|---|
 | `id` | `uuid primary key default pg_catalog.gen_random_uuid()` |
 | `organization_id` | `uuid not null references public.organizations(id) on delete restrict` |
-| `expense_number` | `text not null check (pg_catalog.length(pg_catalog.btrim(expense_number)) between 1 and 80)` |
+| `expense_number` | `text check (expense_number is null or pg_catalog.length(pg_catalog.btrim(expense_number)) between 1 and 80)` |
 | `expense_category_id` | `uuid not null` |
 | `contact_id` | `uuid` |
 | `payable_account_id` | `uuid` |
@@ -1298,7 +1298,7 @@ create trigger expenses_set_updated_at before update on public.expenses for each
 ```
 
 ```sql
-create trigger expenses_assign_document_number before insert or update of expense_number on public.expenses for each row execute function public.assign_document_number();
+create trigger expenses_assign_document_number before insert or update of status, expense_number on public.expenses for each row execute function public.assign_document_number();
 ```
 
 **RLS:** Enabled.
@@ -1319,7 +1319,7 @@ create policy expenses_select_member on public.expenses for select to authentica
 |---|---|
 | `id` | `uuid primary key default pg_catalog.gen_random_uuid()` |
 | `organization_id` | `uuid not null references public.organizations(id) on delete restrict` |
-| `payment_number` | `text not null check (pg_catalog.length(pg_catalog.btrim(payment_number)) between 1 and 80)` |
+| `payment_number` | `text check (payment_number is null or pg_catalog.length(pg_catalog.btrim(payment_number)) between 1 and 80)` |
 | `payment_type` | `text not null check (payment_type in ('receipt', 'payment', 'transfer', 'refund'))` |
 | `contact_id` | `uuid` |
 | `payment_date` | `date not null` |
@@ -1367,7 +1367,7 @@ create trigger payments_set_updated_at before update on public.payments for each
 ```
 
 ```sql
-create trigger payments_assign_document_number before insert or update of payment_number on public.payments for each row execute function public.assign_document_number();
+create trigger payments_assign_document_number before insert or update of status, payment_number on public.payments for each row execute function public.assign_document_number();
 ```
 
 **RLS:** Enabled.
@@ -1479,7 +1479,7 @@ The list below is the effective final function set after migration overrides and
 | `public.prevent_account_hierarchy_cycle` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | Rejects account parent changes that would create a hierarchy cycle. |
 | `public.is_active_org_member` | `p_organization_id uuid` | `boolean` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Returns whether the current auth.uid() has an active membership in the specified organization. |
 | `public.has_org_permission` | `p_organization_id uuid, p_permission_key text` | `boolean` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Checks active organization, active membership, active role and the requested permission key. |
-| `public.next_document_number` | `p_organization_id uuid, p_document_type text` | `text` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Atomically allocates the next formatted number from the organization's active number_sequences row after permission validation; `inventory_adjustment` maps to `inventory.adjust`. |
+| `public.next_document_number` | `p_organization_id uuid, p_document_type text` | `text` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Internal atomic allocator. Business document types require their document-specific Confirm permission; `inventory_adjustment` requires `inventory.adjust`. Called by lifecycle triggers and the inventory-adjustment posting RPC. |
 | `public.create_organization_with_admin` | `p_name text, p_currency text default 'BDT', p_timezone text default 'Asia/Dhaka'` | `uuid` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Atomically creates an organization, its system Administrator role, role-permission assignments, the authenticated creator's permanent membership, and the default chart of accounts. |
 | `public.guard_system_role_mutation` | `—` | `trigger` | Trigger function | No | Trigger-only | `20261103000000_initial_database_schema.sql` | Rejects protected system-role mutation through the roles table. |
 | `public.guard_administrator_membership` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | Membership trigger that prevents Administrator membership changes, reassignment, deactivation or deletion; final implementation allows initial creator bootstrap only. |
@@ -1503,7 +1503,7 @@ The list below is the effective final function set after migration overrides and
 | `public.void_transaction_document` | `p_organization_id uuid, p_document_type text, p_document_id uuid, p_reason text` | `void` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Voids an eligible draft/confirmed transaction document with a required reason. |
 | `public.delete_draft_transaction_document` | `p_organization_id uuid, p_document_type text, p_document_id uuid` | `void` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Deletes an eligible draft transaction document. |
 | `public.seed_default_chart_of_accounts` | `p_organization_id uuid` | `void` | Internal/helper function | Yes | No explicit authenticated EXECUTE grant, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Seeds the organization's default chart of accounts; invoked by the organization-creation RPC. |
-| `public.assign_document_number` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | BEFORE INSERT trigger that assigns document numbers for configured document tables. |
+| `public.assign_document_number` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | BEFORE INSERT / UPDATE OF status trigger. Draft inserts remain unnumbered; first Draft → Confirmed transition allocates a number; assigned numbers are immutable. |
 | `public.update_organization_profile` | `p_organization_id uuid, p_name text, p_phone text, p_email text, p_address text, p_city text, p_country text, p_currency text, p_timezone text, p_tin text, p_bin text` | `void` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Updates organization profile fields after organization.update authorization and validates currency/timezone values. |
 | `public.save_master_data` | `p_organization_id uuid, p_entity_type text, p_data jsonb, p_record_id uuid default null` | `uuid` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Permission-checked create/update routine for supported master-data entity types, using JSONB payloads. |
 | `public.create_custom_role` | `p_organization_id uuid, p_name text, p_permission_keys text[]` | `uuid` | RPC/helper callable | Yes | authenticated EXECUTE granted, PUBLIC revoked, anon revoked | `20261103000000_initial_database_schema.sql` | Creates an organization-scoped custom role with validated permission keys. |
@@ -1720,31 +1720,31 @@ create trigger role_permissions_guard_admin before update or delete on public.ro
 ```
 
 ```sql
-create trigger purchase_assign_document_number before insert or update of invoice_id on public.purchase for each row execute function public.assign_document_number();
+create trigger purchase_assign_document_number before insert or update of status, invoice_id on public.purchase for each row execute function public.assign_document_number();
 ```
 
 ```sql
-create trigger sales_assign_document_number before insert or update of invoice_id on public.sales for each row execute function public.assign_document_number();
+create trigger sales_assign_document_number before insert or update of status, invoice_id on public.sales for each row execute function public.assign_document_number();
 ```
 
 ```sql
-create trigger expenses_assign_document_number before insert or update of expense_number on public.expenses for each row execute function public.assign_document_number();
+create trigger expenses_assign_document_number before insert or update of status, expense_number on public.expenses for each row execute function public.assign_document_number();
 ```
 
 ```sql
-create trigger payments_assign_document_number before insert or update of payment_number on public.payments for each row execute function public.assign_document_number();
+create trigger payments_assign_document_number before insert or update of status, payment_number on public.payments for each row execute function public.assign_document_number();
 ```
 
 ```sql
-create trigger purchase_returns_assign_document_number before insert or update of return_number on public.purchase_returns for each row execute function public.assign_document_number();
+create trigger purchase_returns_assign_document_number before insert or update of status, return_number on public.purchase_returns for each row execute function public.assign_document_number();
 ```
 
 ```sql
-create trigger sales_returns_assign_document_number before insert or update of return_number on public.sales_returns for each row execute function public.assign_document_number();
+create trigger sales_returns_assign_document_number before insert or update of status, return_number on public.sales_returns for each row execute function public.assign_document_number();
 ```
 
 ```sql
-create trigger journal_entries_assign_document_number before insert or update of entry_number on public.journal_entries for each row execute function public.assign_document_number();
+create trigger journal_entries_assign_document_number before insert or update of status, entry_number on public.journal_entries for each row execute function public.assign_document_number();
 ```
 
 ```sql
@@ -2230,7 +2230,7 @@ revoke all on function public.next_document_number(uuid,text) from public, anon;
 ```
 
 ```sql
-grant execute on function public.next_document_number(uuid,text) to authenticated;
+-- No authenticated EXECUTE grant: the allocator is internal to lifecycle/posting RPCs.
 ```
 
 ```sql
