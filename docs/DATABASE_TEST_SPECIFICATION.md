@@ -188,7 +188,7 @@ For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `
 
 ### 8.1 Organization, membership and RBAC
 
-- **ORG-001** Valid create with defaults: BDT/Asia-Dhaka, one active Creator Administrator, 43 permissions, 22 default accounts, one General Expenses category, 8 number sequences.
+- **ORG-001** Valid create with defaults: BDT/Asia-Dhaka, one active Creator Administrator, 43 permissions, 22 default accounts, 10 default expense categories (all mapped to account 5400), 8 number sequences.
 - **ORG-001A** The 10 seeded expense category codes/names are exactly `GEN`, `SAL`, `RENT`, `UTIL`, `TRANS`, `COMM`, `REPAIR`, `OFFICE`, `MARK`, `TRAVEL`; every row is active and maps to the same organization’s active, postable expense account `5400`.
 - **ORG-001B** Calling `seed_default_chart_of_accounts` again does not duplicate or overwrite the 10 seeded categories; organization category count remains 10 when no user-created categories exist.
 - **ORG-002** Valid explicit currency/timezone; persisted values match.
