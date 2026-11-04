@@ -54,7 +54,7 @@ select throws_ok($$select public.create_custom_role((select id from public.organ
 
 select lives_ok($$select public.update_organization_profile((select id from public.organizations where name='ZERO ERP CI Organization'),'ZERO ERP CI Organization Updated',null,null,null,null,null,'BDT','Asia/Dhaka',null,null)$$,'Administrator can update a valid company profile');
 select is((select name from public.organizations where name='ZERO ERP CI Organization Updated'),'ZERO ERP CI Organization Updated','profile update persisted');
-select is(public.next_document_number((select id from public.organizations where name='ZERO ERP CI Organization Updated'),'inventory_adjustment'),'IA-00001','inventory adjustment numbering uses seeded prefix and inventory.adjust permission');
+select ok(not pg_catalog.has_function_privilege('authenticated','public.next_document_number(uuid,text)','EXECUTE'),'authenticated clients cannot allocate document numbers outside lifecycle RPCs');
 select lives_ok($$select * from public.report_trial_balance((select id from public.organizations where name='ZERO ERP CI Organization Updated'),date '2026-01-01',date '2026-12-31')$$,'authorized Administrator can call trial balance report');
 select lives_ok($$select * from public.report_inventory_valuation((select id from public.organizations where name='ZERO ERP CI Organization Updated'),date '2026-12-31')$$,'authorized Administrator can call inventory valuation report');
 select ok(public.is_active_org_member((select id from public.organizations where name='ZERO ERP CI Organization Updated')),'Creator remains an active organization member');
