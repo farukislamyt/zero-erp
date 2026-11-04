@@ -2057,7 +2057,7 @@ revoke all on function public.next_document_number(uuid, text) from public, anon
 ```
 
 ```sql
-grant execute on function public.next_document_number(uuid, text) to authenticated;
+-- No authenticated EXECUTE grant: the final allocator is internal to lifecycle/posting RPCs.
 ```
 
 ```sql
