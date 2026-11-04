@@ -224,10 +224,11 @@ For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `
 - **MD-025–028** Duplicate/blank Contact; deactivate Contact with outstanding AR/AP; wrong-tenant Contact: rejected.
 - **MD-029–034** Product missing/inactive/wrong-tenant Unit; invalid inventory/sales/COGS account type; mapping change after stock movement; deactivate non-zero stock: rejected.
 - **MD-035–038** Expense category missing/invalid/inactive/wrong-tenant expense account; duplicate code: rejected.
-- **NUM-001–008** Each of purchase, sale, expense, payment, journal_entry, purchase_return, sales_return, inventory_adjustment returns expected prefix/padding and increments once.
-- **NUM-009–011** Unauthorized type, unknown type, inactive sequence: rejected; counter unchanged.
-- **NUM-012** Concurrent allocations are unique and gap/rollback behavior is recorded; no duplicate document numbers.
+- **NUM-001–008** Each seeded sequence has the expected prefix/padding; business-document sequences advance only on first successful confirmation, while inventory adjustment advances inside its posting RPC.
+- **NUM-009–011** Unauthorized document confirmation/posting, unknown internal type and inactive sequence: rejected; counter unchanged.
+- **NUM-012** Concurrent confirmations/postings produce unique numbers; sequence-row locking prevents duplicates and transaction failures roll back allocation.
 - **NUM-013** Updating a document cannot change an assigned number.
+- **NUM-014–018** Drafts have NULL numbers; first confirmation allocates once; invalid confirmation does not allocate; revert/reconfirm retains the number; direct authenticated allocator execution is denied; inventory-adjustment number allocation is atomic with posting.
 - **NUM-014** Creating/updating a Draft does not allocate a number; client-supplied number fields are ignored.
 - **NUM-015** First successful confirmation allocates exactly one number; failed confirmation leaves the sequence unchanged.
 - **NUM-016** Revert and reconfirm retain the original number without another increment; void/delete preserve the no-gap policy.
