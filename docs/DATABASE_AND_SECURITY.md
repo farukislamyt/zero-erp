@@ -120,9 +120,9 @@ The legacy `post_manual_journal_entry` function remains defined but client EXECU
 ### Number allocation
 
 - `number_sequences` stores organization/document-type prefixes, next values, padding and active state.
-- Draft purchase, sales, expense, payment, purchase-return, sales-return and manual-journal records have a NULL document number. A `BEFORE UPDATE OF status` trigger allocates the number only on the first Draft → Confirmed transition, after the confirmation RPC has completed its business validation.
+- Draft purchase, sales, expense, payment, purchase-return, sales-return and manual-journal records have a NULL document number. `save_draft_transaction_document` does not accept client-controlled number fields. A `BEFORE INSERT` trigger forces these number fields to NULL and rejects direct creation in any status other than Draft; system-generated journal entries retain their internal references. A `BEFORE UPDATE OF status` trigger allocates a business number only on the first Draft → Confirmed transition, after the confirmation RPC has completed its business validation.
 - The trigger preserves an assigned number through later updates, Confirmed → Draft reversion, reconfirmation, voiding and posting. A reverted document therefore keeps its original number and does not consume another sequence value.
-- `next_document_number` is an internal SECURITY DEFINER helper. Browser-authenticated clients have no direct EXECUTE privilege; the helper checks the document-specific Confirm permission (or `inventory.adjust` for inventory adjustments) and atomically increments the organization-scoped sequence.
+- `next_document_number` is an internal SECURITY DEFINER helper. Browser-authenticated clients have no direct EXECUTE privilege; the helper checks the document-specific Confirm permission (or `inventory.adjust` for inventory adjustments) and atomically increments the organization-scoped sequence. Table-level browser-role writes are revoked and no INSERT/UPDATE/DELETE RLS policies are defined for transactional tables.
 - Inventory adjustment is a direct posting workflow rather than a saved Draft/Confirmed transaction document. Its posting RPC allocates the `inventory_adjustment` number inside the same transaction as the journal and inventory effects.
 
 ### Payments and allocations
