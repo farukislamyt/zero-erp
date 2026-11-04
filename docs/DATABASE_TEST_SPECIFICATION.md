@@ -181,7 +181,8 @@ For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `
 8. **Authorization:** missing create/confirm/post permission fails independently at each RPC.
 9. **Tenant:** foreign-tenant ID is indistinguishable from missing target and produces no mutation.
 10. **Direct-write hardening:** direct authenticated INSERT/UPDATE/DELETE against transactional tables is denied; direct non-Draft INSERT is rejected by trigger; client-supplied number fields are rejected by the draft RPC allowlist and never become persisted numbers.
-11. **Concurrency:** two simultaneous confirm/post requests produce at most one posting and one set of effects.
+11. **Journal invariant:** every posting RPC and reversal must finish with at least two journal lines, positive debit total, and exact debit/credit equality; deliberately corrupt/unbalanced fixtures must roll back all document, ledger, and inventory mutations.
+12. **Concurrency:** two simultaneous confirm/post requests produce at most one posting and one set of effects.
 
 ## 8. RPC-specific test case catalogue
 
