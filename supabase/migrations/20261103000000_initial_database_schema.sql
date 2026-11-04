@@ -430,7 +430,7 @@ to authenticated;
 create table public.journal_entries (
   id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete restrict,
-  entry_number text not null check (pg_catalog.length(pg_catalog.btrim(entry_number)) between 1 and 80),
+  entry_number text check (entry_number is null or pg_catalog.length(pg_catalog.btrim(entry_number)) between 1 and 80),
   entry_date date not null,
   entry_type text not null
     check (entry_type in ('manual', 'purchase', 'purchase_return', 'sale', 'sales_return', 'expense', 'payment', 'reversal', 'opening_balance', 'adjustment')),
@@ -455,6 +455,7 @@ create table public.journal_entries (
   updated_at timestamptz not null default pg_catalog.now(),
   constraint journal_entries_org_id_id_uq unique (organization_id, id),
   constraint journal_entries_org_number_uq unique (organization_id, entry_number),
+  constraint journal_entries_number_after_confirmation_chk check (status in ('draft', 'void') or entry_number is not null),
   constraint journal_entries_reversal_same_org_fk
     foreign key (organization_id, reversal_of_id)
     references public.journal_entries (organization_id, id)
@@ -548,7 +549,7 @@ create table public.inventory_balances (
 create table public.purchase (
   id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete restrict,
-  invoice_id text not null check (pg_catalog.length(pg_catalog.btrim(invoice_id)) between 1 and 80),
+  invoice_id text check (invoice_id is null or pg_catalog.length(pg_catalog.btrim(invoice_id)) between 1 and 80),
   supplier_id uuid not null,
   invoice_date date not null,
   status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'partially_returned', 'returned', 'void')),
@@ -568,6 +569,7 @@ create table public.purchase (
   updated_at timestamptz not null default pg_catalog.now(),
   constraint purchase_org_id_id_uq unique (organization_id, id),
   constraint purchase_org_invoice_uq unique (organization_id, invoice_id),
+  constraint purchase_number_after_confirmation_chk check (status in ('draft', 'void') or invoice_id is not null),
   constraint purchase_supplier_same_org_fk
     foreign key (organization_id, supplier_id)
     references public.contacts (organization_id, id)
@@ -609,7 +611,7 @@ create table public.purchase_items (
 create table public.purchase_returns (
   id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete restrict,
-  return_number text not null check (pg_catalog.length(pg_catalog.btrim(return_number)) between 1 and 80),
+  return_number text check (return_number is null or pg_catalog.length(pg_catalog.btrim(return_number)) between 1 and 80),
   purchase_id uuid not null,
   supplier_id uuid not null,
   return_date date not null,
@@ -635,6 +637,7 @@ create table public.purchase_returns (
   updated_at timestamptz not null default pg_catalog.now(),
   constraint purchase_returns_org_id_id_uq unique (organization_id, id),
   constraint purchase_returns_org_number_uq unique (organization_id, return_number),
+  constraint purchase_returns_number_after_confirmation_chk check (status in ('draft', 'void') or return_number is not null),
   constraint purchase_returns_purchase_same_org_fk
     foreign key (organization_id, purchase_id)
     references public.purchase (organization_id, id)
@@ -695,7 +698,7 @@ create table public.purchase_return_items (
 create table public.sales (
   id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete restrict,
-  invoice_id text not null check (pg_catalog.length(pg_catalog.btrim(invoice_id)) between 1 and 80),
+  invoice_id text check (invoice_id is null or pg_catalog.length(pg_catalog.btrim(invoice_id)) between 1 and 80),
   customer_id uuid not null,
   invoice_date date not null,
   status text not null default 'draft' check (status in ('draft', 'confirmed', 'posted', 'partially_returned', 'returned', 'void')),
@@ -715,6 +718,7 @@ create table public.sales (
   updated_at timestamptz not null default pg_catalog.now(),
   constraint sales_org_id_id_uq unique (organization_id, id),
   constraint sales_org_invoice_uq unique (organization_id, invoice_id),
+  constraint sales_number_after_confirmation_chk check (status in ('draft', 'void') or invoice_id is not null),
   constraint sales_customer_same_org_fk
     foreign key (organization_id, customer_id)
     references public.contacts (organization_id, id)
@@ -758,7 +762,7 @@ create table public.sales_items (
 create table public.sales_returns (
   id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete restrict,
-  return_number text not null check (pg_catalog.length(pg_catalog.btrim(return_number)) between 1 and 80),
+  return_number text check (return_number is null or pg_catalog.length(pg_catalog.btrim(return_number)) between 1 and 80),
   sales_id uuid not null,
   customer_id uuid not null,
   return_date date not null,
@@ -783,6 +787,7 @@ create table public.sales_returns (
   updated_at timestamptz not null default pg_catalog.now(),
   constraint sales_returns_org_id_id_uq unique (organization_id, id),
   constraint sales_returns_org_number_uq unique (organization_id, return_number),
+  constraint sales_returns_number_after_confirmation_chk check (status in ('draft', 'void') or return_number is not null),
   constraint sales_returns_sales_same_org_fk
     foreign key (organization_id, sales_id)
     references public.sales (organization_id, id)
@@ -841,7 +846,7 @@ create table public.sales_return_items (
 create table public.expenses (
   id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete restrict,
-  expense_number text not null check (pg_catalog.length(pg_catalog.btrim(expense_number)) between 1 and 80),
+  expense_number text check (expense_number is null or pg_catalog.length(pg_catalog.btrim(expense_number)) between 1 and 80),
   expense_category_id uuid not null,
   contact_id uuid,
   payable_account_id uuid,
@@ -865,6 +870,7 @@ create table public.expenses (
   updated_at timestamptz not null default pg_catalog.now(),
   constraint expenses_org_id_id_uq unique (organization_id, id),
   constraint expenses_org_number_uq unique (organization_id, expense_number),
+  constraint expenses_number_after_confirmation_chk check (status in ('draft', 'void') or expense_number is not null),
   constraint expenses_category_same_org_fk
     foreign key (organization_id, expense_category_id)
     references public.expense_categories (organization_id, id)
@@ -891,7 +897,7 @@ create table public.expenses (
 create table public.payments (
   id uuid primary key default pg_catalog.gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete restrict,
-  payment_number text not null check (pg_catalog.length(pg_catalog.btrim(payment_number)) between 1 and 80),
+  payment_number text check (payment_number is null or pg_catalog.length(pg_catalog.btrim(payment_number)) between 1 and 80),
   payment_type text not null check (payment_type in ('receipt', 'payment', 'transfer', 'refund')),
   contact_id uuid,
   payment_date date not null,
@@ -916,6 +922,7 @@ create table public.payments (
   updated_at timestamptz not null default pg_catalog.now(),
   constraint payments_org_id_id_uq unique (organization_id, id),
   constraint payments_org_number_uq unique (organization_id, payment_number),
+  constraint payments_number_after_confirmation_chk check (status in ('draft', 'void') or payment_number is not null),
   constraint payments_contact_same_org_fk
     foreign key (organization_id, contact_id)
     references public.contacts (organization_id, id)
@@ -4995,14 +5002,17 @@ declare
   v_number bigint;
   v_padding smallint;
 begin
+  -- Number allocation is an internal lifecycle operation. Business documents
+  -- require their Confirm permission; inventory adjustments allocate atomically
+  -- inside their dedicated posting RPC.
   v_permission := case p_document_type
-    when 'purchase' then 'purchases.create'
-    when 'sale' then 'sales.create'
-    when 'expense' then 'expenses.manage'
-    when 'payment' then 'payments.manage'
-    when 'journal_entry' then 'journal_entries.create'
-    when 'purchase_return' then 'purchases.returns.create'
-    when 'sales_return' then 'sales.returns.create'
+    when 'purchase' then 'purchases.confirm'
+    when 'sale' then 'sales.confirm'
+    when 'expense' then 'expenses.confirm'
+    when 'payment' then 'payments.confirm'
+    when 'journal_entry' then 'journal_entries.confirm'
+    when 'purchase_return' then 'purchases.returns.confirm'
+    when 'sales_return' then 'sales.returns.confirm'
     when 'inventory_adjustment' then 'inventory.adjust'
     else null
   end;
@@ -5027,8 +5037,7 @@ begin
   return v_prefix || lpad(v_number::text, v_padding, '0');
 end;
 $function$;
-revoke all on function public.next_document_number(uuid,text) from public, anon;
-grant execute on function public.next_document_number(uuid,text) to authenticated;
+revoke all on function public.next_document_number(uuid,text) from public, anon, authenticated;
 
 -- Document numbers are generated by PostgreSQL and cannot be client-selected or edited.
 create or replace function public.assign_document_number()
@@ -5040,45 +5049,77 @@ as $function$
 declare
   v_type text;
 begin
-  if tg_op = 'UPDATE' then
-    if tg_table_name = 'purchase' then new.invoice_id := old.invoice_id;
-    elsif tg_table_name = 'sales' then new.invoice_id := old.invoice_id;
-    elsif tg_table_name = 'expenses' then new.expense_number := old.expense_number;
-    elsif tg_table_name = 'payments' then new.payment_number := old.payment_number;
-    elsif tg_table_name = 'purchase_returns' then new.return_number := old.return_number;
-    elsif tg_table_name = 'sales_returns' then new.return_number := old.return_number;
-    elsif tg_table_name = 'journal_entries' then new.entry_number := old.entry_number;
+  if tg_op = 'INSERT' then
+    -- Drafts deliberately have no number. Ignore client-supplied values.
+    if new.status = 'draft' then
+      if tg_table_name in ('purchase', 'sales') then new.invoice_id := null;
+      elsif tg_table_name = 'expenses' then new.expense_number := null;
+      elsif tg_table_name = 'payments' then new.payment_number := null;
+      elsif tg_table_name in ('purchase_returns', 'sales_returns') then new.return_number := null;
+      elsif tg_table_name = 'journal_entries' and new.entry_type = 'manual' then new.entry_number := null;
+      end if;
     end if;
     return new;
   end if;
 
-  if new.status <> 'draft' then return new; end if;
-  if tg_table_name = 'purchase' then v_type := 'purchase'; new.invoice_id := public.next_document_number(new.organization_id, v_type);
-  elsif tg_table_name = 'sales' then v_type := 'sale'; new.invoice_id := public.next_document_number(new.organization_id, v_type);
-  elsif tg_table_name = 'expenses' then v_type := 'expense'; new.expense_number := public.next_document_number(new.organization_id, v_type);
-  elsif tg_table_name = 'payments' then v_type := 'payment'; new.payment_number := public.next_document_number(new.organization_id, v_type);
-  elsif tg_table_name = 'purchase_returns' then v_type := 'purchase_return'; new.return_number := public.next_document_number(new.organization_id, v_type);
-  elsif tg_table_name = 'sales_returns' then v_type := 'sales_return'; new.return_number := public.next_document_number(new.organization_id, v_type);
-  elsif tg_table_name = 'journal_entries' and new.entry_type = 'manual' then v_type := 'journal_entry'; new.entry_number := public.next_document_number(new.organization_id, v_type);
+  -- Once assigned, a document number is immutable through every later
+  -- lifecycle transition, including Confirmed -> Draft -> Confirmed.
+  if tg_table_name in ('purchase', 'sales') then
+    if old.invoice_id is not null then new.invoice_id := old.invoice_id;
+    elsif old.status = 'draft' and new.status = 'confirmed' then
+      v_type := case when tg_table_name = 'purchase' then 'purchase' else 'sale' end;
+      new.invoice_id := public.next_document_number(new.organization_id, v_type);
+    else new.invoice_id := null;
+    end if;
+  elsif tg_table_name = 'expenses' then
+    if old.expense_number is not null then new.expense_number := old.expense_number;
+    elsif old.status = 'draft' and new.status = 'confirmed' then
+      new.expense_number := public.next_document_number(new.organization_id, 'expense');
+    else new.expense_number := null;
+    end if;
+  elsif tg_table_name = 'payments' then
+    if old.payment_number is not null then new.payment_number := old.payment_number;
+    elsif old.status = 'draft' and new.status = 'confirmed' then
+      new.payment_number := public.next_document_number(new.organization_id, 'payment');
+    else new.payment_number := null;
+    end if;
+  elsif tg_table_name = 'purchase_returns' then
+    if old.return_number is not null then new.return_number := old.return_number;
+    elsif old.status = 'draft' and new.status = 'confirmed' then
+      new.return_number := public.next_document_number(new.organization_id, 'purchase_return');
+    else new.return_number := null;
+    end if;
+  elsif tg_table_name = 'sales_returns' then
+    if old.return_number is not null then new.return_number := old.return_number;
+    elsif old.status = 'draft' and new.status = 'confirmed' then
+      new.return_number := public.next_document_number(new.organization_id, 'sales_return');
+    else new.return_number := null;
+    end if;
+  elsif tg_table_name = 'journal_entries' then
+    if old.entry_number is not null then new.entry_number := old.entry_number;
+    elsif old.status = 'draft' and new.status = 'confirmed' and new.entry_type = 'manual' then
+      new.entry_number := public.next_document_number(new.organization_id, 'journal_entry');
+    else new.entry_number := old.entry_number;
+    end if;
   end if;
   return new;
 end;
 $function$;
 revoke all on function public.assign_document_number() from public, anon, authenticated;
 
-create trigger purchase_assign_document_number before insert or update of invoice_id on public.purchase
+create trigger purchase_assign_document_number before insert or update of status, invoice_id on public.purchase
 for each row execute function public.assign_document_number();
-create trigger sales_assign_document_number before insert or update of invoice_id on public.sales
+create trigger sales_assign_document_number before insert or update of status, invoice_id on public.sales
 for each row execute function public.assign_document_number();
-create trigger expenses_assign_document_number before insert or update of expense_number on public.expenses
+create trigger expenses_assign_document_number before insert or update of status, expense_number on public.expenses
 for each row execute function public.assign_document_number();
-create trigger payments_assign_document_number before insert or update of payment_number on public.payments
+create trigger payments_assign_document_number before insert or update of status, payment_number on public.payments
 for each row execute function public.assign_document_number();
-create trigger purchase_returns_assign_document_number before insert or update of return_number on public.purchase_returns
+create trigger purchase_returns_assign_document_number before insert or update of status, return_number on public.purchase_returns
 for each row execute function public.assign_document_number();
-create trigger sales_returns_assign_document_number before insert or update of return_number on public.sales_returns
+create trigger sales_returns_assign_document_number before insert or update of status, return_number on public.sales_returns
 for each row execute function public.assign_document_number();
-create trigger journal_entries_assign_document_number before insert or update of entry_number on public.journal_entries
+create trigger journal_entries_assign_document_number before insert or update of status, entry_number on public.journal_entries
 for each row execute function public.assign_document_number();
 
 create or replace function public.update_organization_profile(
