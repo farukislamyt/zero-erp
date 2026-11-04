@@ -498,7 +498,7 @@ create trigger products_set_updated_at before update on public.products for each
 ```
 
 ```sql
-create trigger products_guard_unit_after_inventory before update of unit_id on public.products for each row execute function public.guard_product_unit_immutable_after_inventory();
+create trigger products_guard_unit_after_inventory before insert or update of unit_id on public.products for each row execute function public.guard_product_unit_immutable_after_inventory();
 ```
 
 ```sql
@@ -1606,7 +1606,11 @@ This supplementary map is extracted from the effective function bodies. It recor
 | `public.guard_organization_created_at` | No literal permission key found in function body | No direct auth.uid() reference | No direct public-table reference detected |
 | `public.guard_custom_role_control_plane_permissions` | No literal permission key found in function body | No direct auth.uid() reference | permissions, roles |
 | `public.guard_system_administrator_role` | No literal permission key found in function body | Reads auth.uid() | organizations |
-| `public.guard_product_unit_immutable_after_inventory` | No literal permission key found in function body | No direct auth.uid() reference | inventory_transactions |
+| `public.guard_product_unit_immutable_after_inventory` | No literal permission key found in function body | No direct auth.uid() reference | units_of_measure |
+| `public.is_supported_iso4217_currency` | No literal permission key found in function body | No direct auth.uid() reference | No direct public-table reference detected |
+| `public.product_has_unit_history` | No literal permission key found in function body | No direct auth.uid() reference | inventory_transactions, purchase_items, sales_items, purchase_return_items, sales_return_items |
+| `public.guard_unit_name_after_product_use` | No literal permission key found in function body | No direct auth.uid() reference | products |
+| `public.guard_organization_currency_after_financial_activity` | No literal permission key found in function body | No direct auth.uid() reference | journal_entries, account_transactions, inventory_transactions, purchase, purchase_returns, sales, sales_returns, expenses, payments |
 | `public.lock_product_for_reference` | No literal permission key found in function body | No direct auth.uid() reference | products |
 
 ## Migration preflight invariants

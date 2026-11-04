@@ -230,8 +230,8 @@ For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `
 - **MD-029–034** Product missing/inactive/wrong-tenant Unit; invalid inventory/sales/COGS account type; mapping change after stock movement; deactivate non-zero stock: rejected.
 - **MD-035** Change Product `unit_id` before any inventory movement or document-line reference: allowed for a valid active same-organization Unit.
 - **MD-036** Change Product `unit_id` after any inventory movement or purchase/sales/return line reference (including draft, zero current stock, net-zero history, or reversed source document): rejected with SQLSTATE `23514`.
-- **MD-037** Submit the same `unit_id` after inventory movements: allowed as a no-op; other permitted Product fields remain independently editable.
-- **MD-038** Attempt direct trusted SQL UPDATE of `products.unit_id` after movement history: rejected by `products_guard_unit_after_inventory`.
+- **MD-037** Submit the same `unit_id` after any document-line or inventory history: allowed as a no-op; other permitted Product fields remain independently editable.
+- **MD-038** Attempt direct trusted SQL UPDATE of `products.unit_id` after any document-line or inventory history: rejected by `products_guard_unit_after_inventory`.
 - **MD-039** Race inventory movement and purchase/sales/return line inserts against a Product unit change: row locks serialize both operations; if a reference commits first, the unit change fails; if the unit change commits first, the line proceeds against the new Product unit. Multi-product draft inserts acquire Product locks in Product-ID order.
 - **MD-040** Rename a UOM before any Product references it: allowed.
 - **MD-041** Rename a UOM after any Product references it, including an inactive Product: rejected with SQLSTATE `23514`.
