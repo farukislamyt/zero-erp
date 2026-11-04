@@ -38,13 +38,10 @@ See the [Complete Database Reference](docs/DATABASE_REFERENCE.md) for exact defi
 - Each membership has one role. The permission catalog is global; roles are organization-scoped.
 - The original creator membership is the permanent, immutable Administrator for the organization's lifetime. Administrator transfer is not supported.
 - Direct browser-role table writes are revoked; authenticated clients use explicitly granted, permission-checked RPCs.
+- Organization base currency is restricted to current monetary ISO 4217 codes and becomes immutable after financial activity; Product UOM changes and UOM renames are blocked once historical document or inventory references exist.
 - Database-defined routines include draft/confirm/post document handling, journal reversals, payment allocations, document numbering, opening balances and financial/operational reports. Inventory-adjustment numbering checks `inventory.adjust`; aging and unapplied-payment reports account for accounting-dated reversals in historical snapshots; manual journal references are validated against same-organization records.
 - The presence of a database RPC does not by itself prove that a corresponding frontend screen or workflow exists.
 
 ## Verification
 
-A disposable local Supabase CI environment is defined by [`supabase/config.toml`](supabase/config.toml) and [Database CI](.github/workflows/database-ci.yml). The workflow applies the canonical bootstrap to an empty local database and runs the pgTAP baseline in `supabase/tests/database`.
-
-The repository currently contains no GitHub Actions database workflow and no executable SQL test files; both were removed at the user's direction. `supabase/config.toml` remains the local Supabase project configuration. The [Database Test Specification](docs/DATABASE_TEST_SPECIFICATION.md) is a written test contract, not an executable test suite. A clean local Supabase bootstrap, automated SQL tests and concurrency checks must be run before runtime verification is claimed.
-
-The CI environment is disposable and local to the GitHub Actions runner. It must never connect to Production. No new SQL migration is introduced by the test infrastructure.
+The repository currently contains no GitHub Actions database workflow and no executable SQL test files; both were removed at the user's direction. `supabase/config.toml` remains the local Supabase project configuration only. The [Database Test Specification](docs/DATABASE_TEST_SPECIFICATION.md) is a written test contract, not an executable test suite. A clean local Supabase bootstrap, automated SQL tests and concurrency checks must be run before runtime verification is claimed.
