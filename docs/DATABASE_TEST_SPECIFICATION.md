@@ -180,7 +180,8 @@ For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `
 7. **Delete:** Draft and children removed; an unconfirmed Draft deletion consumes no number; Confirmed/Posted fails; payment-allocation-linked document fails until allocations are removed.
 8. **Authorization:** missing create/confirm/post permission fails independently at each RPC.
 9. **Tenant:** foreign-tenant ID is indistinguishable from missing target and produces no mutation.
-10. **Concurrency:** two simultaneous confirm/post requests produce at most one posting and one set of effects.
+10. **Direct-write hardening:** direct authenticated INSERT/UPDATE/DELETE against transactional tables is denied; direct non-Draft INSERT is rejected by trigger; client-supplied number fields are rejected by the draft RPC allowlist and never become persisted numbers.
+11. **Concurrency:** two simultaneous confirm/post requests produce at most one posting and one set of effects.
 
 ## 8. RPC-specific test case catalogue
 
@@ -228,7 +229,7 @@ For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `
 - **NUM-009–011** Unauthorized document confirmation/posting, unknown internal type and inactive sequence: rejected; counter unchanged.
 - **NUM-012** Concurrent confirmations/postings produce unique numbers; sequence-row locking prevents duplicates and transaction failures roll back allocation.
 - **NUM-013** Updating a document cannot change an assigned number.
-- **NUM-014–018** Drafts have NULL numbers; first confirmation allocates once; invalid confirmation does not allocate; revert/reconfirm retains the number; direct authenticated allocator execution is denied; inventory-adjustment number allocation is atomic with posting.
+- **NUM-014–018** Drafts have NULL numbers; first confirmation allocates once; invalid confirmation does not allocate; revert/reconfirm retains the number; direct authenticated allocator execution is denied; direct non-Draft INSERT and client-selected numbers are rejected; inventory-adjustment number allocation is atomic with posting.
 - **NUM-014** Creating/updating a Draft does not allocate a number; client-supplied number fields are ignored.
 - **NUM-015** First successful confirmation allocates exactly one number; failed confirmation leaves the sequence unchanged.
 - **NUM-016** Revert and reconfirm retain the original number without another increment; void/delete preserve the no-gap policy.
