@@ -21,8 +21,8 @@ That file now contains the effective SQL previously distributed across the three
 | Explicit indexes | 29 |
 | RLS-enabled tables | 26 |
 | RLS policies | 26 |
-| Effective triggers | 37 |
-| Effective public functions | 53 |
+| Effective triggers | 39 |
+| Effective public functions | 55 |
 | Seeded permission keys | 43 |
 | Views / materialized views | 0 |
 | User-defined sequences | 0 |
@@ -36,7 +36,7 @@ All SECURITY DEFINER functions in the effective migration set specify an empty s
 2. **Membership/RBAC:** Supabase Auth identities are linked through `organization_users`; each membership has one role; `roles`, `permissions` and `role_permissions` implement RBAC.
 3. **Permanent Creator Administrator:** the original creator membership is anchored by matching its `created_at` to `organizations.created_at`. The consolidated SQL rejects every UPDATE/DELETE of that membership, rejects later Administrator assignments, protects the system Administrator role, and drops the transfer RPC.
 4. **Single active company membership:** a partial unique index limits each Auth user to one active organization membership.
-5. **Master data:** `save_master_data` supports account, unit, contact, product and expense-category entities with per-entity permission and field validation.
+5. **Master data:** `save_master_data` supports account, unit, contact, product and expense-category entities with per-entity permission and field validation. A product's unit cannot change after its first inventory movement; the RPC and database triggers enforce this, and row locking serializes movement inserts against unit updates.
 6. **Organization profile:** `update_organization_profile` exists and validates supported profile values, including currency/timezone.
 7. **Default setup:** organization creation invokes `seed_default_chart_of_accounts`, which seeds the default account hierarchy, General Expenses category and document-number sequence rows.
 8. **Document lifecycle:** draft save, confirmation, revert-to-draft, void and draft deletion RPCs are present.
@@ -88,9 +88,17 @@ When a manual journal draft supplies a non-empty `reference_id`, `save_draft_tra
 
 **Operational implication:** disable/ban the creator's Auth account rather than hard-delete it while the organization exists. Supporting hard deletion would require a separately retained immutable creator identity, which is not present in the current schema.
 
-### Maintainability — Repeated historical function definitions
+### Fixed — Duplicate function definitions and intermediate ACL statements
 
-The bootstrap contains multiple `CREATE OR REPLACE FUNCTION` definitions for several names. The last effective definition in execution order is authoritative. Update and inspect that final definition when changing behavior. Consolidating these definitions was deliberately deferred: removing an earlier definition without tracing intervening dependencies, trigger bindings, and privilege statements could change effective behavior. Do this only with regression coverage.
+The canonical migration now contains one definition per function signature. For functions that had accumulated intermediate revisions, the final intended implementation was retained at the earliest dependency-safe definition point; duplicate later bodies were removed. Identical repeated function-level `GRANT`/`REVOKE` statements were consolidated, obsolete Administrator-transfer function bodies and grants were removed, and the final Creator/Administrator guards remain immutable. Static verification found no duplicate function definitions or duplicate function ACL statements.
+
+**Verification:** source-level definition, ACL, trigger, and privilege checks were performed. PostgreSQL execution and behavioral regression tests remain outstanding.
+
+### Fixed — Product unit-of-measure history integrity
+
+A product's `unit_id` can no longer change after any `inventory_transactions` row exists for that product. `save_master_data` rejects the change explicitly; a `BEFORE UPDATE OF unit_id` trigger provides a database-level backstop. A `BEFORE INSERT` trigger on `inventory_transactions` locks the referenced product row, serializing first movement insertion against a concurrent unit change.
+
+**Verification:** both RPC and trigger guards, including row-lock ordering, were inspected statically. No live concurrency test has been run.
 
 ### Performance tuning — Evidence required before index changes
 
