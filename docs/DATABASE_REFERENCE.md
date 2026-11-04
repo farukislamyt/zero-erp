@@ -90,7 +90,7 @@ The function also inserts these 10 active default expense categories, all mapped
 | `MARK` | Marketing & Advertising | `5400` — General Expenses |
 | `TRAVEL` | Travel & Accommodation | `5400` — General Expenses |
 
-Seeding is idempotent by `(organization_id, category_code)`; existing categories with those codes are not overwritten. The function also inserts these active document-number sequences (each starts at `next_number = 1`, `padding = 5):
+Seeding is idempotent by `(organization_id, category_code)`; existing categories with those codes are not overwritten. The function also inserts these active document-number sequences (each starts at `next_number = 1`, `padding = 5`):
 
 | Document type | Prefix |
 |---|---|
