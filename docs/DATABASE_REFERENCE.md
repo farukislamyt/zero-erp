@@ -1536,6 +1536,8 @@ The list below is the effective final function set after migration overrides and
 | `public.guard_organization_created_at` | `—` | `trigger` | Trigger function | No | Trigger-only | `20261103000000_initial_database_schema.sql` | Prevents mutation of the organization creation timestamp used as creator identity anchor. |
 | `public.guard_custom_role_control_plane_permissions` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | Prevents custom roles from being assigned protected RBAC/control-plane permissions. |
 | `public.guard_system_administrator_role` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | Prevents system Administrator role creation outside bootstrap and prevents its later update/delete. |
+| `public.guard_product_unit_immutable_after_inventory` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | Rejects changing a product's unit after inventory movements exist. |
+| `public.lock_product_for_inventory_transaction` | `—` | `trigger` | Trigger function | Yes | Trigger-only | `20261103000000_initial_database_schema.sql` | Locks the referenced product row before inventory insertion to serialize movement creation against unit changes. |
 
 ### Function authorization and relation-touch map
 
@@ -1596,6 +1598,8 @@ This supplementary map is extracted from the effective function bodies. It recor
 | `public.guard_organization_created_at` | No literal permission key found in function body | No direct auth.uid() reference | No direct public-table reference detected |
 | `public.guard_custom_role_control_plane_permissions` | No literal permission key found in function body | No direct auth.uid() reference | permissions, roles |
 | `public.guard_system_administrator_role` | No literal permission key found in function body | Reads auth.uid() | organizations |
+| `public.guard_product_unit_immutable_after_inventory` | No literal permission key found in function body | No direct auth.uid() reference | inventory_transactions |
+| `public.lock_product_for_inventory_transaction` | No literal permission key found in function body | No direct auth.uid() reference | products |
 
 ## Migration preflight invariants
 
@@ -1616,7 +1620,7 @@ Before applying the permanent-Administrator migration, its preflight checks that
 - each organization has exactly one active Administrator; and
 - any Administrator membership is the original creator anchor and has a non-null Auth user.
 
-The migration fails closed if these conditions are not already true. It does not guess the original creator or automatically undo an earlier Administrator transfer.
+The migration fails closed if these conditions are not already true. It does not guess the original creator or silently reconcile a previously transferred Administrator.
 
 ### Historical / removed function
 
