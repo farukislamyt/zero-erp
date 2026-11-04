@@ -624,6 +624,7 @@ create policy number_sequences_select_member on public.number_sequences for sele
 
 - `constraint journal_entries_org_id_id_uq unique (organization_id, id)`
 - `constraint journal_entries_org_number_uq unique (organization_id, entry_number)`
+- `constraint journal_entries_number_after_confirmation_chk check (status in ('draft', 'void') or entry_number is not null)`
 - `constraint journal_entries_reversal_same_org_fk foreign key (organization_id, reversal_of_id) references public.journal_entries (organization_id, id) on delete restrict`
 - `constraint journal_entries_not_self_reversal_chk check (reversal_of_id is distinct from id)`
 - `constraint journal_entries_reversal_entry_same_org_fk foreign key (organization_id, reversal_journal_entry_id) references public.journal_entries (organization_id, id) on delete restrict`
@@ -822,6 +823,7 @@ create policy inventory_balances_select_member on public.inventory_balances for 
 
 - `constraint purchase_org_id_id_uq unique (organization_id, id)`
 - `constraint purchase_org_invoice_uq unique (organization_id, invoice_id)`
+- `constraint purchase_number_after_confirmation_chk check (status in ('draft', 'void') or invoice_id is not null)`
 - `constraint purchase_supplier_same_org_fk foreign key (organization_id, supplier_id) references public.contacts (organization_id, id) on delete restrict`
 - `constraint purchase_payable_account_same_org_fk foreign key (organization_id, payable_account_id) references public.accounts (organization_id, id) on delete restrict`
 - `constraint purchase_discount_limit_chk check (discount_amount <= subtotal)`
@@ -934,6 +936,7 @@ create policy purchase_items_select_member on public.purchase_items for select t
 
 - `constraint purchase_returns_org_id_id_uq unique (organization_id, id)`
 - `constraint purchase_returns_org_number_uq unique (organization_id, return_number)`
+- `constraint purchase_returns_number_after_confirmation_chk check (status in ('draft', 'void') or return_number is not null)`
 - `constraint purchase_returns_purchase_same_org_fk foreign key (organization_id, purchase_id) references public.purchase (organization_id, id) on delete restrict`
 - `constraint purchase_returns_supplier_same_org_fk foreign key (organization_id, supplier_id) references public.contacts (organization_id, id) on delete restrict`
 - `constraint purchase_returns_account_same_org_fk foreign key (organization_id, payable_account_id) references public.accounts (organization_id, id) on delete restrict`
@@ -1047,6 +1050,7 @@ create policy purchase_return_items_select_member on public.purchase_return_item
 
 - `constraint sales_org_id_id_uq unique (organization_id, id)`
 - `constraint sales_org_invoice_uq unique (organization_id, invoice_id)`
+- `constraint sales_number_after_confirmation_chk check (status in ('draft', 'void') or invoice_id is not null)`
 - `constraint sales_customer_same_org_fk foreign key (organization_id, customer_id) references public.contacts (organization_id, id) on delete restrict`
 - `constraint sales_receivable_account_same_org_fk foreign key (organization_id, receivable_account_id) references public.accounts (organization_id, id) on delete restrict`
 - `constraint sales_discount_limit_chk check (discount_amount <= subtotal)`
@@ -1160,6 +1164,7 @@ create policy sales_items_select_member on public.sales_items for select to auth
 
 - `constraint sales_returns_org_id_id_uq unique (organization_id, id)`
 - `constraint sales_returns_org_number_uq unique (organization_id, return_number)`
+- `constraint sales_returns_number_after_confirmation_chk check (status in ('draft', 'void') or return_number is not null)`
 - `constraint sales_returns_sales_same_org_fk foreign key (organization_id, sales_id) references public.sales (organization_id, id) on delete restrict`
 - `constraint sales_returns_customer_same_org_fk foreign key (organization_id, customer_id) references public.contacts (organization_id, id) on delete restrict`
 - `constraint sales_returns_account_same_org_fk foreign key (organization_id, receivable_account_id) references public.accounts (organization_id, id) on delete restrict`
@@ -1278,6 +1283,7 @@ create policy sales_return_items_select_member on public.sales_return_items for 
 
 - `constraint expenses_org_id_id_uq unique (organization_id, id)`
 - `constraint expenses_org_number_uq unique (organization_id, expense_number)`
+- `constraint expenses_number_after_confirmation_chk check (status in ('draft', 'void') or expense_number is not null)`
 - `constraint expenses_category_same_org_fk foreign key (organization_id, expense_category_id) references public.expense_categories (organization_id, id) on delete restrict`
 - `constraint expenses_contact_same_org_fk foreign key (organization_id, contact_id) references public.contacts (organization_id, id) on delete restrict`
 - `constraint expenses_account_same_org_fk foreign key (organization_id, payable_account_id) references public.accounts (organization_id, id) on delete restrict`
@@ -1347,6 +1353,7 @@ create policy expenses_select_member on public.expenses for select to authentica
 
 - `constraint payments_org_id_id_uq unique (organization_id, id)`
 - `constraint payments_org_number_uq unique (organization_id, payment_number)`
+- `constraint payments_number_after_confirmation_chk check (status in ('draft', 'void') or payment_number is not null)`
 - `constraint payments_contact_same_org_fk foreign key (organization_id, contact_id) references public.contacts (organization_id, id) on delete restrict`
 - `constraint payments_account_same_org_fk foreign key (organization_id, account_id) references public.accounts (organization_id, id) on delete restrict`
 - `constraint payments_settlement_account_same_org_fk foreign key (organization_id, settlement_account_id) references public.accounts (organization_id, id) on delete restrict`
@@ -2046,7 +2053,7 @@ grant select on public.journal_entries, public.account_transactions, public.inve
 ```
 
 ```sql
-revoke all on function public.next_document_number(uuid, text) from public, anon;
+revoke all on function public.next_document_number(uuid, text) from public, anon, authenticated;
 ```
 
 ```sql
@@ -2226,7 +2233,7 @@ grant execute on function public.create_organization_with_admin(text,text,text) 
 ```
 
 ```sql
-revoke all on function public.next_document_number(uuid,text) from public, anon;
+revoke all on function public.next_document_number(uuid,text) from public, anon, authenticated;
 ```
 
 ```sql
