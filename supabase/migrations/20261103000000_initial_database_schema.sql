@@ -1756,6 +1756,37 @@ revoke all on function public.post_manual_journal_entry(uuid, text, date, text, 
   from public, anon, authenticated;
 
 
+-- Central invariant for every posting workflow: no journal may commit unless
+-- it has at least two lines, a positive debit total, and exactly balanced totals.
+create or replace function public.assert_journal_entry_balanced(
+  p_organization_id uuid,
+  p_journal_entry_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+declare
+  v_line_count integer;
+  v_debit numeric(20,4);
+  v_credit numeric(20,4);
+begin
+  select count(*)::integer, coalesce(sum(atx.debit), 0), coalesce(sum(atx.credit), 0)
+    into v_line_count, v_debit, v_credit
+  from public.account_transactions atx
+  where atx.organization_id = p_organization_id
+    and atx.journal_entry_id = p_journal_entry_id;
+
+  if v_line_count < 2 or v_debit <= 0 or v_debit <> v_credit then
+    raise exception using errcode = '23514',
+      message = 'Posting aborted: journal entry must contain at least two lines and balanced positive debits and credits.';
+  end if;
+end;
+$function$;
+revoke all on function public.assert_journal_entry_balanced(uuid, uuid)
+  from public, anon, authenticated;
+
 -- ============================================================================
 -- PURCHASE POSTING RPC
 -- ============================================================================
@@ -1993,6 +2024,7 @@ begin
   set status = 'posted', posted_journal_entry_id = v_journal_id, posted_by = v_user_id, updated_at = pg_catalog.now()
   where organization_id = p_organization_id and id = p_purchase_id;
 
+  perform public.assert_journal_entry_balanced(p_organization_id, v_journal_id);
   return v_journal_id;
 end;
 $$;
@@ -2473,6 +2505,7 @@ begin
     v_user_id
   from pg_catalog.jsonb_array_elements(p_inventory_lines) with ordinality as x(item,ordinality);
 
+  perform public.assert_journal_entry_balanced(p_organization_id, v_journal_entry_id);
   return v_journal_entry_id;
 end;
 $$;
@@ -2716,6 +2749,7 @@ begin
       posted_by = v_user_id, updated_at = pg_catalog.now()
   where organization_id = p_organization_id and id = p_payment_id;
 
+  perform public.assert_journal_entry_balanced(p_organization_id, v_journal_entry_id);
   return v_journal_entry_id;
 end;
 $function$;
@@ -2997,6 +3031,7 @@ begin
   set status = 'posted', posted_journal_entry_id = v_journal_id, posted_by = v_user_id, updated_at = pg_catalog.now()
   where organization_id = p_organization_id and id = p_sales_id;
 
+  perform public.assert_journal_entry_balanced(p_organization_id, v_journal_id);
   return v_journal_id;
 end;
 $$;
@@ -3349,6 +3384,7 @@ begin
     end if;
   end if;
 
+  perform public.assert_journal_entry_balanced(p_organization_id, v_reversal_id);
   return v_reversal_id;
 end;
 $function$;
@@ -3466,6 +3502,7 @@ begin
   set status = 'posted', posted_journal_entry_id = v_journal_id,
       posted_by = v_user_id, updated_at = pg_catalog.now()
   where organization_id = p_organization_id and id = p_expense_id;
+  perform public.assert_journal_entry_balanced(p_organization_id, v_journal_id);
   return v_journal_id;
 end;
 $function$;
@@ -3744,6 +3781,7 @@ begin
     update public.purchase set status = 'returned', updated_at = pg_catalog.now()
     where organization_id = p_organization_id and id = v_purchase.id;
   end if;
+  perform public.assert_journal_entry_balanced(p_organization_id, v_journal_id);
   return v_journal_id;
 end;
 $function$;
@@ -4053,6 +4091,7 @@ begin
     update public.sales set status = 'returned', updated_at = pg_catalog.now()
     where organization_id = p_organization_id and id = v_sales.id;
   end if;
+  perform public.assert_journal_entry_balanced(p_organization_id, v_journal_id);
   return v_journal_id;
 end;
 $function$;
@@ -4152,6 +4191,7 @@ begin
   set status = 'posted', posted_at = pg_catalog.now(), posted_by = v_user_id, updated_at = pg_catalog.now()
   where organization_id = p_organization_id and id = p_journal_entry_id;
 
+  perform public.assert_journal_entry_balanced(p_organization_id, p_journal_entry_id);
   return p_journal_entry_id;
 end;
 $$;
@@ -6046,6 +6086,7 @@ begin
      <> (select coalesce(sum(credit),0) from public.account_transactions where organization_id=p_organization_id and journal_entry_id=v_journal_id) then
     raise exception using errcode='23514',message='Inventory adjustment journal failed debit/credit reconciliation.';
   end if;
+  perform public.assert_journal_entry_balanced(p_organization_id, v_journal_id);
   return v_journal_id;
 end;
 $function$;
