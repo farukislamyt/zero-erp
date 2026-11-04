@@ -10,11 +10,9 @@
 
 begin;
 
-
 -- ============================================================================
 -- CORE FOUNDATION
 -- ============================================================================
-
 
 -- Shared timestamp trigger function.
 create or replace function public.set_updated_at()
@@ -379,7 +377,6 @@ create policy role_permissions_select_member
     )
   );
 
-
 create policy accounts_select_member
   on public.accounts for select to authenticated
   using (public.has_org_permission(organization_id, 'accounts.read'));
@@ -417,7 +414,6 @@ grant select on public.organizations, public.organization_users, public.roles,
   public.accounts, public.units_of_measure, public.contacts, public.products,
   public.expense_categories, public.number_sequences
 to authenticated;
-
 
 -- ============================================================================
 -- TRANSACTION SCHEMA
@@ -1145,11 +1141,9 @@ grant select on public.journal_entries, public.account_transactions,
   public.sales, public.sales_items, public.sales_returns, public.sales_return_items,
   public.expenses, public.payments, public.payment_allocations to authenticated;
 
-
 -- ============================================================================
 -- RBAC BOOTSTRAP
 -- ============================================================================
-
 
 insert into public.permissions (permission_key, name, description, module)
 values
@@ -1200,7 +1194,6 @@ on conflict (permission_key) do update
 set name = excluded.name,
     description = excluded.description,
     module = excluded.module;
-
 
 create or replace function public.next_document_number(
   p_organization_id uuid,
@@ -1548,7 +1541,6 @@ for each row execute function public.guard_system_role_permissions();
 revoke all on function public.guard_system_role_mutation() from public, anon, authenticated;
 
 revoke all on function public.guard_system_role_permissions() from public, anon, authenticated;
-
 
 -- Organization membership administration. This RPC adds only users who already
 -- have a verified Supabase Auth account. Unregistered users must sign up and
@@ -1993,7 +1985,6 @@ $$;
 revoke all on function public.post_manual_journal_entry(uuid, text, date, text, jsonb)
   from public, anon, authenticated;
 
-
 -- Central invariant for every posting workflow: no journal may commit unless
 -- it has at least two lines, a positive debit total, and exactly balanced totals.
 create or replace function public.assert_journal_entry_balanced(
@@ -2269,7 +2260,6 @@ $$;
 
 revoke all on function public.post_purchase(uuid, uuid) from public, anon;
 grant execute on function public.post_purchase(uuid, uuid) to authenticated;
-
 
 -- ============================================================================
 -- OPENING BALANCES
@@ -2753,7 +2743,6 @@ revoke all on function public.post_opening_balances(uuid, date, jsonb, jsonb, js
 grant execute on function public.post_opening_balances(uuid, date, jsonb, jsonb, jsonb, text)
   to authenticated;
 
-
 -- ============================================================================
 -- CONTACT PAYMENT AND RECEIPT POSTING RPC
 -- ============================================================================
@@ -2766,7 +2755,6 @@ create unique index journal_entries_payment_reference_uq
   where entry_type = 'payment'
     and reference_type = 'payment'
     and reference_id is not null;
-
 
 create or replace function public.post_contact_payment(
   p_organization_id uuid,
@@ -2979,7 +2967,6 @@ begin
     raise exception using errcode = '22023', message = 'Unsupported payment type.';
   end if;
 
-
   perform public.validate_payment_allocations(p_organization_id,p_payment_id);
 
   update public.payments
@@ -2996,7 +2983,6 @@ revoke all on function public.post_contact_payment(uuid, uuid)
   from public, anon;
 grant execute on function public.post_contact_payment(uuid, uuid)
   to authenticated;
-
 
 -- ============================================================================
 -- SALES POSTING RPC
@@ -3277,15 +3263,9 @@ $$;
 revoke all on function public.post_sales(uuid, uuid) from public, anon;
 grant execute on function public.post_sales(uuid, uuid) to authenticated;
 
-
-
 -- ============================================================================
 -- TRANSACTION DOCUMENT LIFECYCLE RPCS
 -- ============================================================================
-
-
-
-
 
 create or replace function public.reverse_journal_entry(
   p_organization_id uuid,
@@ -3748,7 +3728,6 @@ $function$;
 revoke all on function public.post_expense(uuid, uuid) from public, anon;
 grant execute on function public.post_expense(uuid, uuid) to authenticated;
 
-
 create or replace function public.post_purchase_return(
   p_organization_id uuid,
   p_purchase_return_id uuid
@@ -3853,7 +3832,6 @@ begin
   ) then
     raise exception using errcode = '23514', message = 'Return quantity or unit cost exceeds the unreturned quantity/cost of the original purchase item.';
   end if;
-
 
   if exists (
     select 1
@@ -4027,7 +4005,6 @@ $function$;
 revoke all on function public.post_purchase_return(uuid, uuid) from public, anon;
 grant execute on function public.post_purchase_return(uuid, uuid) to authenticated;
 
-
 create or replace function public.post_sales_return(
   p_organization_id uuid,
   p_sales_return_id uuid
@@ -4143,7 +4120,6 @@ begin
   ) then
     raise exception using errcode = '23514', message = 'Return quantity or unit price exceeds the unreturned quantity/price of the original sales item.';
   end if;
-
 
   if exists (
     select 1
@@ -4437,7 +4413,6 @@ $$;
 revoke all on function public.post_confirmed_journal_entry(uuid, uuid) from public, anon;
 grant execute on function public.post_confirmed_journal_entry(uuid, uuid) to authenticated;
 
-
 create or replace function public.save_draft_transaction_document(
   p_organization_id uuid,
   p_document_type text,
@@ -4668,7 +4643,6 @@ $function$;
 revoke all on function public.save_draft_transaction_document(uuid, text, jsonb, jsonb, uuid) from public, anon;
 grant execute on function public.save_draft_transaction_document(uuid, text, jsonb, jsonb, uuid) to authenticated;
 
-
 create or replace function public.confirm_transaction_document(
   p_organization_id uuid,
   p_document_type text,
@@ -4846,8 +4820,6 @@ begin
     raise exception using errcode = '23514', message = 'Combined return lines cannot exceed the remaining quantity of an original purchase item.';
   end if;
 
-
-
   elsif p_document_type = 'sales_return' then
     select count(*)::integer, coalesce(sum(ri.line_total),0)
       into v_count, v_subtotal
@@ -4912,8 +4884,6 @@ begin
     raise exception using errcode = '23514', message = 'Combined return lines cannot exceed the remaining quantity of an original sales item.';
   end if;
 
-
-
   elsif p_document_type = 'journal_entry' then
     select count(*)::integer, coalesce(sum(debit), 0), coalesce(sum(credit), 0)
       into v_count, v_debit, v_credit
@@ -4930,7 +4900,6 @@ begin
   ) using p_organization_id, p_document_id, v_user_id;
 end;
 $function$;
-
 
 create or replace function public.revert_transaction_document_to_draft(
   p_organization_id uuid,
@@ -5116,8 +5085,6 @@ grant execute on function public.revert_transaction_document_to_draft(uuid, text
 grant execute on function public.void_transaction_document(uuid, text, uuid, text) to authenticated;
 grant execute on function public.delete_draft_transaction_document(uuid, text, uuid) to authenticated;
 
-
-
 -- ============================================================================
 -- OPERATIONAL ERP COMPLETION: DEFAULT COA, MASTER DATA, RBAC, PROFILE, NUMBERING
 -- ============================================================================
@@ -5212,11 +5179,6 @@ begin
 end;
 $function$;
 revoke all on function public.seed_default_chart_of_accounts(uuid) from public, anon, authenticated;
-
-
-
-
-
 
 revoke all on function public.next_document_number(uuid,text) from public, anon, authenticated;
 
@@ -5413,8 +5375,6 @@ begin
   end if;
 end;
 $function$;
-
-
 
 create or replace function public.save_master_data(
   p_organization_id uuid,
@@ -5859,10 +5819,6 @@ end;
 $function$;
 revoke all on function public.create_custom_role(uuid,text,text[]) from public,anon;
 revoke all on function public.replace_custom_role_permissions(uuid,uuid,text[]) from public,anon;
-
-
-
-
 
 -- ============================================================================
 -- INVOICE-LEVEL SUBLEDGER ALLOCATIONS
@@ -6668,7 +6624,6 @@ begin
 end;
 $function$;
 
-
 create or replace function public.report_unapplied_payments(
   p_organization_id uuid,p_as_of_date date default current_date
 )
@@ -6722,8 +6677,6 @@ grant execute on function public.report_contact_balances(uuid,date) to authentic
 grant execute on function public.report_receivables_aging(uuid,date) to authenticated;
 grant execute on function public.report_payables_aging(uuid,date) to authenticated;
 
-
-
 create or replace function public.validate_role_assignment(
   p_organization_id uuid,
   p_role_id uuid
@@ -6766,7 +6719,6 @@ begin
 end;
 $function$;
 revoke all on function public.validate_role_assignment(uuid,uuid) from public,anon;
-
 
 create or replace function public.update_custom_role(
   p_organization_id uuid,
@@ -6837,7 +6789,6 @@ exception when unique_violation then
 end;
 $function$;
 revoke all on function public.update_custom_role(uuid,uuid,text,text) from public,anon;
-
 
 -- Final bootstrap policy layer, identical to the incremental membership-security migration.
 -- Fail closed rather than silently choosing which tenant membership/admin to
@@ -6953,10 +6904,6 @@ as $$
       and r.status = 'active'
   );
 $$;
-
-
-
-
 
 -- The original creator record cannot be deleted, moved, reassigned to another
 -- Auth user, or have its timestamp/role rewritten. Only the company-creation
@@ -7079,8 +7026,6 @@ create trigger organizations_guard_created_at
 before update of created_at on public.organizations
 for each row execute function public.guard_organization_created_at();
 
-
-
 -- Enforce exactly one active Administrator per company and permit assigning
 -- the system Administrator role only through the organization-creation RPC.
 
@@ -7089,15 +7034,9 @@ create trigger organization_users_guard_last_admin
 before insert or update or delete on public.organization_users
 for each row execute function public.guard_administrator_membership();
 
-
-
-
 -- One company per user for life. The creator membership is retained forever,
 -- including after deactivation. Locking the Auth
 -- user row serializes concurrent creation attempts for the same account.
-
-
-
 
 -- Keep the global permission catalogue description aligned with the
 -- Administrator-only control-plane policy.
@@ -7151,58 +7090,21 @@ create trigger role_permissions_guard_control_plane
 before insert or update of role_id, permission_id on public.role_permissions
 for each row execute function public.guard_custom_role_control_plane_permissions();
 
-
-
 -- All administrative operations are Administrator-exclusive, independent of
 -- permissions accidentally granted to an ordinary custom role.
-
-
-
 
 -- Add an existing verified Auth user only. No Auth Admin invitation or account
 -- creation is performed. An inactive historical membership is reactivated in
 -- place, unless it is the permanent creator record.
-
-
-
-
-
-
-
-
-
-
-
 
 -- Transfer the single active Administrator to an existing active member.
 -- The previous Administrator is deactivated, while the original creator row
 -- remains permanently present and immutable. The target must already belong
 -- to this company; cross-company membership constraints remain in force.
 
-
-
-
 -- Custom roles can never acquire Administrator-only control-plane privileges.
 
-
-
-
-
-
-
-
-
-
-
-
 -- Company profile/security settings are also Administrator-exclusive.
-
-
-
-
--- Invitation-only finalization is no longer part of the application contract.
-drop function if exists public.complete_organization_invitation(uuid,uuid,uuid,uuid);
-
 
 -- ============================================================================
 -- ORGANIZATION MEMBERSHIP SECURITY (merged from former 20261103010000 file)
@@ -7271,12 +7173,8 @@ $admin_preflight$;
 
 -- One active company membership per Auth user. Inactive historical rows remain.
 
-
 -- The creator is identified by the initial membership timestamp. This helper
 -- deliberately does not depend on the member's current role or active state.
-
-
-
 
 revoke all on function public.is_organization_creator(uuid,uuid) from public, anon, authenticated;
 revoke all on function public.is_org_administrator(uuid) from public, anon;
@@ -7286,7 +7184,6 @@ grant execute on function public.is_org_administrator(uuid) to authenticated;
 -- Auth user, or have its timestamp/role rewritten. Only the company-creation
 -- Only the organization-creation RPC may establish the immutable creator timestamp anchor.
 
-
 drop trigger if exists organization_users_guard_creator_record on public.organization_users;
 create trigger organization_users_guard_creator_record
 before insert or update or delete on public.organization_users
@@ -7294,7 +7191,6 @@ for each row execute function public.guard_organization_creator_membership();
 
 -- The founder marker depends on organizations.created_at, so that timestamp
 -- must itself be immutable even for trusted server-side maintenance paths.
-
 
 drop trigger if exists organizations_guard_created_at on public.organizations;
 create trigger organizations_guard_created_at
@@ -7311,15 +7207,9 @@ create trigger organization_users_guard_last_admin
 before insert or update or delete on public.organization_users
 for each row execute function public.guard_administrator_membership();
 
-
-
-
 -- One company per user for life. The creator membership is retained forever,
 -- including after deactivation. Locking the Auth
 -- user row serializes concurrent creation attempts for the same account.
-
-
-
 
 -- Keep the global permission catalogue description aligned with the
 -- Administrator-only control-plane policy.
@@ -7343,7 +7233,6 @@ where rp.role_id = r.id
 -- A database-level backstop prevents trusted direct writes from granting
 -- control-plane permissions to custom or other non-Administrator roles.
 
-
 drop trigger if exists role_permissions_guard_control_plane on public.role_permissions;
 create trigger role_permissions_guard_control_plane
 before insert or update of role_id, permission_id on public.role_permissions
@@ -7364,10 +7253,8 @@ grant execute on function public.validate_role_assignment(uuid,uuid) to authenti
 revoke all on function public.add_organization_user_by_email(uuid,text,uuid) from public, anon;
 grant execute on function public.add_organization_user_by_email(uuid,text,uuid) to authenticated;
 
-
 revoke all on function public.update_organization_user_role(uuid,uuid,uuid) from public, anon;
 grant execute on function public.update_organization_user_role(uuid,uuid,uuid) to authenticated;
-
 
 revoke all on function public.set_organization_user_active(uuid,uuid,boolean) from public, anon;
 grant execute on function public.set_organization_user_active(uuid,uuid,boolean) to authenticated;
@@ -7377,16 +7264,13 @@ grant execute on function public.set_organization_user_active(uuid,uuid,boolean)
 -- remains permanently present and immutable. The target must already belong
 -- to this company; cross-company membership constraints remain in force.
 
-
 -- Custom roles can never acquire Administrator-only control-plane privileges.
 
 revoke all on function public.create_custom_role(uuid,text,text[]) from public, anon;
 grant execute on function public.create_custom_role(uuid,text,text[]) to authenticated;
 
-
 revoke all on function public.replace_custom_role_permissions(uuid,uuid,text[]) from public, anon;
 grant execute on function public.replace_custom_role_permissions(uuid,uuid,text[]) to authenticated;
-
 
 revoke all on function public.update_custom_role(uuid,uuid,text,text) from public, anon;
 grant execute on function public.update_custom_role(uuid,uuid,text,text) to authenticated;
@@ -7398,7 +7282,6 @@ grant execute on function public.update_organization_profile(uuid,text,text,text
 
 -- Invitation-only finalization is no longer part of the application contract.
 drop function if exists public.complete_organization_invitation(uuid,uuid,uuid,uuid);
-
 
 -- ============================================================================
 -- PERMANENT ORIGINAL CREATOR / ADMINISTRATOR (merged from former 20261103020000 file)
@@ -7480,7 +7363,6 @@ $preflight$;
 -- The original creator membership is immutable in every mutable field.
 -- Its timestamp remains anchored to organizations.created_at.
 
-
 drop trigger if exists organization_users_guard_creator_record
   on public.organization_users;
 create trigger organization_users_guard_creator_record
@@ -7491,7 +7373,6 @@ execute function public.guard_organization_creator_membership();
 -- A user may acquire the Administrator role only in the single INSERT that
 -- establishes the creator anchor during create_organization_with_admin().
 -- All later Administrator INSERT/UPDATE/DELETE attempts are rejected.
-
 
 drop trigger if exists organization_users_guard_last_admin
   on public.organization_users;
@@ -7564,7 +7445,6 @@ revoke all on function public.guard_system_administrator_role()
 -- Keep the existing creation contract and bootstrap behavior, but remove the
 -- The creation flag is scoped to this one transaction and is required by
 -- the permanent Creator and Administrator guards above.
-
 
 revoke all on function public.create_organization_with_admin(text,text,text)
   from public, anon;
