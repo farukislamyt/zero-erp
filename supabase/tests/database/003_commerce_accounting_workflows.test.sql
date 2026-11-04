@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(30);
+select plan(40);
 
 insert into auth.users(
   id,instance_id,aud,role,email,encrypted_password,email_confirmed_at,
@@ -60,11 +60,14 @@ select set_config('test.purchase_id',public.save_draft_transaction_document(
   ),
   jsonb_build_array(jsonb_build_object('line_number',1,'product_id',current_setting('test.product_id')::uuid,'quantity',2,'unit_cost',120,'line_total',240))
 )::text,true);
+select is((select invoice_id from public.purchase where id=current_setting('test.purchase_id')::uuid),null::text,'purchase draft has no document number');
 select lives_ok(format('select public.confirm_transaction_document(%L::uuid,%L,%L::uuid)',current_setting('test.org_id'),'purchase',current_setting('test.purchase_id')),
   'valid purchase draft confirms');
+select is((select invoice_id from public.purchase where id=current_setting('test.purchase_id')::uuid),'PUR-00001','purchase number is allocated at confirmation');
 select set_config('test.purchase_journal_id',public.post_purchase(current_setting('test.org_id')::uuid,current_setting('test.purchase_id')::uuid)::text,true);
 select is((select status from public.purchase where id=current_setting('test.purchase_id')::uuid),'posted',
   'purchase posts and source status is updated');
+select is((select invoice_id from public.purchase where id=current_setting('test.purchase_id')::uuid),'PUR-00001','purchase number remains unchanged after posting');
 select is((select quantity from public.inventory_balances where organization_id=current_setting('test.org_id')::uuid and product_id=current_setting('test.product_id')::uuid),12::numeric,
   'purchase increases on-hand stock');
 select is((select round(inventory_value,2) from public.inventory_balances where organization_id=current_setting('test.org_id')::uuid and product_id=current_setting('test.product_id')::uuid),1240::numeric,
@@ -79,8 +82,10 @@ select set_config('test.sale_id',public.save_draft_transaction_document(
   ),
   jsonb_build_array(jsonb_build_object('line_number',1,'product_id',current_setting('test.product_id')::uuid,'quantity',3,'unit_price',200,'line_total',600))
 )::text,true);
+select is((select invoice_id from public.sales where id=current_setting('test.sale_id')::uuid),null::text,'sales draft has no document number');
 select lives_ok(format('select public.confirm_transaction_document(%L::uuid,%L,%L::uuid)',current_setting('test.org_id'),'sales',current_setting('test.sale_id')),
   'valid sales draft confirms');
+select is((select invoice_id from public.sales where id=current_setting('test.sale_id')::uuid),'SAL-00001','sales number is allocated at confirmation');
 select set_config('test.sale_journal_id',public.post_sales(current_setting('test.org_id')::uuid,current_setting('test.sale_id')::uuid)::text,true);
 select is((select status from public.sales where id=current_setting('test.sale_id')::uuid),'posted',
   'sales invoice posts and source status is updated');
@@ -102,8 +107,10 @@ select set_config('test.expense_id',public.save_draft_transaction_document(
     'expense_date','2026-02-04','amount',50,'description','CI test expense'
   )
 )::text,true);
+select is((select expense_number from public.expenses where id=current_setting('test.expense_id')::uuid),null::text,'expense draft has no document number');
 select lives_ok(format('select public.confirm_transaction_document(%L::uuid,%L,%L::uuid)',current_setting('test.org_id'),'expense',current_setting('test.expense_id')),
   'valid expense draft confirms');
+select is((select expense_number from public.expenses where id=current_setting('test.expense_id')::uuid),'EXP-00001','expense number is allocated at confirmation');
 select set_config('test.expense_journal_id',public.post_expense(current_setting('test.org_id')::uuid,current_setting('test.expense_id')::uuid)::text,true);
 select is((select status from public.expenses where id=current_setting('test.expense_id')::uuid),'posted',
   'expense posts and source status is updated');
@@ -118,6 +125,7 @@ select is((select quantity from public.inventory_balances where organization_id=
   'inventory adjustment increase changes stock quantity');
 select is((select status from public.journal_entries where id=current_setting('test.adjustment_journal_id')::uuid),'posted',
   'inventory adjustment creates a posted journal');
+select is((select entry_number from public.journal_entries where id=current_setting('test.adjustment_journal_id')::uuid),'IA-00001','inventory adjustment allocates its number atomically during posting');
 
 select set_config('test.manual_journal_id',public.save_draft_transaction_document(
   current_setting('test.org_id')::uuid,'journal_entry',
@@ -127,8 +135,10 @@ select set_config('test.manual_journal_id',public.save_draft_transaction_documen
     jsonb_build_object('account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='3300'),'line_number',2,'description','Equity credit','debit',0,'credit',100)
   )
 )::text,true);
+select is((select entry_number from public.journal_entries where id=current_setting('test.manual_journal_id')::uuid),null::text,'manual journal draft has no document number');
 select lives_ok(format('select public.confirm_transaction_document(%L::uuid,%L,%L::uuid)',current_setting('test.org_id'),'journal_entry',current_setting('test.manual_journal_id')),
   'balanced manual journal confirms');
+select is((select entry_number from public.journal_entries where id=current_setting('test.manual_journal_id')::uuid),'JRN-00001','manual journal number is allocated at confirmation');
 select set_config('test.manual_journal_posted_id',public.post_confirmed_journal_entry(
   current_setting('test.org_id')::uuid,current_setting('test.manual_journal_id')::uuid
 )::text,true);
