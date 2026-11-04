@@ -43,7 +43,7 @@ Parameters are listed in SQL order. Optional parameters retain their SQL default
 | `replace_custom_role_permissions` | `p_organization_id uuid, p_role_id uuid, p_permission_keys text[]` | Organization Administrator only | Atomically replaces custom role permission set; Administrator permissions immutable |
 | `update_custom_role` | `p_organization_id uuid, p_role_id uuid, p_name text, p_status text` | Organization Administrator only | Renames/activates/deactivates custom role; cannot deactivate while active members are assigned |
 | `save_master_data` | `p_organization_id uuid, p_entity_type text, p_data jsonb, p_record_id uuid DEFAULT NULL` | Entity-specific manage permission | Creates/updates one supported master record; returns record UUID |
-| `next_document_number` | `p_organization_id uuid, p_document_type text` | Entity-specific create/manage permission | Atomically allocates next formatted number; inactive sequence fails |
+| `next_document_number` | `p_organization_id uuid, p_document_type text` | Internal helper; no browser EXECUTE | Allocates a number only through authorized lifecycle/posting routines; direct authenticated execution is denied |
 | `post_opening_balances` | `p_organization_id uuid, p_entry_date date, p_account_lines jsonb, p_party_balances jsonb, p_inventory_lines jsonb, p_description text DEFAULT 'Opening balances'` | `opening_balances.post` plus active member | One-time balanced opening journal plus party and inventory opening effects |
 | `save_draft_transaction_document` | `p_organization_id uuid, p_document_type text, p_header jsonb, p_items jsonb DEFAULT NULL, p_document_id uuid DEFAULT NULL` | Document-specific create/manage permission | Creates/updates Draft only; allowlisted header/line fields; returns document UUID |
 | `confirm_transaction_document` | `p_organization_id uuid, p_document_type text, p_document_id uuid` | Document-specific confirm permission | Draft becomes Confirmed after complete business validation; no ledger/stock posting |
@@ -190,7 +190,7 @@ For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `
 
 - **ORG-001** Valid create with defaults: BDT/Asia-Dhaka, one active Creator Administrator, 43 permissions, 22 default accounts, one General Expenses category, 8 number sequences.
 - **ORG-002** Valid explicit currency/timezone; persisted values match.
-- **ORG-003–005** Empty/blank/over-160 name, invalid/lowercase currency, invalid timezone: SQLSTATE 22023; no organization or seed residue.
+- **ORG-003–005** Empty/blank/over-160 name, malformed/unsupported/withdrawn currency code, invalid timezone: SQLSTATE 22023; no organization or seed residue.
 - **ORG-006** Unauthenticated create: 42501.
 - **ORG-007** Same Auth user creates second company: 23505.
 - **ORG-008** User with another active membership attempts company creation: 23505.
@@ -200,8 +200,10 @@ For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `
 - **ORG-012** Later Administrator membership insert/assignment: rejected.
 - **ORG-013** Administrator Role rename/deactivate/delete or permission removal: rejected.
 - **ORG-014** Creator Administrator UPDATE/DELETE/deactivation/reassignment, later Administrator INSERT, and Administrator transfer attempt: rejected; `transfer_organization_administrator` must not exist and must have no authenticated EXECUTE grant.
-- **ORG-014** Profile update valid all 11 arguments; blank optional text becomes NULL.
-- **ORG-015–017** Profile invalid name/currency/timezone, inactive organization, non-Administrator: rejected.
+- **ORG-015** Profile update valid all 11 arguments; blank optional text becomes NULL.
+- **ORG-016–018** Profile invalid name/unsupported ISO currency/timezone, inactive organization, non-Administrator: rejected.
+- **ORG-019** Change base currency after any financial document or ledger activity, including a draft: rejected with SQLSTATE `23514`; original currency remains unchanged.
+- **ORG-020** Current monetary ISO codes are accepted; withdrawn, malformed, fund/metal, test and no-currency codes are rejected.
 - **RBAC-001** Add existing verified user with valid custom role.
 - **RBAC-002–006** Invalid email, missing/unverified Auth user, duplicate member, inactive/wrong-tenant role: rejected.
 - **RBAC-007** Reactivate eligible historical membership in place; Creator historical membership remains immutable.
@@ -226,17 +228,18 @@ For each supported `document_type` (`purchase`, `sales`, `expense`, `payment`, `
 - **MD-021–024** Duplicate/blank Unit; deactivate Unit used by active Product; wrong-tenant Unit: rejected.
 - **MD-025–028** Duplicate/blank Contact; deactivate Contact with outstanding AR/AP; wrong-tenant Contact: rejected.
 - **MD-029–034** Product missing/inactive/wrong-tenant Unit; invalid inventory/sales/COGS account type; mapping change after stock movement; deactivate non-zero stock: rejected.
-- **MD-035** Change Product `unit_id` before its first inventory movement: allowed for a valid active same-organization Unit.
-- **MD-036** Change Product `unit_id` after any inventory movement, including zero current stock, net-zero movement history, or reversed source document: rejected with SQLSTATE `23514`.
+- **MD-035** Change Product `unit_id` before any inventory movement or document-line reference: allowed for a valid active same-organization Unit.
+- **MD-036** Change Product `unit_id` after any inventory movement or purchase/sales/return line reference (including draft, zero current stock, net-zero history, or reversed source document): rejected with SQLSTATE `23514`.
 - **MD-037** Submit the same `unit_id` after inventory movements: allowed as a no-op; other permitted Product fields remain independently editable.
 - **MD-038** Attempt direct trusted SQL UPDATE of `products.unit_id` after movement history: rejected by `products_guard_unit_after_inventory`.
 - **MD-039** Race a first inventory insert against a Product unit change: product-row locking serializes both operations; if the movement commits first, the unit change fails; if the unit change commits first, the movement proceeds against the new Product unit.
-- **MD-035–038** Expense category missing/invalid/inactive/wrong-tenant expense account; duplicate code: rejected.
+- **MD-040** Rename a UOM before any Product references it: allowed.
+- **MD-041** Rename a UOM after any Product references it, including an inactive Product: rejected with SQLSTATE `23514`.
+- **MD-042–045** Expense category missing/invalid/inactive/wrong-tenant expense account; duplicate code: rejected.
 - **NUM-001–008** Each seeded sequence has the expected prefix/padding; business-document sequences advance only on first successful confirmation, while inventory adjustment advances inside its posting RPC.
 - **NUM-009–011** Unauthorized document confirmation/posting, unknown internal type and inactive sequence: rejected; counter unchanged.
 - **NUM-012** Concurrent confirmations/postings produce unique numbers; sequence-row locking prevents duplicates and transaction failures roll back allocation.
 - **NUM-013** Updating a document cannot change an assigned number.
-- **NUM-014–018** Drafts have NULL numbers; first confirmation allocates once; invalid confirmation does not allocate; revert/reconfirm retains the number; direct authenticated allocator execution is denied; direct non-Draft INSERT and client-selected numbers are rejected; inventory-adjustment number allocation is atomic with posting.
 - **NUM-014** Creating/updating a Draft does not allocate a number; client-supplied number fields are rejected by the RPC allowlist and cannot be persisted.
 - **NUM-015** First successful confirmation allocates exactly one number; failed confirmation leaves the sequence unchanged.
 - **NUM-016** Revert and reconfirm retain the original number without another increment; void retains an allocated number; deleting an unconfirmed Draft consumes no number; deleting a previously confirmed document after reversion does not roll back or reuse its consumed sequence value.
@@ -367,8 +370,8 @@ For every report, test authorized role, denied role, inactive member, inactive o
 - **SEC-007** Inactive membership and inactive organization cannot call tenant RPCs or read own historical membership metadata.
 - **SEC-008** Creator anchor and Administrator protections survive direct trusted SQL attempts as well as RPC attempts.
 - **SEC-009** No Administrator transfer function or authenticated EXECUTE grant exists; creator membership remains the sole permanent Administrator.
-- **SEC-009** Custom roles cannot receive `users.manage` or `roles.manage`.
-- **SEC-010** Legacy `post_manual_journal_entry` has no client EXECUTE; transfer RPC absent.
+- **SEC-010** Custom roles cannot receive `users.manage` or `roles.manage`.
+- **SEC-011** Legacy `post_manual_journal_entry` has no client EXECUTE; transfer RPC absent.
 - **TX-001** Every posting function is atomic across header status, journal, ledger, inventory and source-document changes.
 - **TX-002** Injected constraint failure in final write rolls back earlier writes.
 - **TX-003** Duplicate posting calls result in one posted journal only.
@@ -379,7 +382,7 @@ For every report, test authorized role, denied role, inactive member, inactive o
 
 ## 10. Runtime verification status
 
-The GitHub Actions workflow `.github/workflows/database-ci.yml` and the executable SQL files under `supabase/tests/database/` were removed from this branch at the user's direction. This document is retained as the authoritative test specification and implementation checklist; the scenarios above are not currently executable in this repository.
+The GitHub Actions workflow `.github/workflows/database-ci.yml` and executable SQL files under `supabase/tests/database/` are absent from this branch at the user's direction. This document is the authoritative written test specification and implementation checklist; the scenarios above are not currently executable in this repository.
 
 No PostgreSQL/Supabase runtime test result is claimed for the current migration revision. Static source inspection is not a substitute for a clean database bootstrap, pgTAP execution, concurrency testing, or persisted-state assertions. Runtime verification must be performed in a disposable local Supabase environment before production deployment.
 

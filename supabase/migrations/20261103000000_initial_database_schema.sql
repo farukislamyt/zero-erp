@@ -24,7 +24,18 @@ begin
   new.updated_at := pg_catalog.now();
   return new;
 end;
-$$;
+$;
+revoke all on function public.set_updated_at() from public, anon, authenticated;
+
+-- ISO 4217 List One snapshot maintained by SIX, published 2026-09-17.
+-- Only current monetary currencies are accepted as an organization's base currency;
+-- fund, precious-metal, testing, and "no currency" codes are intentionally excluded.
+create or replace function public.is_supported_iso4217_currency(p_code text)
+returns boolean language sql immutable parallel safe set search_path = ''
+as $function$
+  select p_code = any (array['AED', 'AFN', 'ALL', 'AMD', 'AOA', 'ARS', 'AUD', 'AWG', 'AZN', 'BAM', 'BBD', 'BDT', 'BHD', 'BIF', 'BMD', 'BND', 'BOB', 'BRL', 'BSD', 'BTN', 'BWP', 'BYN', 'BZD', 'CAD', 'CDF', 'CHF', 'CLP', 'CNY', 'COP', 'CRC', 'CUP', 'CVE', 'CZK', 'DJF', 'DKK', 'DOP', 'DZD', 'EGP', 'ERN', 'ETB', 'EUR', 'FJD', 'FKP', 'GBP', 'GEL', 'GHS', 'GIP', 'GMD', 'GNF', 'GTQ', 'GYD', 'HKD', 'HNL', 'HTG', 'HUF', 'IDR', 'ILS', 'INR', 'IQD', 'IRR', 'ISK', 'JMD', 'JOD', 'JPY', 'KES', 'KGS', 'KHR', 'KMF', 'KPW', 'KRW', 'KWD', 'KYD', 'KZT', 'LAK', 'LBP', 'LKR', 'LRD', 'LSL', 'LYD', 'MAD', 'MDL', 'MGA', 'MKD', 'MMK', 'MNT', 'MOP', 'MRU', 'MUR', 'MVR', 'MWK', 'MXN', 'MYR', 'MZN', 'NAD', 'NGN', 'NIO', 'NOK', 'NPR', 'NZD', 'OMR', 'PAB', 'PEN', 'PGK', 'PHP', 'PKR', 'PLN', 'PYG', 'QAR', 'RON', 'RSD', 'RUB', 'RWF', 'SAR', 'SBD', 'SCR', 'SDG', 'SEK', 'SGD', 'SHP', 'SLE', 'SOS', 'SRD', 'SSP', 'STN', 'SVC', 'SYP', 'SZL', 'THB', 'TJS', 'TMT', 'TND', 'TOP', 'TRY', 'TTD', 'TWD', 'TZS', 'UAH', 'UGX', 'USD', 'UYU', 'UZS', 'VED', 'VES', 'VND', 'VUV', 'WST', 'XAF', 'XCD', 'XCG', 'XOF', 'XPF', 'YER', 'ZAR', 'ZMW', 'ZWG']::text[]);
+$function$;
+revoke all on function public.is_supported_iso4217_currency(text) from public, anon, authenticated;
 
 -- Tenant root.
 create table public.organizations (
@@ -42,7 +53,7 @@ create table public.organizations (
   is_active boolean not null default true,
   created_at timestamptz not null default pg_catalog.now(),
   updated_at timestamptz not null default pg_catalog.now(),
-  constraint organizations_currency_format_chk check (currency ~ '^[A-Z]{3}$')
+  constraint organizations_currency_format_chk check (public.is_supported_iso4217_currency(currency::text))
 );
 
 create table public.roles (
@@ -541,6 +552,62 @@ create table public.inventory_balances (
     references public.products (organization_id, id)
     on delete restrict
 );
+-- A Product's unit is part of the meaning of every historical quantity.
+create or replace function public.product_has_unit_history(p_organization_id uuid, p_product_id uuid)
+returns boolean language sql stable security definer set search_path = ''
+as $function$
+  select exists (select 1 from public.inventory_transactions it where it.organization_id=p_organization_id and it.product_id=p_product_id)
+    or exists (select 1 from public.purchase_items pi where pi.organization_id=p_organization_id and pi.product_id=p_product_id)
+    or exists (select 1 from public.sales_items si where si.organization_id=p_organization_id and si.product_id=p_product_id)
+    or exists (select 1 from public.purchase_return_items pri where pri.organization_id=p_organization_id and pri.product_id=p_product_id)
+    or exists (select 1 from public.sales_return_items sri where sri.organization_id=p_organization_id and sri.product_id=p_product_id);
+$function$;
+revoke all on function public.product_has_unit_history(uuid, uuid) from public, anon, authenticated;
+
+create or replace function public.guard_unit_name_after_product_use()
+returns trigger language plpgsql security definer set search_path = ''
+as $function$
+begin
+  if new.name is distinct from old.name and exists (
+    select 1 from public.products p where p.organization_id=old.organization_id and p.unit_id=old.id
+  ) then
+    raise exception using errcode='23514',
+      message='A unit name cannot be changed after it has been assigned to a product. Create a new unit instead.';
+  end if;
+  return new;
+end;
+$function$;
+revoke all on function public.guard_unit_name_after_product_use() from public, anon, authenticated;
+create trigger units_guard_name_after_product_use
+before update of name on public.units_of_measure
+for each row execute function public.guard_unit_name_after_product_use();
+
+create or replace function public.guard_organization_currency_after_financial_activity()
+returns trigger language plpgsql security definer set search_path = ''
+as $function$
+begin
+  if new.currency is distinct from old.currency and (
+    exists(select 1 from public.journal_entries je where je.organization_id=old.id)
+    or exists(select 1 from public.account_transactions atx where atx.organization_id=old.id)
+    or exists(select 1 from public.inventory_transactions it where it.organization_id=old.id)
+    or exists(select 1 from public.purchase p where p.organization_id=old.id)
+    or exists(select 1 from public.purchase_returns pr where pr.organization_id=old.id)
+    or exists(select 1 from public.sales s where s.organization_id=old.id)
+    or exists(select 1 from public.sales_returns sr where sr.organization_id=old.id)
+    or exists(select 1 from public.expenses e where e.organization_id=old.id)
+    or exists(select 1 from public.payments pm where pm.organization_id=old.id)
+  ) then
+    raise exception using errcode='23514',
+      message='Organization base currency cannot be changed after financial documents or ledger activity exist.';
+  end if;
+  return new;
+end;
+$function$;
+revoke all on function public.guard_organization_currency_after_financial_activity() from public, anon, authenticated;
+create trigger organizations_guard_currency_after_financial_activity
+before update of currency on public.organizations
+for each row execute function public.guard_organization_currency_after_financial_activity();
+
 -- Product UOM defines the interpretation of every historical stock quantity.
 -- Lock the product row on both stock insertion and UOM update to prevent races.
 create or replace function public.guard_product_unit_immutable_after_inventory()
@@ -548,10 +615,7 @@ returns trigger language plpgsql security definer set search_path = ''
 as $function$
 begin
   if new.unit_id is distinct from old.unit_id
-     and exists (
-       select 1 from public.inventory_transactions it
-       where it.organization_id = old.organization_id and it.product_id = old.id
-     ) then
+     and public.product_has_unit_history(old.organization_id, old.id) then
     raise exception using errcode = '23514',
       message = 'A product unit cannot be changed after inventory movements exist. Create a new product or use a controlled unit-conversion workflow.';
   end if;
@@ -1308,7 +1372,7 @@ begin
       message = 'Organization name must contain between 1 and 160 characters.';
   end if;
 
-  if p_currency is null or p_currency !~ '^[A-Z]{3}$' then
+  if p_currency is null or not public.is_supported_iso4217_currency(p_currency) then
     raise exception using errcode = '22023',
       message = 'Currency must be a three-letter uppercase ISO currency code.';
   end if;
@@ -5345,7 +5409,7 @@ begin
   if p_name is null
      or pg_catalog.length(pg_catalog.btrim(p_name)) not between 1 and 160
      or p_currency is null
-     or p_currency !~ '^[A-Z]{3}$'
+     or not public.is_supported_iso4217_currency(p_currency)
      or p_timezone is null
      or not exists (
        select 1
@@ -5550,10 +5614,7 @@ begin
            select pr.unit_id from public.products pr
            where pr.organization_id = p_organization_id and pr.id = p_record_id
          )
-         and exists (
-           select 1 from public.inventory_transactions it
-           where it.organization_id = p_organization_id and it.product_id = p_record_id
-         ) then
+         and public.product_has_unit_history(p_organization_id, p_record_id) then
         raise exception using errcode = '23514',
           message = 'A product unit cannot be changed after inventory movements exist. Create a new product or use a controlled unit-conversion workflow.';
       end if;

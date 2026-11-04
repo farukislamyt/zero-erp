@@ -21,14 +21,14 @@ That file now contains the effective SQL previously distributed across the three
 | Explicit indexes | 29 |
 | RLS-enabled tables | 26 |
 | RLS policies | 26 |
-| Effective triggers | 39 |
-| Effective public functions | 55 |
+| Effective triggers | 41 |
+| Effective public functions | 59 (60 definitions including the client-revoked legacy helper) |
 | Seeded permission keys | 43 |
 | Views / materialized views | 0 |
 | User-defined sequences | 0 |
 | Custom enum/type/domain definitions | 0 |
 
-All SECURITY DEFINER functions in the effective migration set specify an empty search path (`SET search_path = ''`). The migrations do not use `FORCE ROW LEVEL SECURITY`.
+All 56 SECURITY DEFINER functions in the effective migration set specify an empty search path (`SET search_path = ''`). The migrations do not use `FORCE ROW LEVEL SECURITY`.
 
 ## 3. Verified implementation present in SQL
 
@@ -96,9 +96,15 @@ The canonical migration now contains one definition per function signature. For 
 
 ### Fixed — Product unit-of-measure history integrity
 
-A product's `unit_id` can no longer change after any `inventory_transactions` row exists for that product. `save_master_data` rejects the change explicitly; a `BEFORE UPDATE OF unit_id` trigger provides a database-level backstop. A `BEFORE INSERT` trigger on `inventory_transactions` locks the referenced product row, serializing first movement insertion against a concurrent unit change.
+A product's `unit_id` can no longer change after any inventory movement or purchase, sales, purchase-return or sales-return line references the product. The `product_has_unit_history` helper is shared by `save_master_data` and the `BEFORE UPDATE OF unit_id` trigger. The existing inventory insert lock trigger serializes first inventory movement insertion against a concurrent unit change. A separate `units_guard_name_after_product_use` trigger prevents a UOM name change after any product references it.
 
-**Verification:** both RPC and trigger guards, including row-lock ordering, were inspected statically. No live concurrency test has been run.
+**Verification:** the RPC guard, centralized historical-reference predicate, product-row lock trigger and UOM rename trigger were inspected statically. No live concurrency test has been run.
+
+### Fixed — Organization base-currency integrity
+
+The organization currency field validates against a snapshot of current monetary ISO 4217 alpha codes (SIX List One, published 2026-09-17). Fund, metal, test and no-currency codes are excluded. A database trigger rejects changing the base currency after any journal entry, account/inventory transaction, purchase, sale, return, expense or payment exists, including draft documents.
+
+**Verification:** the helper allowlist, create/profile validation paths, table CHECK constraint and currency guard trigger were inspected statically. The list is versioned and requires maintenance when SIX publishes amendments. No runtime PostgreSQL test has been run.
 
 ### Performance tuning — Evidence required before index changes
 

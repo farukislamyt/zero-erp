@@ -158,6 +158,14 @@ These are explicit properties of the current schema:
 - There is no accounting-period table, accounting-period column, period permission, period-close RPC, or period-lock workflow.
 - The SQL migrations do not create application screens, API routes outside PostgreSQL RPCs, Auth email delivery, or deployment infrastructure.
 
+### Currency and unit-of-measure history integrity
+
+- `organizations.currency` accepts current monetary ISO 4217 alpha codes from the SIX List One snapshot dated 2026-09-17. Fund, metal, test and no-currency codes are excluded; review the snapshot when SIX publishes amendments.
+- `guard_organization_currency_after_financial_activity` blocks a base-currency change once any journal, account/inventory transaction, purchase, sales, return, expense or payment record exists, including draft documents.
+- `product_has_unit_history` checks inventory movements and purchase, sales and return lines. Product `unit_id` cannot change after any such reference exists, even if the document is still draft or stock is zero.
+- `guard_unit_name_after_product_use` prevents renaming a UOM after it is assigned to any product. Create a new UOM rather than changing the historical meaning of an existing one.
+- These database-level guards do not add unit-conversion or currency-conversion workflows.
+
 ## 9. Source of detail
 
 Use [Complete Database Reference](DATABASE_REFERENCE.md) for exact definitions. Use the migration files as the executable authority if any prose ever differs. Documentation changes must be made from the migration source; never modify the schema merely to make it match stale documentation.

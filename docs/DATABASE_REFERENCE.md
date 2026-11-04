@@ -2246,10 +2246,6 @@ grant execute on function public.create_organization_with_admin(text,text,text) 
 ```
 
 ```sql
-revoke all on function public.next_document_number(uuid,text) from public, anon, authenticated;
-```
-
-```sql
 -- No authenticated EXECUTE grant: the allocator is internal to lifecycle/posting RPCs.
 ```
 
@@ -2466,14 +2462,6 @@ grant execute on function public.set_organization_user_active(uuid,uuid,boolean)
 ```
 
 ```sql
-revoke all on function public.transfer_organization_administrator(uuid,uuid) from public, anon;
-```
-
-```sql
-grant execute on function public.transfer_organization_administrator(uuid,uuid) to authenticated;
-```
-
-```sql
 revoke all on function public.create_custom_role(uuid,text,text[]) from public, anon;
 ```
 
@@ -2574,14 +2562,6 @@ grant execute on function public.set_organization_user_active(uuid,uuid,boolean)
 ```
 
 ```sql
-revoke all on function public.transfer_organization_administrator(uuid,uuid) from public, anon;
-```
-
-```sql
-grant execute on function public.transfer_organization_administrator(uuid,uuid) to authenticated;
-```
-
-```sql
 revoke all on function public.create_custom_role(uuid,text,text[]) from public, anon;
 ```
 
@@ -2653,3 +2633,20 @@ These are database facts, not UI promises:
 - [Canonical consolidated database SQL](../supabase/migrations/20261103000000_initial_database_schema.sql)
 - [Database architecture and security guide](DATABASE_AND_SECURITY.md)
 - [Static database audit](DATABASE_AUDIT.md)
+
+## Integrity guard addendum — 2026-11-04
+
+The canonical bootstrap includes the following integrity helpers and triggers in addition to the catalog above. The executable migration remains authoritative.
+
+### Currency
+- `public.is_supported_iso4217_currency(text)`: immutable allowlist for current monetary ISO 4217 alpha codes, based on SIX List One published 2026-09-17. Fund, metal, testing and no-currency codes are excluded.
+- `public.guard_organization_currency_after_financial_activity()`: rejects a base-currency change after any journal entry, account transaction, inventory transaction, purchase, purchase return, sale, sales return, expense or payment exists.
+- Trigger: `organizations_guard_currency_after_financial_activity` — BEFORE UPDATE OF currency on `public.organizations`.
+
+### Unit-of-measure and product history
+- `public.product_has_unit_history(uuid, uuid)`: private SECURITY DEFINER predicate covering inventory transactions and purchase, sales, purchase-return and sales-return item references.
+- `public.guard_unit_name_after_product_use()`: prevents renaming a UOM after any Product references it.
+- Trigger: `units_guard_name_after_product_use` — BEFORE UPDATE OF name on `public.units_of_measure`.
+- `public.guard_product_unit_immutable_after_inventory()` now uses the centralized history predicate. Product `unit_id` is immutable after any historical document-line or inventory reference; `products_guard_unit_after_inventory` remains the direct-SQL backstop.
+
+The ISO currency list is a versioned snapshot, not a live feed; it must be reviewed when the official maintenance agency publishes amendments. No currency conversion, unit conversion, fiscal-year or accounting-period workflow is introduced.
