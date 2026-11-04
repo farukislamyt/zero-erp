@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(23);
+select plan(31);
 
 insert into auth.users(
   id,instance_id,aud,role,email,encrypted_password,email_confirmed_at,
@@ -63,9 +63,11 @@ select set_config('test.purchase_return_id',public.save_draft_transaction_docume
     'line_number',1,'purchase_item_id',current_setting('test.purchase_item_id')::uuid,
     'product_id',current_setting('test.product_id')::uuid,'quantity',1,'unit_cost',120,'line_total',120
   ))
-)::text,true);
+)::text,true)
+select is((select return_number from public.purchase_returns where id=current_setting('test.purchase_return_id')::uuid),null::text,'purchase return draft has no document number');;
 select lives_ok(format('select public.confirm_transaction_document(%L::uuid,%L,%L::uuid)',current_setting('test.org_id'),'purchase_return',current_setting('test.purchase_return_id')),
   'valid purchase return confirms');
+select is((select return_number from public.purchase_returns where id=current_setting('test.purchase_return_id')::uuid),'PR-00001','purchase return number is allocated at confirmation');
 select set_config('test.purchase_return_journal_id',public.post_purchase_return(current_setting('test.org_id')::uuid,current_setting('test.purchase_return_id')::uuid)::text,true);
 select is((select status from public.purchase_returns where id=current_setting('test.purchase_return_id')::uuid),'posted',
   'purchase return posts');
@@ -99,9 +101,11 @@ select set_config('test.sales_return_id',public.save_draft_transaction_document(
     'line_number',1,'sales_item_id',current_setting('test.sales_item_id')::uuid,
     'product_id',current_setting('test.product_id')::uuid,'quantity',1,'unit_price',200,'line_total',200
   ))
-)::text,true);
+)::text,true)
+select is((select return_number from public.sales_returns where id=current_setting('test.sales_return_id')::uuid),null::text,'sales return draft has no document number');;
 select lives_ok(format('select public.confirm_transaction_document(%L::uuid,%L,%L::uuid)',current_setting('test.org_id'),'sales_return',current_setting('test.sales_return_id')),
   'valid sales return confirms');
+select is((select return_number from public.sales_returns where id=current_setting('test.sales_return_id')::uuid),'SR-00001','sales return number is allocated at confirmation');
 select set_config('test.sales_return_journal_id',public.post_sales_return(current_setting('test.org_id')::uuid,current_setting('test.sales_return_id')::uuid)::text,true);
 select is((select status from public.sales_returns where id=current_setting('test.sales_return_id')::uuid),'posted',
   'sales return posts');
@@ -119,12 +123,14 @@ select set_config('test.receipt_id',public.save_draft_transaction_document(
     'settlement_account_id',(select id from public.accounts where organization_id=current_setting('test.org_id')::uuid and account_code='1120'),
     'description','Customer receipt allocation'
   )
-)::text,true);
+)::text,true)
+select is((select payment_number from public.payments where id=current_setting('test.receipt_id')::uuid),null::text,'payment draft has no document number');;
 select lives_ok(format('select public.set_payment_allocations(%L::uuid,%L::uuid,%L::jsonb)',
   current_setting('test.org_id'),current_setting('test.receipt_id'),
   jsonb_build_array(jsonb_build_object('document_type','sales','document_id',current_setting('test.sale_id')::uuid,'allocated_amount',100))::text),
   'receipt allocation to matching posted sales invoice succeeds');
 select public.confirm_transaction_document(current_setting('test.org_id')::uuid,'payment',current_setting('test.receipt_id')::uuid);
+select is((select payment_number from public.payments where id=current_setting('test.receipt_id')::uuid),'PAY-00001','payment number is allocated at confirmation');
 select set_config('test.receipt_journal_id',public.post_contact_payment(current_setting('test.org_id')::uuid,current_setting('test.receipt_id')::uuid)::text,true);
 select is((select status from public.payments where id=current_setting('test.receipt_id')::uuid),'posted',
   'allocated customer receipt posts');
@@ -146,6 +152,7 @@ select lives_ok(format('select public.set_payment_allocations(%L::uuid,%L::uuid,
   jsonb_build_array(jsonb_build_object('document_type','purchase','document_id',current_setting('test.purchase_id')::uuid,'allocated_amount',50))::text),
   'supplier payment allocation to matching posted purchase succeeds');
 select public.confirm_transaction_document(current_setting('test.org_id')::uuid,'payment',current_setting('test.supplier_payment_id')::uuid);
+select is((select payment_number from public.payments where id=current_setting('test.supplier_payment_id')::uuid),'PAY-00002','payment sequence increments once for the next confirmed payment');
 select set_config('test.supplier_payment_journal_id',public.post_contact_payment(current_setting('test.org_id')::uuid,current_setting('test.supplier_payment_id')::uuid)::text,true);
 select is((select status from public.payments where id=current_setting('test.supplier_payment_id')::uuid),'posted',
   'allocated supplier payment posts');
