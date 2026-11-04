@@ -497,6 +497,14 @@ create policy contacts_select_member on public.contacts for select to authentica
 create trigger products_set_updated_at before update on public.products for each row execute function public.set_updated_at();
 ```
 
+```sql
+create trigger products_guard_unit_after_inventory before update of unit_id on public.products for each row execute function public.guard_product_unit_immutable_after_inventory();
+```
+
+```sql
+create trigger inventory_transactions_lock_product before insert on public.inventory_transactions for each row execute function public.lock_product_for_inventory_transaction();
+```
+
 **RLS:** Enabled.
 
 **Policies:**
